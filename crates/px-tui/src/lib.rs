@@ -619,6 +619,14 @@ fn draw_home(frame: &mut Frame, area: Rect, app: &App, actions: &ActionRegistry)
 }
 
 fn draw_modal_backdrop(frame: &mut Frame, area: Rect) {
+    // Ratatui uses a retained terminal buffer. Merely stopping draw_home()
+    // does not erase the symbols that were already painted in the previous
+    // frame; changing a Block's style also does not blank those cells.
+    //
+    // Clear the whole content region first so Quick Actions cannot survive
+    // behind a modal as stale terminal cells.
+    frame.render_widget(Clear, area);
+
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
