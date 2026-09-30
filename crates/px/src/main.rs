@@ -3,6 +3,8 @@ use px_core::Registry;
 use std::env;
 use std::process;
 
+const DEFAULT_TOOLBOX: &str = "fedora-toolbox-44";
+
 fn build_registry() -> Registry {
     let mut registry = Registry::new();
 
@@ -11,6 +13,16 @@ fn build_registry() -> Registry {
 
         Err(error) => {
             eprintln!("PX: PATH discovery failed: {error}");
+        }
+    }
+
+    match px_discovery::discover_toolbox(DEFAULT_TOOLBOX) {
+        Ok(tools) => registry.extend(tools),
+
+        Err(error) => {
+            eprintln!(
+                "PX: Toolbox discovery failed for '{DEFAULT_TOOLBOX}': {error}"
+            );
         }
     }
 
@@ -49,14 +61,26 @@ fn doctor(registry: &Registry) {
     println!("DOCTOR");
 
     println!("  native backend       READY");
+    println!("  toolbox backend      {DEFAULT_TOOLBOX}");
     println!("  commands discovered  {}", registry.len());
 
     println!();
 
-    for name in ["git", "lazygit", "nvim", "btop", "fzf", "rg", "fd"] {
+    for name in [
+        "git",
+        "lazygit",
+        "nvim",
+        "btop",
+        "fzf",
+        "rg",
+        "fd",
+        "gh",
+        "gitleaks",
+        "act",
+    ] {
         match registry.preferred(name) {
             Some(tool) => println!(
-                "  {:<12} {:<10} {}",
+                "  {:<12} {:<24} {}",
                 name,
                 tool.backend.label(),
                 tool.executable.display()
@@ -75,7 +99,7 @@ fn tools(registry: &Registry, query: Option<&str>) {
 
     for tool in tools {
         println!(
-            "{:<28} {:<12} {}",
+            "{:<28} {:<24} {}",
             tool.name,
             tool.backend.label(),
             tool.executable.display()
