@@ -1,11 +1,10 @@
+use px_config::PxConfig;
 use px_core::Registry;
 
 use std::env;
 use std::process;
 
-const DEFAULT_TOOLBOX: &str = "fedora-toolbox-44";
-
-fn build_registry() -> Registry {
+fn build_registry(config: &PxConfig) -> Registry {
     let mut registry = Registry::new();
 
     match px_discovery::discover_environment() {
@@ -16,11 +15,15 @@ fn build_registry() -> Registry {
         }
     }
 
-    match px_discovery::discover_toolbox(DEFAULT_TOOLBOX) {
-        Ok(tools) => registry.extend(tools),
+    if config.toolbox.enabled
+        && let Some(toolbox_name) = config.toolbox.name.as_deref()
+    {
+        match px_discovery::discover_toolbox(toolbox_name) {
+            Ok(tools) => registry.extend(tools),
 
-        Err(error) => {
-            eprintln!("PX: Toolbox discovery failed for '{DEFAULT_TOOLBOX}': {error}");
+            Err(error) => {
+                eprintln!("PX: Toolbox discovery failed for '{toolbox_name}': {error}");
+            }
         }
     }
 
@@ -40,10 +43,10 @@ fn home(registry: &Registry) {
 
     println!();
     println!("Try:");
-
     println!("  px tools lazy");
     println!("  px which lazygit");
     println!("  px doctor");
+    println!("  px config");
 
     println!();
     println!(
@@ -52,14 +55,19 @@ fn home(registry: &Registry) {
     );
 }
 
-fn doctor(registry: &Registry) {
+fn doctor(config: &PxConfig, registry: &Registry) {
     header();
 
     println!();
     println!("DOCTOR");
-
     println!("  native backend       READY");
-    println!("  toolbox backend      {DEFAULT_TOOLBOX}");
+
+    match (&config.toolbox.enabled, config.toolbox.name.as_deref()) {
+        (true, Some(name)) => println!("  toolbox backend      {name}"),
+        _ => println!("  toolbox backend      disabled"),
+    }
+
+    println!("  toolbox source       {}", config.toolbox.source.label());
     println!("  commands discovered  {}", registry.len());
 
     println!();
@@ -78,6 +86,30 @@ fn doctor(registry: &Registry) {
             None => println!("  {:<12} not found", name),
         }
     }
+}
+
+fn config(config: &PxConfig) {
+    header();
+
+    println!();
+    println!("CONFIG");
+    println!(
+        "  toolbox enabled      {}",
+        if config.toolbox.enabled { "yes" } else { "no" }
+    );
+    println!(
+        "  toolbox name         {}",
+        config.toolbox.name.as_deref().unwrap_or("-")
+    );
+    println!("  toolbox source       {}", config.toolbox.source.label());
+
+    println!();
+    println!("Override with:");
+    println!("  PX_TOOLBOX=<name> px ...");
+    println!("  PX_TOOLBOX=off px ...");
+    println!();
+    println!("Persistent config:");
+    println!("  ~/.config/px/config.toml");
 }
 
 fn tools(registry: &Registry, query: Option<&str>) {
@@ -108,7 +140,6 @@ fn which(registry: &Registry, command: &str) -> i32 {
 
         None => {
             eprintln!("PX: command not found: {command}");
-
             127
         }
     }
@@ -117,7 +148,6 @@ fn which(registry: &Registry, command: &str) -> i32 {
 fn open(registry: &Registry, command: &str, args: &[String]) -> i32 {
     let Some(tool) = registry.preferred(command) else {
         eprintln!("PX: command not found: {command}");
-
         return 127;
     };
 
@@ -130,7 +160,6 @@ fn open(registry: &Registry, command: &str, args: &[String]) -> i32 {
                 tool.name,
                 tool.backend.label()
             );
-
             1
         }
     }
@@ -142,14 +171,22 @@ fn help() {
     println!();
     println!("px");
     println!("px doctor");
+    println!("px config");
     println!("px tools [query]");
     println!("px which <command>");
     println!("px open <command> [args...]");
 }
 
 fn main() {
-    let registry = build_registry();
+    let config = match PxConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("PX: configuration error: {error}");
+            process::exit(2);
+        }
+    };
 
+    let registry = build_registry(&config);
     let args: Vec<String> = env::args().skip(1).collect();
 
     let code = match args.as_slice() {
@@ -159,7 +196,12 @@ fn main() {
         }
 
         [cmd] if cmd == "doctor" || cmd == "d" => {
-            doctor(&registry);
+            doctor(&config, &registry);
+            0
+        }
+
+        [cmd] if cmd == "config" => {
+            config(&config);
             0
         }
 
