@@ -2,6 +2,7 @@ use px_config::PxConfig;
 use px_core::{ActionRegistry, ActionTarget, Registry};
 
 use std::env;
+use std::io::{self, IsTerminal};
 use std::process;
 
 fn build_registry(config: &PxConfig) -> Registry {
@@ -189,11 +190,22 @@ fn execute_action(registry: &Registry, actions: &ActionRegistry, id: &str) -> i3
     }
 }
 
+fn run_tui(registry: &Registry, actions: &ActionRegistry) -> i32 {
+    match px_tui::run(registry, actions) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("PX: terminal UI failed: {error}");
+            1
+        }
+    }
+}
+
 fn help() {
     header();
 
     println!();
-    println!("px");
+    println!("px                  Open PX // TERM EXP");
+    println!("px tui              Open PX // TERM EXP explicitly");
     println!("px doctor");
     println!("px config");
     println!("px actions [query]");
@@ -218,9 +230,15 @@ fn main() {
 
     let code = match args.as_slice() {
         [] => {
-            home(&registry, &actions_registry);
-            0
+            if io::stdin().is_terminal() && io::stdout().is_terminal() {
+                run_tui(&registry, &actions_registry)
+            } else {
+                home(&registry, &actions_registry);
+                0
+            }
         }
+
+        [cmd] if cmd == "tui" => run_tui(&registry, &actions_registry),
 
         [cmd] if cmd == "doctor" || cmd == "d" => {
             doctor(&config, &registry, &actions_registry);
