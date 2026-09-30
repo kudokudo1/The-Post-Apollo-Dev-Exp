@@ -21,7 +21,6 @@ const BG: Color = Color::Rgb(0x1B, 0x06, 0x23);
 const FG: Color = Color::Rgb(0xDC, 0xF3, 0xFA);
 const CYAN: Color = Color::Rgb(0x55, 0xCF, 0xCA);
 const ORANGE: Color = Color::Rgb(0xF2, 0xBE, 0x4E);
-const RED: Color = Color::Rgb(0xD1, 0x60, 0x41);
 const MAGENTA: Color = Color::Rgb(0xC7, 0x4E, 0xC7);
 
 type PxTerminal = Terminal<CrosstermBackend<Stdout>>;
