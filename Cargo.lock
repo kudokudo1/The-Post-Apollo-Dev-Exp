@@ -10,6 +10,7 @@ dependencies = [
  "px-config",
  "px-core",
  "px-discovery",
+ "px-integrations",
 ]
 
 [[package]]
@@ -29,6 +30,13 @@ version = "0.1.0"
 
 [[package]]
 name = "px-discovery"
+version = "0.1.0"
+dependencies = [
+ "px-core",
+]
+
+[[package]]
+name = "px-integrations"
 version = "0.1.0"
 dependencies = [
  "px-core",
