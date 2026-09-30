@@ -8,3 +8,4 @@ px-core = { path = "../px-core" }
 px-discovery = { path = "../px-discovery" }
 px-backends = { path = "../px-backends" }
 px-config = { path = "../px-config" }
+px-integrations = { path = "../px-integrations" }
