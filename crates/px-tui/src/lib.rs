@@ -50,7 +50,9 @@ struct PaletteItem {
 
 struct App {
     mode: Mode,
-    selected: usize,
+    home_selected: usize,
+    group_selected: usize,
+    search_selected: usize,
     query: String,
     status: Option<String>,
     should_quit: bool,
@@ -60,39 +62,37 @@ impl App {
     fn new() -> Self {
         Self {
             mode: Mode::Home,
-            selected: 0,
+            home_selected: 0,
+            group_selected: 0,
+            search_selected: 0,
             query: String::new(),
             status: None,
             should_quit: false,
         }
     }
 
-    fn select_next(&mut self, count: usize) {
+    fn next(selected: &mut usize, count: usize) {
         if count == 0 {
-            self.selected = 0;
+            *selected = 0;
         } else {
-            self.selected = (self.selected + 1) % count;
+            *selected = (*selected + 1) % count;
         }
     }
 
-    fn select_previous(&mut self, count: usize) {
+    fn previous(selected: &mut usize, count: usize) {
         if count == 0 {
-            self.selected = 0;
-        } else if self.selected == 0 {
-            self.selected = count - 1;
+            *selected = 0;
+        } else if *selected == 0 {
+            *selected = count - 1;
         } else {
-            self.selected -= 1;
+            *selected -= 1;
         }
-    }
-
-    fn reset_selection(&mut self) {
-        self.selected = 0;
     }
 
     fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.query.clear();
-        self.reset_selection();
+        self.search_selected = 0;
     }
 }
 
@@ -203,13 +203,12 @@ fn handle_home_key(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char(' ') => {
             app.mode = Mode::Leader;
-            app.reset_selection();
         }
         KeyCode::Char('/') => app.enter_search(),
-        KeyCode::Down | KeyCode::Char('j') => app.select_next(quick.len()),
-        KeyCode::Up | KeyCode::Char('k') => app.select_previous(quick.len()),
+        KeyCode::Down | KeyCode::Char('j') => App::next(&mut app.home_selected, quick.len()),
+        KeyCode::Up | KeyCode::Char('k') => App::previous(&mut app.home_selected, quick.len()),
         KeyCode::Enter => {
-            if let Some(id) = quick.get(app.selected) {
+            if let Some(id) = quick.get(app.home_selected) {
                 execute_action(guard, app, registry, actions, id)?;
             }
         }
@@ -223,7 +222,6 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             app.mode = Mode::Home;
-            app.reset_selection();
         }
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('g') => enter_group(app, "Git"),
@@ -238,7 +236,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) {
 
 fn enter_group(app: &mut App, category: &str) {
     app.mode = Mode::Group(category.to_owned());
-    app.reset_selection();
+    app.group_selected = 0;
 }
 
 fn handle_group_key(
@@ -254,13 +252,12 @@ fn handle_group_key(
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => {
             app.mode = Mode::Leader;
-            app.reset_selection();
         }
         KeyCode::Char('/') => app.enter_search(),
-        KeyCode::Down | KeyCode::Char('j') => app.select_next(group.len()),
-        KeyCode::Up | KeyCode::Char('k') => app.select_previous(group.len()),
+        KeyCode::Down | KeyCode::Char('j') => App::next(&mut app.group_selected, group.len()),
+        KeyCode::Up | KeyCode::Char('k') => App::previous(&mut app.group_selected, group.len()),
         KeyCode::Enter => {
-            if let Some(id) = group.get(app.selected) {
+            if let Some(id) = group.get(app.group_selected) {
                 execute_action(guard, app, registry, actions, id)?;
             }
         }
@@ -283,30 +280,29 @@ fn handle_search_key(
         KeyCode::Esc => {
             app.mode = Mode::Home;
             app.query.clear();
-            app.reset_selection();
         }
         KeyCode::Backspace => {
             app.query.pop();
-            app.reset_selection();
+            app.search_selected = 0;
         }
-        KeyCode::Down => app.select_next(results.len()),
-        KeyCode::Up => app.select_previous(results.len()),
+        KeyCode::Down => App::next(&mut app.search_selected, results.len()),
+        KeyCode::Up => App::previous(&mut app.search_selected, results.len()),
         KeyCode::Enter => {
-            if let Some(item) = results.get(app.selected) {
+            if let Some(item) = results.get(app.search_selected) {
                 let item = (*item).clone();
                 execute_palette_item(guard, app, registry, actions, item)?;
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.query.clear();
-            app.reset_selection();
+            app.search_selected = 0;
         }
         KeyCode::Char(character)
             if !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT) =>
         {
             app.query.push(character);
-            app.reset_selection();
+            app.search_selected = 0;
         }
         _ => {}
     }
@@ -388,7 +384,6 @@ fn execute_tool(
     }
 
     app.mode = Mode::Home;
-    app.reset_selection();
     Ok(())
 }
 
@@ -617,7 +612,7 @@ fn draw_home(frame: &mut Frame, area: Rect, app: &App, actions: &ActionRegistry)
 
     let mut state = ListState::default();
     if !quick.is_empty() {
-        state.select(Some(app.selected.min(quick.len() - 1)));
+        state.select(Some(app.home_selected.min(quick.len() - 1)));
     }
 
     frame.render_stateful_widget(list, area, &mut state);
@@ -712,7 +707,7 @@ fn draw_group(
 
     let mut state = ListState::default();
     if !ids.is_empty() {
-        state.select(Some(app.selected.min(ids.len() - 1)));
+        state.select(Some(app.group_selected.min(ids.len() - 1)));
     }
 
     frame.render_stateful_widget(list, popup, &mut state);
@@ -791,7 +786,7 @@ fn draw_search(
 
     let mut state = ListState::default();
     if !results.is_empty() {
-        state.select(Some(app.selected.min(results.len() - 1)));
+        state.select(Some(app.search_selected.min(results.len() - 1)));
     }
 
     frame.render_stateful_widget(list, chunks[1], &mut state);
@@ -852,5 +847,17 @@ mod tests {
         let loose = fuzzy_score("git", "great interface tool").unwrap();
 
         assert!(tight > loose);
+    }
+
+    #[test]
+    fn search_selection_does_not_move_home_selection() {
+        let mut app = App::new();
+        app.home_selected = 2;
+
+        app.enter_search();
+        App::next(&mut app.search_selected, 5);
+
+        assert_eq!(app.home_selected, 2);
+        assert_eq!(app.search_selected, 1);
     }
 }
