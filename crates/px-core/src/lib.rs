@@ -32,6 +32,20 @@ impl Tool {
             backend: Backend::Native,
         }
     }
+
+    pub fn toolbox(
+        name: impl Into<String>,
+        executable: impl Into<PathBuf>,
+        toolbox: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            executable: executable.into(),
+            backend: Backend::Toolbox {
+                name: toolbox.into(),
+            },
+        }
+    }
 }
 
 #[derive(Default)]
@@ -64,6 +78,10 @@ impl Registry {
         self.tools.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
     pub fn preferred(&self, name: &str) -> Option<&Tool> {
         self.tools.iter().find(|tool| tool.name == name)
     }
@@ -83,5 +101,27 @@ impl Registry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Tool> {
         self.tools.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preferred_keeps_registration_order() {
+        let mut registry = Registry::new();
+        registry.add(Tool::native("git", "/first/git"));
+        registry.add(Tool::toolbox("git", "/usr/bin/git", "devbox"));
+
+        assert_eq!(registry.preferred("git").unwrap().executable, PathBuf::from("/first/git"));
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let mut registry = Registry::new();
+        registry.add(Tool::native("LazyGit", "/usr/bin/lazygit"));
+
+        assert_eq!(registry.search("lazy").len(), 1);
     }
 }
