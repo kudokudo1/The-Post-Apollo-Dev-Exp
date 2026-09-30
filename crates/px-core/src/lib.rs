@@ -143,12 +143,20 @@ impl Action {
         }
     }
 
-    pub fn with_keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_keywords<I, S>(mut self, keywords: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         self.keywords = keywords.into_iter().map(Into::into).collect();
         self
     }
 
-    pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         match &mut self.target {
             ActionTarget::Tool {
                 args: target_args, ..
