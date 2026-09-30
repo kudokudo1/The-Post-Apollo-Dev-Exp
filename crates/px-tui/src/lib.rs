@@ -533,17 +533,17 @@ fn draw(frame: &mut Frame, app: &App, registry: &Registry, actions: &ActionRegis
     draw_header(frame, layout[0], registry, actions);
 
     match &app.mode {
-        Mode::Home => draw_home(frame, layout[1], app, actions, true),
+        Mode::Home => draw_home(frame, layout[1], app, actions),
         Mode::Leader => {
-            draw_home(frame, layout[1], app, actions, false);
+            draw_modal_backdrop(frame, layout[1]);
             draw_leader(frame, area);
         }
         Mode::Group(category) => {
-            draw_home(frame, layout[1], app, actions, false);
+            draw_modal_backdrop(frame, layout[1]);
             draw_group(frame, area, app, category, actions);
         }
         Mode::Search => {
-            draw_home(frame, layout[1], app, actions, false);
+            draw_modal_backdrop(frame, layout[1]);
             draw_search(frame, area, app, registry, actions);
         }
     }
@@ -575,13 +575,7 @@ fn draw_header(frame: &mut Frame, area: Rect, registry: &Registry, actions: &Act
     frame.render_widget(Paragraph::new(title).block(block), area);
 }
 
-fn draw_home(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    actions: &ActionRegistry,
-    active: bool,
-) {
+fn draw_home(frame: &mut Frame, area: Rect, app: &App, actions: &ActionRegistry) {
     let quick = quick_actions(actions);
     let items: Vec<ListItem> = quick
         .iter()
@@ -617,11 +611,22 @@ fn draw_home(
         );
 
     let mut state = ListState::default();
-    if active && !quick.is_empty() {
+    if !quick.is_empty() {
         state.select(Some(app.home_selected.min(quick.len() - 1)));
     }
 
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_modal_backdrop(frame: &mut Frame, area: Rect) {
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().bg(BG).fg(Color::DarkGray))
+            .title(" PX "),
+        area,
+    );
 }
 
 fn draw_leader(frame: &mut Frame, area: Rect) {
@@ -868,10 +873,9 @@ mod tests {
     }
 
     #[test]
-    fn overlay_modes_do_not_own_the_home_highlight() {
-        assert!(matches!(Mode::Home, Mode::Home));
-        assert!(!matches!(Mode::Search, Mode::Home));
-        assert!(!matches!(Mode::Leader, Mode::Home));
-        assert!(!matches!(Mode::Group("Git".into()), Mode::Home));
+    fn overlays_are_distinct_from_home_mode() {
+        assert_ne!(Mode::Search, Mode::Home);
+        assert_ne!(Mode::Leader, Mode::Home);
+        assert_ne!(Mode::Group("Git".into()), Mode::Home);
     }
 }
