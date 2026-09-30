@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REGISTRY="${PA_REPO_REGISTRY:-$ROOT/config/repos.tsv}"
+LIMIT="${PA_RUN_LIMIT:-10}"
+
+die() {
+    printf 'pa: %s\n' "$*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+repo_for() {
+    local alias="${1:-}"
+    [[ -n "$alias" ]] || die "repo alias required"
+    awk -F '\t' -v key="$alias" '$1 == key { print $2; found=1; exit } END { if (!found) exit 1 }' "$REGISTRY"         || die "unknown repo alias: $alias"
+}
+
+usage() {
+    cat <<'EOF'
+Post-Apollo control bus
+
+Usage:
+  pa repos
+  pa doctor
+  pa workflows <repo>
+  pa runs <repo> [limit]
+  pa run <repo> <workflow> [ref]
+  pa watch <repo> <run-id>
+  pa rerun <repo> <run-id>
+  pa cancel <repo> <run-id>
+
+Examples:
+  pa workflows lanmouse
+  pa runs lanmouse
+  pa runs taskbars 20
+  pa run lanmouse rust.yml
+  pa watch lanmouse 123456789
+
+Repo names are aliases from config/repos.tsv.
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    repos)
+        printf '%-12s %s\n' ALIAS REPOSITORY
+        while IFS=$'\t' read -r alias repo; do
+            [[ -z "$alias" || "$alias" == \#* ]] && continue
+            printf '%-12s %s\n' "$alias" "$repo"
+        done < "$REGISTRY"
+        ;;
+
+    doctor)
+        need gh
+        need awk
+        printf 'registry: %s\n' "$REGISTRY"
+        gh auth status
+        ;;
+
+    workflows)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        gh workflow list -R "$repo" --json id,name,path,state
+        ;;
+
+    runs)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        limit="${2:-$LIMIT}"
+        gh run list -R "$repo" --limit "$limit" \
+            --json databaseId,workflowName,status,conclusion,headBranch,createdAt
+        ;;
+
+    run)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        workflow="${2:-}"
+        ref="${3:-}"
+        [[ -n "$workflow" ]] || die "workflow required"
+
+        if [[ -n "$ref" ]]; then
+            gh workflow run "$workflow" -R "$repo" --ref "$ref"
+        else
+            gh workflow run "$workflow" -R "$repo"
+        fi
+        ;;
+
+    watch)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run watch "$run_id" -R "$repo" --exit-status
+        ;;
+
+    rerun)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run rerun "$run_id" -R "$repo"
+        ;;
+
+    cancel)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run cancel "$run_id" -R "$repo"
+        ;;
+
+    help|-h|--help)
+        usage
+        ;;
+
+    *)
+        usage >&2
+        die "unknown command: $cmd"
+        ;;
+esac
