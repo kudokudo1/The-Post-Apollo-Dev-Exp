@@ -20,9 +20,7 @@ fn build_registry() -> Registry {
         Ok(tools) => registry.extend(tools),
 
         Err(error) => {
-            eprintln!(
-                "PX: Toolbox discovery failed for '{DEFAULT_TOOLBOX}': {error}"
-            );
+            eprintln!("PX: Toolbox discovery failed for '{DEFAULT_TOOLBOX}': {error}");
         }
     }
 
@@ -67,16 +65,7 @@ fn doctor(registry: &Registry) {
     println!();
 
     for name in [
-        "git",
-        "lazygit",
-        "nvim",
-        "btop",
-        "fzf",
-        "rg",
-        "fd",
-        "gh",
-        "gitleaks",
-        "act",
+        "git", "lazygit", "nvim", "btop", "fzf", "rg", "fd", "gh", "gitleaks", "act",
     ] {
         match registry.preferred(name) {
             Some(tool) => println!(

@@ -97,10 +97,7 @@ done
         let message = if stderr.is_empty() {
             format!("toolbox discovery failed with {}", output.status)
         } else {
-            format!(
-                "toolbox discovery failed with {}: {stderr}",
-                output.status
-            )
+            format!("toolbox discovery failed with {}: {stderr}", output.status)
         };
 
         return Err(io::Error::other(message));

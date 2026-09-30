@@ -114,7 +114,10 @@ mod tests {
         registry.add(Tool::native("git", "/first/git"));
         registry.add(Tool::toolbox("git", "/usr/bin/git", "devbox"));
 
-        assert_eq!(registry.preferred("git").unwrap().executable, PathBuf::from("/first/git"));
+        assert_eq!(
+            registry.preferred("git").unwrap().executable,
+            PathBuf::from("/first/git")
+        );
     }
 
     #[test]
