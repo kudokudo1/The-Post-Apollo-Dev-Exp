@@ -104,6 +104,120 @@ impl Registry {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActionTarget {
+    Tool {
+        command: String,
+        args: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Action {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+    pub target: ActionTarget,
+}
+
+impl Action {
+    pub fn tool(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        category: impl Into<String>,
+        description: impl Into<String>,
+        command: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            category: category.into(),
+            description: description.into(),
+            keywords: Vec::new(),
+            target: ActionTarget::Tool {
+                command: command.into(),
+                args: Vec::new(),
+            },
+        }
+    }
+
+    pub fn with_keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        match &mut self.target {
+            ActionTarget::Tool {
+                args: target_args, ..
+            } => {
+                *target_args = args.into_iter().map(Into::into).collect();
+            }
+        }
+
+        self
+    }
+
+    fn searchable_text(&self) -> String {
+        let mut text = format!(
+            "{} {} {} {}",
+            self.id, self.title, self.category, self.description
+        );
+
+        for keyword in &self.keywords {
+            text.push(' ');
+            text.push_str(keyword);
+        }
+
+        text.to_lowercase()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActionRegistry {
+    actions: Vec<Action>,
+}
+
+impl ActionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&mut self, action: Action) {
+        if !self.actions.iter().any(|existing| existing.id == action.id) {
+            self.actions.push(action);
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Action> {
+        self.actions.iter().find(|action| action.id == id)
+    }
+
+    pub fn search(&self, query: &str) -> Vec<&Action> {
+        let query = query.to_lowercase();
+
+        let mut matches: Vec<_> = self
+            .actions
+            .iter()
+            .filter(|action| action.searchable_text().contains(&query))
+            .collect();
+
+        matches.sort_by(|left, right| {
+            left.category
+                .cmp(&right.category)
+                .then_with(|| left.title.cmp(&right.title))
+        });
+
+        matches
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Action> {
+        self.actions.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +240,22 @@ mod tests {
         registry.add(Tool::native("LazyGit", "/usr/bin/lazygit"));
 
         assert_eq!(registry.search("lazy").len(), 1);
+    }
+
+    #[test]
+    fn action_search_uses_keywords() {
+        let mut actions = ActionRegistry::new();
+        actions.add(
+            Action::tool(
+                "git.ui",
+                "Open Lazygit",
+                "Git",
+                "Open the interactive Git interface",
+                "lazygit",
+            )
+            .with_keywords(["commit", "branch", "stage"]),
+        );
+
+        assert_eq!(actions.search("branch").len(), 1);
     }
 }
