@@ -7,6 +7,7 @@ name = "px"
 version = "0.1.0"
 dependencies = [
  "px-backends",
+ "px-config",
  "px-core",
  "px-discovery",
 ]
@@ -17,6 +18,10 @@ version = "0.1.0"
 dependencies = [
  "px-core",
 ]
+
+[[package]]
+name = "px-config"
+version = "0.1.0"
 
 [[package]]
 name = "px-core"
