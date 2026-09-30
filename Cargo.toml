@@ -5,4 +5,5 @@ members = [
     "crates/px-core",
     "crates/px-discovery",
     "crates/px-backends",
+    "crates/px-config",
 ]
