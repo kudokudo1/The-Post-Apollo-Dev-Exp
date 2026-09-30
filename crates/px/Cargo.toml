@@ -1,0 +1,9 @@
+[package]
+name = "px"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+px-core = { path = "../px-core" }
+px-discovery = { path = "../px-discovery" }
+px-backends = { path = "../px-backends" }
