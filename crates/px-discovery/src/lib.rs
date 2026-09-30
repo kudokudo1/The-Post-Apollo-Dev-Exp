@@ -103,7 +103,13 @@ done
         return Err(io::Error::other(message));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_toolbox_listing(
+        toolbox_name,
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+fn parse_toolbox_listing(toolbox_name: &str, stdout: &str) -> Vec<Tool> {
     let mut seen = HashSet::new();
     let mut tools = Vec::new();
 
@@ -112,12 +118,47 @@ done
             continue;
         };
 
-        if !seen.insert(name.to_owned()) {
+        if name.is_empty() || path.is_empty() || !seen.insert(name.to_owned()) {
             continue;
         }
 
         tools.push(Tool::toolbox(name, path, toolbox_name));
     }
 
-    Ok(tools)
+    tools
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use px_core::Backend;
+
+    #[test]
+    fn toolbox_listing_keeps_first_command_name() {
+        let tools = parse_toolbox_listing(
+            "devbox",
+            "git\t/usr/local/bin/git\ngit\t/usr/bin/git\nlazygit\t/usr/bin/lazygit\n",
+        );
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "git");
+        assert_eq!(tools[0].executable, Path::new("/usr/local/bin/git"));
+        assert_eq!(
+            tools[0].backend,
+            Backend::Toolbox {
+                name: "devbox".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn toolbox_listing_ignores_malformed_rows() {
+        let tools = parse_toolbox_listing(
+            "devbox",
+            "missing-tab\n\t/usr/bin/no-name\nvalid\t/usr/bin/valid\n",
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "valid");
+    }
 }
