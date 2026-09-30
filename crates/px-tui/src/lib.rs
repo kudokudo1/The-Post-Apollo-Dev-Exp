@@ -533,17 +533,17 @@ fn draw(frame: &mut Frame, app: &App, registry: &Registry, actions: &ActionRegis
     draw_header(frame, layout[0], registry, actions);
 
     match &app.mode {
-        Mode::Home => draw_home(frame, layout[1], app, actions),
+        Mode::Home => draw_home(frame, layout[1], app, actions, true),
         Mode::Leader => {
-            draw_home(frame, layout[1], app, actions);
+            draw_home(frame, layout[1], app, actions, false);
             draw_leader(frame, area);
         }
         Mode::Group(category) => {
-            draw_home(frame, layout[1], app, actions);
+            draw_home(frame, layout[1], app, actions, false);
             draw_group(frame, area, app, category, actions);
         }
         Mode::Search => {
-            draw_home(frame, layout[1], app, actions);
+            draw_home(frame, layout[1], app, actions, false);
             draw_search(frame, area, app, registry, actions);
         }
     }
@@ -575,7 +575,13 @@ fn draw_header(frame: &mut Frame, area: Rect, registry: &Registry, actions: &Act
     frame.render_widget(Paragraph::new(title).block(block), area);
 }
 
-fn draw_home(frame: &mut Frame, area: Rect, app: &App, actions: &ActionRegistry) {
+fn draw_home(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    actions: &ActionRegistry,
+    active: bool,
+) {
     let quick = quick_actions(actions);
     let items: Vec<ListItem> = quick
         .iter()
@@ -611,7 +617,7 @@ fn draw_home(frame: &mut Frame, area: Rect, app: &App, actions: &ActionRegistry)
         );
 
     let mut state = ListState::default();
-    if !quick.is_empty() {
+    if active && !quick.is_empty() {
         state.select(Some(app.home_selected.min(quick.len() - 1)));
     }
 
@@ -859,5 +865,13 @@ mod tests {
 
         assert_eq!(app.home_selected, 2);
         assert_eq!(app.search_selected, 1);
+    }
+
+    #[test]
+    fn overlay_modes_do_not_own_the_home_highlight() {
+        assert!(matches!(Mode::Home, Mode::Home));
+        assert!(!matches!(Mode::Search, Mode::Home));
+        assert!(!matches!(Mode::Leader, Mode::Home));
+        assert!(!matches!(Mode::Group("Git".into()), Mode::Home));
     }
 }
