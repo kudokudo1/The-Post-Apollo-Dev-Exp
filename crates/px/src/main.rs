@@ -1,5 +1,5 @@
 use px_config::PxConfig;
-use px_core::Registry;
+use px_core::{ActionRegistry, ActionTarget, Registry};
 
 use std::env;
 use std::process;
@@ -34,28 +34,26 @@ fn header() {
     println!("PX // TERM EXP");
 }
 
-fn home(registry: &Registry) {
+fn home(registry: &Registry, actions: &ActionRegistry) {
     header();
 
     println!();
     println!("Foundation online.");
     println!("Discovered commands: {}", registry.len());
+    println!("Semantic actions:    {}", actions.iter().count());
 
     println!();
     println!("Try:");
+    println!("  px actions");
+    println!("  px actions git");
+    println!("  px do git.ui");
     println!("  px tools lazy");
     println!("  px which lazygit");
     println!("  px doctor");
     println!("  px config");
-
-    println!();
-    println!(
-        "LazyVim-style interface comes after \
-         discovery + routing are proven."
-    );
 }
 
-fn doctor(config: &PxConfig, registry: &Registry) {
+fn doctor(config: &PxConfig, registry: &Registry, actions: &ActionRegistry) {
     header();
 
     println!();
@@ -69,6 +67,7 @@ fn doctor(config: &PxConfig, registry: &Registry) {
 
     println!("  toolbox source       {}", config.toolbox.source.label());
     println!("  commands discovered  {}", registry.len());
+    println!("  semantic actions     {}", actions.iter().count());
 
     println!();
 
@@ -128,6 +127,20 @@ fn tools(registry: &Registry, query: Option<&str>) {
     }
 }
 
+fn actions(actions: &ActionRegistry, query: Option<&str>) {
+    let matches: Vec<_> = match query {
+        Some(query) => actions.search(query),
+        None => actions.iter().collect(),
+    };
+
+    for action in matches {
+        println!(
+            "{:<20} {:<12} {:<24} {}",
+            action.id, action.category, action.title, action.description
+        );
+    }
+}
+
 fn which(registry: &Registry, command: &str) -> i32 {
     match registry.preferred(command) {
         Some(tool) => {
@@ -165,6 +178,17 @@ fn open(registry: &Registry, command: &str, args: &[String]) -> i32 {
     }
 }
 
+fn execute_action(registry: &Registry, actions: &ActionRegistry, id: &str) -> i32 {
+    let Some(action) = actions.get(id) else {
+        eprintln!("PX: action not found: {id}");
+        return 127;
+    };
+
+    match &action.target {
+        ActionTarget::Tool { command, args } => open(registry, command, args),
+    }
+}
+
 fn help() {
     header();
 
@@ -172,6 +196,8 @@ fn help() {
     println!("px");
     println!("px doctor");
     println!("px config");
+    println!("px actions [query]");
+    println!("px do <action-id>");
     println!("px tools [query]");
     println!("px which <command>");
     println!("px open <command> [args...]");
@@ -187,16 +213,17 @@ fn main() {
     };
 
     let registry = build_registry(&config);
+    let actions_registry = px_integrations::actions_for(&registry);
     let args: Vec<String> = env::args().skip(1).collect();
 
     let code = match args.as_slice() {
         [] => {
-            home(&registry);
+            home(&registry, &actions_registry);
             0
         }
 
         [cmd] if cmd == "doctor" || cmd == "d" => {
-            doctor(&config, &registry);
+            doctor(&config, &registry, &actions_registry);
             0
         }
 
@@ -204,6 +231,18 @@ fn main() {
             config(&config);
             0
         }
+
+        [cmd] if cmd == "actions" || cmd == "a" => {
+            actions(&actions_registry, None);
+            0
+        }
+
+        [cmd, query] if cmd == "actions" || cmd == "a" => {
+            actions(&actions_registry, Some(query));
+            0
+        }
+
+        [cmd, id] if cmd == "do" => execute_action(&registry, &actions_registry, id),
 
         [cmd] if cmd == "tools" || cmd == "t" => {
             tools(&registry, None);
