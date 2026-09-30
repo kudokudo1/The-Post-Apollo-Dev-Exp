@@ -87,7 +87,7 @@ fn doctor(config: &PxConfig, registry: &Registry, actions: &ActionRegistry) {
     }
 }
 
-fn config(config: &PxConfig) {
+fn show_config(config: &PxConfig) {
     header();
 
     println!();
@@ -228,7 +228,7 @@ fn main() {
         }
 
         [cmd] if cmd == "config" => {
-            config(&config);
+            show_config(&config);
             0
         }
 
