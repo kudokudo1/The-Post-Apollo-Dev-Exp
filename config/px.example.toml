@@ -1,0 +1,8 @@
+# PX // TERM EXP
+#
+# PX auto-detects the conventional Toolbox name from /etc/os-release when
+# Toolbox is installed. Use this file only when you want to override that.
+
+[toolbox]
+enabled = true
+name = "fedora-toolbox-44"
