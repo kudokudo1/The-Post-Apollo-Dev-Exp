@@ -16,6 +16,11 @@ if [[ "${1:-} ${2:-}" == "repo view" ]]; then
     exit 0
 fi
 
+if [[ "${1:-} ${2:-}" == "workflow list" ]]; then
+    printf 'no workflows found\n' >&2
+    exit 1
+fi
+
 printf 'unexpected gh call:' >&2
 printf ' %q' "$@" >&2
 printf '\n' >&2
@@ -28,6 +33,9 @@ export PX_REPO_REGISTRY="$tmp/repos.tsv"
 
 "$ROOT/bin/px" templates | grep -q '"id": "smoke"'
 "$ROOT/bin/px" templates | grep -q '"id": "shell-check"'
+
+empty_workflows="$("$ROOT/bin/px" workflows owner/repo)"
+[[ "$empty_workflows" == "[]" ]]
 
 preview="$("$ROOT/bin/px" create dev smoke hello-world manual --preview 2>/dev/null)"
 grep -q '^PX WORKFLOW CANDIDATE$' <<<"$preview"
