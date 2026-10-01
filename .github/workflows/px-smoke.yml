@@ -5,10 +5,13 @@ on:
   push:
     branches:
       - automation/px-control-bus-v0
+      - automation/px-workflow-factory-v0
     paths:
       - bin/px
       - config/repos.tsv
       - docs/control-plane.md
+      - docs/workflow-factory.md
+      - tests/test-px-factory.sh
       - .github/workflows/px-smoke.yml
 
 permissions:
@@ -24,12 +27,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate PX shell syntax
-        run: bash -n bin/px
+        run: |
+          bash -n bin/px
+          bash -n tests/test-px-factory.sh
 
       - name: Exercise local PX commands
         run: |
           ./bin/px repos
           ./bin/px --help
+          ./bin/px templates
+
+      - name: Test workflow factory
+        run: ./tests/test-px-factory.sh
 
       - name: Report execution identity
         run: |
