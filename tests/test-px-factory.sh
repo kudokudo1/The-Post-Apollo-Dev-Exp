@@ -40,6 +40,13 @@ grep -q '^  push:$' <<<"$push_preview"
 grep -q '^      - main$' <<<"$push_preview"
 grep -q "find . -type f -name '\\*.sh'" <<<"$push_preview"
 
+direct_preview="$("$ROOT/bin/px" create owner/repo smoke direct-repo manual --preview --json)"
+jq -e '
+  .repo == "owner/repo" and
+  .repository == "owner/repo" and
+  .base == "main"
+' <<<"$direct_preview" >/dev/null
+
 json_preview="$("$ROOT/bin/px" create dev smoke hello-json manual --preview --json)"
 jq -e '
   .repo == "dev" and
