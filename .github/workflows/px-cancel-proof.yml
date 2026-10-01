@@ -1,0 +1,22 @@
+name: PX Cancel Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wait:
+    name: Wait for PX cancel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Announce cancel window
+        run: echo "PX cancel proof is live; cancel this run from PX."
+
+      - name: Hold for cancellation
+        run: sleep 90
+
+      - name: Report uncancelled completion
+        run: echo "PX cancel proof completed without cancellation."
