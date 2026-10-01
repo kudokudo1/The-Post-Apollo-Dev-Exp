@@ -6,6 +6,7 @@ on:
     branches:
       - automation/px-control-bus-v0
       - automation/px-workflow-factory-v0
+      - automation/px-json-contract-v0
     paths:
       - bin/px
       - config/repos.tsv
