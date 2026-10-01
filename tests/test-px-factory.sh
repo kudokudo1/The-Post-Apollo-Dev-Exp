@@ -36,23 +36,9 @@ grep -q '^  workflow_dispatch:$' <<<"$preview"
 grep -q '^preview only: no repository changes made$' <<<"$preview"
 
 push_preview="$("$ROOT/bin/px" create dev shell-check shell-syntax manual+push --preview 2>/dev/null)"
-grep -q '^  push:
-if "$ROOT/bin/px" create dev smoke 'BAD/SLUG' manual --preview >/dev/null 2>&1; then
-    printf 'invalid slug unexpectedly succeeded\n' >&2
-    exit 1
-fi
-
-printf 'PX workflow factory self-test: PASS\n'
- <<<"$push_preview"
-grep -q '^      - main
-if "$ROOT/bin/px" create dev smoke 'BAD/SLUG' manual --preview >/dev/null 2>&1; then
-    printf 'invalid slug unexpectedly succeeded\n' >&2
-    exit 1
-fi
-
-printf 'PX workflow factory self-test: PASS\n'
- <<<"$push_preview"
-grep -q "find . -type f -name '\*.sh'" <<<"$push_preview"
+grep -q '^  push:$' <<<"$push_preview"
+grep -q '^      - main$' <<<"$push_preview"
+grep -q "find . -type f -name '\\*.sh'" <<<"$push_preview"
 
 json_preview="$("$ROOT/bin/px" create dev smoke hello-json manual --preview --json)"
 jq -e '
