@@ -43,6 +43,38 @@ default_branch_for() {
     gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name'
 }
 
+workflows_for() {
+    local repo="$1"
+    local output="" error="" status=0 tmp
+
+    tmp="$(mktemp)"
+    if output="$(gh workflow list -R "$repo" --json id,name,path,state 2>"$tmp")"; then
+        rm -f "$tmp"
+        if [[ -z "${output//[[:space:]]/}" ]]; then
+            printf '[]\n'
+        else
+            printf '%s\n' "$output"
+        fi
+        return 0
+    else
+        status=$?
+    fi
+
+    error="$(cat "$tmp")"
+    rm -f "$tmp"
+
+    case "${error,,}" in
+        *"no workflows found"*)
+            printf '[]\n'
+            return 0
+            ;;
+    esac
+
+    [[ -n "$output" ]] && printf '%s\n' "$output"
+    [[ -n "$error" ]] && printf '%s\n' "$error" >&2
+    return "$status"
+}
+
 validate_slug() {
     local slug="$1"
     [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -463,7 +495,7 @@ case "$cmd" in
     workflows)
         need gh
         repo="$(repo_for "${1:-}")"
-        gh workflow list -R "$repo" --json id,name,path,state
+        workflows_for "$repo"
         ;;
 
     runs)

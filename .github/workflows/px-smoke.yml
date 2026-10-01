@@ -8,6 +8,7 @@ on:
       - automation/px-workflow-factory-v0
       - automation/px-json-contract-v0
       - automation/px-repo-identity-v0
+      - automation/px-empty-workflows-v0
     paths:
       - bin/px
       - config/repos.tsv
