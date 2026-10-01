@@ -26,10 +26,16 @@ need() {
 }
 
 repo_for() {
-    local alias="${1:-}"
-    [[ -n "$alias" ]] || die "repo alias required"
-    awk -F '\t' -v key="$alias" '$1 == key { print $2; found=1; exit } END { if (!found) exit 1 }' "$REGISTRY" \
-        || die "unknown repo alias: $alias"
+    local key="${1:-}"
+    [[ -n "$key" ]] || die "repo identity required"
+
+    if [[ "$key" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+        printf '%s\n' "$key"
+        return 0
+    fi
+
+    awk -F '\t' -v key="$key" '$1 == key { print $2; found=1; exit } END { if (!found) exit 1 }' "$REGISTRY" \
+        || die "unknown repo alias: $key"
 }
 
 default_branch_for() {
@@ -428,7 +434,7 @@ Examples:
   px create dev shell-check shell-syntax manual --preview --json
   px create dev shell-check shell-syntax manual --install
 
-Repo names are aliases from config/repos.tsv.
+Repo identities may be aliases from config/repos.tsv or explicit owner/name slugs.
 PX create previews by default. --install writes only to a new automation branch
 and opens a pull request; it never writes a generated workflow directly to the
 default branch.
