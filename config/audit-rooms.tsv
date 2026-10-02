@@ -1,0 +1,10 @@
+# repository	team	responsibility	branch
+kudokudo1/taskbars-post-apollo	T1	SYSTEM / HUNTER	team1/system-liberation
+kudokudo1/taskbars-post-apollo	T2	FAVORITES	team2/file-favorites-consumer
+kudokudo1/taskbars-post-apollo	T3-F	FILES	team3-files/favorites-resolver
+kudokudo1/taskbars-post-apollo	T3-R	REMOTE	surgery/t3-remote
+kudokudo1/taskbars-post-apollo	T4	CPU++	feature/cpu-plus-shell-v2
+kudokudo1/taskbars-post-apollo	T5	TABS / SURFACE	feature/team5-tab-surface-provider
+kudokudo1/taskbars-post-apollo	T6	APPLICATION AUDIO	team6/application-audio-service
+kudokudo1/taskbars-post-apollo	T7	DESKTOP IDENTITY	team7/desktop-identity-recon
+kudokudo1/taskbars-post-apollo	T8	APPS	team8/apps-core-prep
