@@ -30,7 +30,8 @@ and workflow creation can be added after this seam proves useful.
 - machine-readable JSON for desktop consumers
 - no Quickshell coupling until the command path is trustworthy
 - preview before workflow mutation
-- preserve rollback by developing on isolated branches
+- validated desktop installs commit directly to the default branch
+- Git history is the rollback seam; browser review is not required
 - GitHub is the backend; Post-Apollo is the control room
 
 ## First probes
@@ -90,7 +91,7 @@ PREVIEW
     ↓
 VALIDATE
     ↓
-CREATE / EDIT
+INSTALL
     ↓
 GitHub Actions
 ```
