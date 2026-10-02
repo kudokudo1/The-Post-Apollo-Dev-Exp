@@ -439,6 +439,8 @@ Usage:
   px doctor
   px workflows <repo>
   px runs <repo> [limit]
+  px inspect <repo> <run-id>
+  px logs <repo> <run-id>
   px run <repo> <workflow> [ref]
   px watch <repo> <run-id>
   px rerun <repo> <run-id>
@@ -453,6 +455,8 @@ Workflow factory:
 
 Examples:
   px workflows dev
+  px inspect dev 123456789
+  px logs dev 123456789
   px run dev px-smoke.yml
   px templates
   px create dev smoke my-first-action
@@ -498,6 +502,23 @@ case "$cmd" in
         limit="${2:-$LIMIT}"
         gh run list -R "$repo" --limit "$limit" \
             --json databaseId,workflowName,status,conclusion,headBranch,createdAt
+        ;;
+
+    inspect)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run view "$run_id" -R "$repo" \
+            --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url,jobs
+        ;;
+
+    logs)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run view "$run_id" -R "$repo" --log
         ;;
 
     run)
