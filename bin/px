@@ -640,6 +640,15 @@ room_inspect() {
                             additions:([($c.files//[])[]|(.additions//0)]|add//0),
                             deletions:([($c.files//[])[]|(.deletions//0)]|add//0)
                         },
+                        changed_files:[
+                            ($c.files//[])[]
+                            | {
+                                path:.filename,
+                                status:.status,
+                                additions:(.additions//0),
+                                deletions:(.deletions//0)
+                            }
+                        ],
                         files:[
                             ($c.files//[])[0:8][]
                             | {
