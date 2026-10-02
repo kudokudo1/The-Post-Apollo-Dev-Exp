@@ -798,6 +798,135 @@ room_rehearse() {
     )
 }
 
+room_merge() {
+    local key="${1:-}"
+    local team="${2:-}"
+    local expected_branch="${3:-}"
+    local expected_head="${4:-}"
+    local expected_base="${5:-}"
+    local expected_base_head="${6:-}"
+    local expected_tree="${7:-}"
+    local local_repo="${8:-}"
+    local repo branch base base_encoded branch_encoded current_head current_base_head
+    local local_origin local_slug
+
+    [[ -n "$key" ]] || die "repository required"
+    [[ -n "$team" ]] || die "room team required"
+    [[ -n "$expected_branch" ]] || die "expected branch required"
+    [[ -n "$expected_head" ]] || die "expected room head required"
+    [[ -n "$expected_base" ]] || die "expected base branch required"
+    [[ -n "$expected_base_head" ]] || die "expected base head required"
+    [[ -n "$expected_tree" ]] || die "expected rehearsal tree required"
+    [[ -n "$local_repo" ]] || die "local patient path required"
+
+    need gh
+    need jq
+    need awk
+    need git
+    need mktemp
+
+    repo="$(repo_for "$key")"
+    branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
+    [[ "$branch" == "$expected_branch" ]] || die "ARM INVALID // registered room branch changed"
+
+    base="$(gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name // ""')"
+    [[ "$base" == "$expected_base" ]] || die "ARM INVALID // default branch changed"
+
+    git -C "$local_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || die "LOCAL PATIENT INVALID // not a git repository"
+
+    local_origin="$(git -C "$local_repo" remote get-url origin 2>/dev/null || true)"
+    case "$local_origin" in
+        git@github.com:*) local_slug="${local_origin#git@github.com:}" ;;
+        https://github.com/*) local_slug="${local_origin#https://github.com/}" ;;
+        http://github.com/*) local_slug="${local_origin#http://github.com/}" ;;
+        ssh://git@github.com/*) local_slug="${local_origin#ssh://git@github.com/}" ;;
+        *) die "LOCAL PATIENT INVALID // unsupported or missing GitHub origin" ;;
+    esac
+    local_slug="${local_slug%.git}"
+    [[ "$local_slug" == "$repo" ]] \
+        || die "LOCAL PATIENT MISMATCH // origin does not match target repository"
+    [[ -z "$(git -C "$local_repo" status --porcelain=v1)" ]] \
+        || die "PATIENT DIRTY // merge refused"
+
+    base_encoded="$(jq -rn --arg v "$base" '$v | @uri')"
+    branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
+    current_base_head="$(gh api "repos/$repo/branches/$base_encoded" --jq '.commit.sha' </dev/null)"
+    current_head="$(gh api "repos/$repo/branches/$branch_encoded" --jq '.commit.sha' </dev/null)"
+
+    [[ "$current_head" == "$expected_head" ]] \
+        || die "ARM INVALID // room head moved"
+    [[ "$current_base_head" == "$expected_base_head" ]] \
+        || die "ARM INVALID // base head moved"
+
+    (
+        set -euo pipefail
+        local tmp_root merge_repo result_tree merge_sha verify_base verify_head
+
+        tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/px-merge.XXXXXX")"
+        trap 'rm -rf -- "$tmp_root"' EXIT
+        merge_repo="$tmp_root/repo"
+
+        gh repo clone "$repo" "$merge_repo" -- --no-checkout --quiet >/dev/null 2>&1
+        git -C "$merge_repo" fetch --quiet origin "$base" "$branch"
+
+        [[ "$(git -C "$merge_repo" rev-parse "origin/$base")" == "$expected_base_head" ]] \
+            || die "MERGE CLONE INVALID // base head mismatch"
+        [[ "$(git -C "$merge_repo" rev-parse "origin/$branch")" == "$expected_head" ]] \
+            || die "MERGE CLONE INVALID // room head mismatch"
+
+        git -C "$merge_repo" checkout --quiet --detach "$expected_base_head"
+        if ! git -C "$merge_repo" -c user.name="Post-Apollo Hospital" -c user.email="hospital@localhost" \
+            merge --no-commit --no-ff "$expected_head" >/dev/null 2>&1; then
+            die "MERGE REFUSED // rehearsal no longer reproduces cleanly"
+        fi
+
+        result_tree="$(git -C "$merge_repo" write-tree)"
+        [[ "$result_tree" == "$expected_tree" ]] \
+            || die "MERGE REFUSED // rehearsal tree changed"
+
+        git -C "$merge_repo" -c user.name="Post-Apollo Hospital" -c user.email="hospital@localhost" \
+            commit --quiet -m "Merge $branch into $base via Post-Apollo Hospital"
+        merge_sha="$(git -C "$merge_repo" rev-parse HEAD)"
+
+        verify_base="$(gh api "repos/$repo/branches/$base_encoded" --jq '.commit.sha' </dev/null)"
+        verify_head="$(gh api "repos/$repo/branches/$branch_encoded" --jq '.commit.sha' </dev/null)"
+        [[ "$verify_base" == "$expected_base_head" ]] \
+            || die "MERGE REFUSED // base moved after rehearsal verification"
+        [[ "$verify_head" == "$expected_head" ]] \
+            || die "MERGE REFUSED // room moved after rehearsal verification"
+
+        git -C "$merge_repo" push --quiet origin "$merge_sha:refs/heads/$base"
+
+        jq -n \
+            --arg action "merge" \
+            --arg status "MERGED" \
+            --arg mode "REHEARSED_MERGE" \
+            --arg repository "$repo" \
+            --arg team "$team" \
+            --arg branch "$branch" \
+            --arg base "$base" \
+            --arg old_base_head "$expected_base_head" \
+            --arg room_head "$expected_head" \
+            --arg result_tree "$result_tree" \
+            --arg new_base_head "$merge_sha" \
+            '{
+                action:$action,
+                status:$status,
+                mode:$mode,
+                repository:$repository,
+                team:$team,
+                branch:$branch,
+                base:$base,
+                old_base_head:$old_base_head,
+                room_head:$room_head,
+                result_tree:$result_tree,
+                new_base_head:$new_base_head,
+                parents:[$old_base_head,$room_head]
+            }'
+    )
+}
+
 room_integrate() {
     local key="${1:-}"
     local team="${2:-}"
@@ -934,6 +1063,7 @@ Usage:
   px audit <repo>
   px room <repo> <team> [status|diff|log|prepare]
   px rehearse <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
+  px merge <repo> <team> <branch> <room-head> <base> <base-head> <result-tree> <local-path>
   px integrate <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
@@ -1061,6 +1191,10 @@ case "$cmd" in
 
     rehearse)
         room_rehearse "$@"
+        ;;
+
+    merge)
+        room_merge "$@"
         ;;
 
     integrate)
