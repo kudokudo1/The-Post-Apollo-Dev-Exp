@@ -671,7 +671,7 @@ room_integrate() {
     local expected_base_head="${6:-}"
     local local_repo="${7:-}"
     local repo branch base base_encoded branch_encoded current_head current_base_head
-    local compare_json relation
+    local compare_json relation local_origin local_slug
 
     [[ -n "$key" ]] || die "repository required"
     [[ -n "$team" ]] || die "room team required"
@@ -695,6 +695,29 @@ room_integrate() {
 
     git -C "$local_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
         || die "LOCAL PATIENT INVALID // not a git repository"
+
+    local_origin="$(git -C "$local_repo" remote get-url origin 2>/dev/null || true)"
+    case "$local_origin" in
+        git@github.com:*)
+            local_slug="${local_origin#git@github.com:}"
+            ;;
+        https://github.com/*)
+            local_slug="${local_origin#https://github.com/}"
+            ;;
+        http://github.com/*)
+            local_slug="${local_origin#http://github.com/}"
+            ;;
+        ssh://git@github.com/*)
+            local_slug="${local_origin#ssh://git@github.com/}"
+            ;;
+        *)
+            die "LOCAL PATIENT INVALID // unsupported or missing GitHub origin"
+            ;;
+    esac
+    local_slug="${local_slug%.git}"
+    [[ "$local_slug" == "$repo" ]] \
+        || die "LOCAL PATIENT MISMATCH // origin does not match target repository"
+
     [[ -z "$(git -C "$local_repo" status --porcelain=v1)" ]] \
         || die "PATIENT DIRTY // integration refused"
 
