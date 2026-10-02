@@ -573,6 +573,56 @@ audit_repo() {
         }'
 }
 
+room_branch_for() {
+    local repo="$1"
+    local team="$2"
+    [[ -f "$ROOMS_REGISTRY" ]] || die "room registry not found: $ROOMS_REGISTRY"
+    awk -F '\t' -v repo="$repo" -v team="$team" '
+        $1 == repo && $2 == team { print $4; found=1; exit }
+        END { if (!found) exit 1 }
+    ' "$ROOMS_REGISTRY"
+}
+
+room_inspect() {
+    local key="${1:-}"
+    local team="${2:-}"
+    local action="${3:-status}"
+    local repo branch base repo_json base_encoded branch_encoded compare_json
+
+    [[ -n "$key" ]] || die "usage: px room <repo> <team> [status|diff|log]"
+    [[ -n "$team" ]] || die "room team required"
+    need gh
+    need jq
+    need awk
+
+    repo="$(repo_for "$key")"
+    branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
+    repo_json="$(gh repo view "$repo" --json defaultBranchRef)"
+    base="$(jq -r '.defaultBranchRef.name // ""' <<<"$repo_json")"
+    base_encoded="$(jq -rn --arg v "$base" '$v | @uri')"
+    branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
+
+    case "$action" in
+        status|diff)
+            compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" </dev/null)"
+            if [[ "$action" == "status" ]]; then
+                jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
+                    {action:"status",repository:$repo,team:$team,branch:$branch,base:$base,relation:($c.status//"unknown"),ahead:($c.ahead_by//0),behind:($c.behind_by//0),head:(if (($c.commits//[])|length)>0 then $c.commits[-1].sha else ($c.merge_base_commit.sha//null) end)}'
+            else
+                jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
+                    {action:"diff",repository:$repo,team:$team,branch:$branch,base:$base,relation:($c.status//"unknown"),ahead:($c.ahead_by//0),behind:($c.behind_by//0),files:[($c.files//[])[]|{path:.filename,status:.status,additions:(.additions//0),deletions:(.deletions//0)}],totals:{files:(($c.files//[])|length),additions:([($c.files//[])[]|(.additions//0)]|add//0),deletions:([($c.files//[])[]|(.deletions//0)]|add//0)}}'
+            fi
+            ;;
+        log)
+            gh api "repos/$repo/commits?sha=${branch_encoded}&per_page=8" </dev/null | jq --arg repo "$repo" --arg team "$team" --arg branch "$branch" '
+                {action:"log",repository:$repo,team:$team,branch:$branch,commits:[.[]|{sha:.sha,short:(.sha[0:8]),message:(.commit.message|split("\n")[0]),authored_at:.commit.author.date}]}'
+            ;;
+        *)
+            die "unknown room action: $action"
+            ;;
+    esac
+}
+
 templates() {
     cat <<'EOF'
 [
@@ -606,6 +656,7 @@ Usage:
   px rerun <repo> <run-id>
   px cancel <repo> <run-id>
   px audit <repo>
+  px room <repo> <team> [status|diff|log]
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
 
@@ -620,6 +671,7 @@ Examples:
   px logs dev 123456789
   px run dev px-smoke.yml
   px audit taskbars
+  px room taskbars T6 diff
   px templates
   px create dev smoke my-first-action
   px create dev shell-check shell-syntax manual --preview
@@ -723,6 +775,10 @@ case "$cmd" in
 
     audit)
         audit_repo "$@"
+        ;;
+
+    room)
+        room_inspect "$@"
         ;;
 
     templates)
