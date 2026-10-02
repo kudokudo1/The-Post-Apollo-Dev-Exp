@@ -4,6 +4,7 @@ set -euo pipefail
 PX_SOURCE="$(readlink -f -- "${BASH_SOURCE[0]}")"
 ROOT="$(cd -- "$(dirname -- "$PX_SOURCE")/.." && pwd)"
 REGISTRY="${PX_REPO_REGISTRY:-$ROOT/config/repos.tsv}"
+ROOMS_REGISTRY="${PX_ROOMS_REGISTRY:-$ROOT/config/audit-rooms.tsv}"
 LIMIT="${PX_RUN_LIMIT:-10}"
 TOOLBOX_NAME="${PX_TOOLBOX:-fedora-toolbox-44}"
 
@@ -414,9 +415,100 @@ create_workflow() {
     fi
 }
 
+audit_rooms_for() {
+    local repo="$1"
+    local base="$2"
+    local rooms='[]'
+    local repo_key team responsibility branch
+    local base_encoded branch_encoded compare_json item
+    local relation ahead behind state head updated_at
+
+    [[ -f "$ROOMS_REGISTRY" ]] || {
+        printf '[]\n'
+        return 0
+    }
+
+    base_encoded="$(jq -rn --arg value "$base" '$value | @uri')"
+
+    while IFS=$'\t' read -r repo_key team responsibility branch; do
+        [[ -z "$repo_key" || "$repo_key" == \#* ]] && continue
+        [[ "$repo_key" == "$repo" ]] || continue
+
+        branch_encoded="$(jq -rn --arg value "$branch" '$value | @uri')"
+
+        if compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" 2>/dev/null)"; then
+            relation="$(jq -r '.status // "unknown"' <<<"$compare_json")"
+            ahead="$(jq -r '.ahead_by // 0' <<<"$compare_json")"
+            behind="$(jq -r '.behind_by // 0' <<<"$compare_json")"
+
+            if (( ahead == 0 && behind == 0 )); then
+                state="AT_MAIN"
+            elif (( ahead == 0 && behind > 0 )); then
+                state="IN_MAIN"
+            elif (( ahead > 0 && behind == 0 )); then
+                state="AHEAD"
+            else
+                state="DIVERGED"
+            fi
+
+            if (( ahead > 0 )); then
+                head="$(jq -r '.commits[-1].sha // ""' <<<"$compare_json")"
+                updated_at="$(jq -r '.commits[-1].commit.committer.date // ""' <<<"$compare_json")"
+            else
+                head="$(jq -r '.merge_base_commit.sha // ""' <<<"$compare_json")"
+                updated_at="$(jq -r '.merge_base_commit.commit.committer.date // ""' <<<"$compare_json")"
+            fi
+
+            item="$(jq -n \
+                --arg team "$team" \
+                --arg responsibility "$responsibility" \
+                --arg branch "$branch" \
+                --arg state "$state" \
+                --arg relation "$relation" \
+                --arg head "$head" \
+                --arg updated_at "$updated_at" \
+                --argjson ahead "$ahead" \
+                --argjson behind "$behind" \
+                '{
+                    team: $team,
+                    responsibility: $responsibility,
+                    branch: $branch,
+                    exists: true,
+                    state: $state,
+                    relation: $relation,
+                    ahead: $ahead,
+                    behind: $behind,
+                    head: (if $head == "" then null else $head end),
+                    updated_at: (if $updated_at == "" then null else $updated_at end)
+                }')"
+        else
+            item="$(jq -n \
+                --arg team "$team" \
+                --arg responsibility "$responsibility" \
+                --arg branch "$branch" \
+                '{
+                    team: $team,
+                    responsibility: $responsibility,
+                    branch: $branch,
+                    exists: false,
+                    state: "MISSING",
+                    relation: null,
+                    ahead: null,
+                    behind: null,
+                    head: null,
+                    updated_at: null
+                }')"
+        fi
+
+        rooms="$(jq --argjson item "$item" '. + [$item]' <<<"$rooms")"
+    done < "$ROOMS_REGISTRY"
+
+    printf '%s\n' "$rooms"
+}
+
 audit_repo() {
     local key="${1:-}"
-    local repo repo_json workflows_json runs_json
+    local repo repo_json workflows_json runs_json rooms_json base
 
     [[ -n "$key" ]] || die "usage: px audit <repo>"
 
@@ -425,15 +517,18 @@ audit_repo() {
 
     repo="$(repo_for "$key")"
     repo_json="$(gh repo view "$repo" --json nameWithOwner,defaultBranchRef,isPrivate,isArchived,url)"
+    base="$(jq -r '.defaultBranchRef.name // ""' <<<"$repo_json")"
     workflows_json="$(workflows_for "$repo")"
     runs_json="$(gh run list -R "$repo" --limit "$LIMIT" \
         --json databaseId,workflowName,status,conclusion,headBranch,createdAt)"
+    rooms_json="$(audit_rooms_for "$repo" "$base")"
 
     jq -n \
         --arg requested "$key" \
         --argjson repo "$repo_json" \
         --argjson workflows "$workflows_json" \
         --argjson runs "$runs_json" \
+        --argjson rooms "$rooms_json" \
         '{
             requested: $requested,
             repository: $repo.nameWithOwner,
@@ -469,6 +564,11 @@ audit_repo() {
                     }
                     end
                 )
+            },
+            rooms: {
+                base: ($repo.defaultBranchRef.name // null),
+                count: ($rooms | length),
+                items: $rooms
             }
         }'
 }
