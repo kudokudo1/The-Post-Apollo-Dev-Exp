@@ -588,6 +588,7 @@ room_inspect() {
     local team="${2:-}"
     local action="${3:-status}"
     local repo branch base repo_json base_encoded branch_encoded compare_json
+    local base_head branch_head
 
     [[ -n "$key" ]] || die "usage: px room <repo> <team> [status|diff|log|prepare]"
     [[ -n "$team" ]] || die "room team required"
@@ -601,6 +602,8 @@ room_inspect() {
     base="$(jq -r '.defaultBranchRef.name // ""' <<<"$repo_json")"
     base_encoded="$(jq -rn --arg v "$base" '$v | @uri')"
     branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
+    base_head="$(gh api "repos/$repo/branches/$base_encoded" --jq '.commit.sha' </dev/null)"
+    branch_head="$(gh api "repos/$repo/branches/$branch_encoded" --jq '.commit.sha' </dev/null)"
 
     case "$action" in
         status|diff|prepare)
@@ -612,7 +615,7 @@ room_inspect() {
                 jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
                     {action:"diff",repository:$repo,team:$team,branch:$branch,base:$base,relation:($c.status//"unknown"),ahead:($c.ahead_by//0),behind:($c.behind_by//0),files:[($c.files//[])[]|{path:.filename,status:.status,additions:(.additions//0),deletions:(.deletions//0)}],totals:{files:(($c.files//[])|length),additions:([($c.files//[])[]|(.additions//0)]|add//0),deletions:([($c.files//[])[]|(.deletions//0)]|add//0)}}'
             else
-                jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
+                jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --arg head "$branch_head" --arg base_head "$base_head" --argjson c "$compare_json" '
                     def integration_mode:
                         if ($c.status // "") == "identical" then "ALREADY_AT_MAIN"
                         elif ($c.status // "") == "ahead" then "FAST_FORWARD"
@@ -625,7 +628,9 @@ room_inspect() {
                         repository:$repo,
                         team:$team,
                         branch:$branch,
+                        head:$head,
                         base:$base,
+                        base_head:$base_head,
                         relation:($c.status//"unknown"),
                         mode: integration_mode,
                         ahead:($c.ahead_by//0),
@@ -655,6 +660,84 @@ room_inspect() {
             die "unknown room action: $action"
             ;;
     esac
+}
+
+room_integrate() {
+    local key="${1:-}"
+    local team="${2:-}"
+    local expected_branch="${3:-}"
+    local expected_head="${4:-}"
+    local expected_base="${5:-}"
+    local expected_base_head="${6:-}"
+    local local_repo="${7:-}"
+    local repo branch base base_encoded branch_encoded current_head current_base_head
+    local compare_json relation
+
+    [[ -n "$key" ]] || die "repository required"
+    [[ -n "$team" ]] || die "room team required"
+    [[ -n "$expected_branch" ]] || die "expected branch required"
+    [[ -n "$expected_head" ]] || die "expected room head required"
+    [[ -n "$expected_base" ]] || die "expected base branch required"
+    [[ -n "$expected_base_head" ]] || die "expected base head required"
+    [[ -n "$local_repo" ]] || die "local patient path required"
+
+    need gh
+    need jq
+    need awk
+    need git
+
+    repo="$(repo_for "$key")"
+    branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
+    [[ "$branch" == "$expected_branch" ]] || die "ARM INVALID // registered room branch changed"
+
+    base="$(gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name // ""')"
+    [[ "$base" == "$expected_base" ]] || die "ARM INVALID // default branch changed"
+
+    git -C "$local_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || die "LOCAL PATIENT INVALID // not a git repository"
+    [[ -z "$(git -C "$local_repo" status --porcelain=v1)" ]] \
+        || die "PATIENT DIRTY // integration refused"
+
+    base_encoded="$(jq -rn --arg v "$base" '$v | @uri')"
+    branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
+    current_base_head="$(gh api "repos/$repo/branches/$base_encoded" --jq '.commit.sha' </dev/null)"
+    current_head="$(gh api "repos/$repo/branches/$branch_encoded" --jq '.commit.sha' </dev/null)"
+
+    [[ "$current_head" == "$expected_head" ]] \
+        || die "ARM INVALID // room head moved"
+    [[ "$current_base_head" == "$expected_base_head" ]] \
+        || die "ARM INVALID // base head moved"
+
+    compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" </dev/null)"
+    relation="$(jq -r '.status // "unknown"' <<<"$compare_json")"
+    [[ "$relation" == "ahead" ]] \
+        || die "INTEGRATION REFUSED // room is no longer fast-forwardable"
+
+    gh api \
+        -X PATCH \
+        "repos/$repo/git/refs/heads/$base" \
+        -f sha="$current_head" \
+        -F force=false \
+        >/dev/null
+
+    jq -n \
+        --arg repository "$repo" \
+        --arg team "$team" \
+        --arg branch "$branch" \
+        --arg base "$base" \
+        --arg old_base_head "$current_base_head" \
+        --arg new_base_head "$current_head" \
+        '{
+            action:"integrate",
+            status:"INTEGRATED",
+            mode:"FAST_FORWARD",
+            repository:$repository,
+            team:$team,
+            branch:$branch,
+            base:$base,
+            old_base_head:$old_base_head,
+            new_base_head:$new_base_head
+        }'
 }
 
 templates() {
@@ -691,6 +774,7 @@ Usage:
   px cancel <repo> <run-id>
   px audit <repo>
   px room <repo> <team> [status|diff|log|prepare]
+  px integrate <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
 
@@ -813,6 +897,10 @@ case "$cmd" in
 
     room)
         room_inspect "$@"
+        ;;
+
+    integrate)
+        room_integrate "$@"
         ;;
 
     templates)
