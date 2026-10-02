@@ -662,6 +662,142 @@ room_inspect() {
     esac
 }
 
+room_rehearse() {
+    local key="${1:-}"
+    local team="${2:-}"
+    local expected_branch="${3:-}"
+    local expected_head="${4:-}"
+    local expected_base="${5:-}"
+    local expected_base_head="${6:-}"
+    local local_repo="${7:-}"
+    local repo branch base base_encoded branch_encoded current_head current_base_head
+    local local_origin local_slug
+
+    [[ -n "$key" ]] || die "repository required"
+    [[ -n "$team" ]] || die "room team required"
+    [[ -n "$expected_branch" ]] || die "expected branch required"
+    [[ -n "$expected_head" ]] || die "expected room head required"
+    [[ -n "$expected_base" ]] || die "expected base branch required"
+    [[ -n "$expected_base_head" ]] || die "expected base head required"
+    [[ -n "$local_repo" ]] || die "local patient path required"
+
+    need gh
+    need jq
+    need awk
+    need git
+    need mktemp
+
+    repo="$(repo_for "$key")"
+    branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
+    [[ "$branch" == "$expected_branch" ]] || die "REHEARSAL INVALID // registered room branch changed"
+
+    base="$(gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name // ""')"
+    [[ "$base" == "$expected_base" ]] || die "REHEARSAL INVALID // default branch changed"
+
+    git -C "$local_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || die "LOCAL PATIENT INVALID // not a git repository"
+
+    local_origin="$(git -C "$local_repo" remote get-url origin 2>/dev/null || true)"
+    case "$local_origin" in
+        git@github.com:*) local_slug="${local_origin#git@github.com:}" ;;
+        https://github.com/*) local_slug="${local_origin#https://github.com/}" ;;
+        http://github.com/*) local_slug="${local_origin#http://github.com/}" ;;
+        ssh://git@github.com/*) local_slug="${local_origin#ssh://git@github.com/}" ;;
+        *) die "LOCAL PATIENT INVALID // unsupported or missing GitHub origin" ;;
+    esac
+    local_slug="${local_slug%.git}"
+    [[ "$local_slug" == "$repo" ]] \
+        || die "LOCAL PATIENT MISMATCH // origin does not match target repository"
+
+    base_encoded="$(jq -rn --arg v "$base" '$v | @uri')"
+    branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
+    current_base_head="$(gh api "repos/$repo/branches/$base_encoded" --jq '.commit.sha' </dev/null)"
+    current_head="$(gh api "repos/$repo/branches/$branch_encoded" --jq '.commit.sha' </dev/null)"
+
+    [[ "$current_head" == "$expected_head" ]] \
+        || die "REHEARSAL INVALID // room head moved"
+    [[ "$current_base_head" == "$expected_base_head" ]] \
+        || die "REHEARSAL INVALID // base head moved"
+
+    (
+        set -euo pipefail
+        local tmp_root rehearsal_repo merge_rc merge_base result_tree
+        local conflict_json changed_json file_count additions deletions status
+
+        tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/px-rehearse.XXXXXX")"
+        trap 'rm -rf -- "$tmp_root"' EXIT
+        rehearsal_repo="$tmp_root/repo"
+
+        gh repo clone "$repo" "$rehearsal_repo" -- --no-checkout --quiet >/dev/null 2>&1
+        git -C "$rehearsal_repo" fetch --quiet origin "$base" "$branch"
+
+        [[ "$(git -C "$rehearsal_repo" rev-parse "origin/$base")" == "$expected_base_head" ]] \
+            || die "REHEARSAL CLONE INVALID // base head mismatch"
+        [[ "$(git -C "$rehearsal_repo" rev-parse "origin/$branch")" == "$expected_head" ]] \
+            || die "REHEARSAL CLONE INVALID // room head mismatch"
+
+        git -C "$rehearsal_repo" checkout --quiet --detach "$expected_base_head"
+        merge_base="$(git -C "$rehearsal_repo" merge-base "$expected_base_head" "$expected_head")"
+
+        if git -C "$rehearsal_repo" -c user.name="Post-Apollo Rehearsal" -c user.email="rehearsal@localhost" \
+            merge --no-commit --no-ff "$expected_head" >/dev/null 2>&1; then
+            merge_rc=0
+            status="CLEAN_MERGE"
+        else
+            merge_rc=$?
+            status="CONFLICTS"
+        fi
+
+        conflict_json="$(git -C "$rehearsal_repo" diff --name-only --diff-filter=U | jq -Rsc 'split("\n") | map(select(length > 0))')"
+        changed_json="$(git -C "$rehearsal_repo" diff --cached --name-only | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')"
+        file_count="$(jq 'length' <<<"$changed_json")"
+        read -r additions deletions < <(
+            git -C "$rehearsal_repo" diff --cached --numstat \
+            | awk '{ if ($1 ~ /^[0-9]+$/) a += $1; if ($2 ~ /^[0-9]+$/) d += $2 } END { print a+0, d+0 }'
+        )
+
+        result_tree=""
+        if [[ "$status" == "CLEAN_MERGE" ]]; then
+            result_tree="$(git -C "$rehearsal_repo" write-tree)"
+        fi
+
+        jq -n \
+            --arg action "rehearse" \
+            --arg status "$status" \
+            --arg repository "$repo" \
+            --arg team "$team" \
+            --arg branch "$branch" \
+            --arg head "$expected_head" \
+            --arg base "$base" \
+            --arg base_head "$expected_base_head" \
+            --arg merge_base "$merge_base" \
+            --arg result_tree "$result_tree" \
+            --argjson merge_rc "$merge_rc" \
+            --argjson conflicts "$conflict_json" \
+            --argjson changed "$changed_json" \
+            --argjson files "$file_count" \
+            --argjson additions "$additions" \
+            --argjson deletions "$deletions" \
+            '{
+                action:$action,
+                status:$status,
+                repository:$repository,
+                team:$team,
+                branch:$branch,
+                head:$head,
+                base:$base,
+                base_head:$base_head,
+                merge_base:$merge_base,
+                result_tree:(if $result_tree == "" then null else $result_tree end),
+                merge_exit:$merge_rc,
+                conflicts:$conflicts,
+                changed_files:$changed,
+                totals:{files:$files,additions:$additions,deletions:$deletions},
+                topology:{parents:[$base_head,$head]}
+            }'
+    )
+}
+
 room_integrate() {
     local key="${1:-}"
     local team="${2:-}"
@@ -797,6 +933,7 @@ Usage:
   px cancel <repo> <run-id>
   px audit <repo>
   px room <repo> <team> [status|diff|log|prepare]
+  px rehearse <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px integrate <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
@@ -920,6 +1057,10 @@ case "$cmd" in
 
     room)
         room_inspect "$@"
+        ;;
+
+    rehearse)
+        room_rehearse "$@"
         ;;
 
     integrate)
