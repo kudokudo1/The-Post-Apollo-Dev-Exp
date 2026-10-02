@@ -520,7 +520,7 @@ audit_repo() {
     base="$(jq -r '.defaultBranchRef.name // ""' <<<"$repo_json")"
     workflows_json="$(workflows_for "$repo")"
     runs_json="$(gh run list -R "$repo" --limit "$LIMIT" \
-        --json databaseId,workflowName,status,conclusion,headBranch,createdAt)"
+        --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt)"
     rooms_json="$(audit_rooms_for "$repo" "$base")"
 
     jq -n \
@@ -1203,7 +1203,7 @@ case "$cmd" in
         repo="$(repo_for "${1:-}")"
         limit="${2:-$LIMIT}"
         gh run list -R "$repo" --limit "$limit" \
-            --json databaseId,workflowName,status,conclusion,headBranch,createdAt
+            --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt
         ;;
 
     inspect)
