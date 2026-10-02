@@ -413,6 +413,65 @@ create_workflow() {
     fi
 }
 
+audit_repo() {
+    local key="${1:-}"
+    local repo repo_json workflows_json runs_json
+
+    [[ -n "$key" ]] || die "usage: px audit <repo>"
+
+    need gh
+    need jq
+
+    repo="$(repo_for "$key")"
+    repo_json="$(gh repo view "$repo" --json nameWithOwner,defaultBranchRef,isPrivate,isArchived,url)"
+    workflows_json="$(workflows_for "$repo")"
+    runs_json="$(gh run list -R "$repo" --limit "$LIMIT" \
+        --json databaseId,workflowName,status,conclusion,headBranch,createdAt)"
+
+    jq -n \
+        --arg requested "$key" \
+        --argjson repo "$repo_json" \
+        --argjson workflows "$workflows_json" \
+        --argjson runs "$runs_json" \
+        '{
+            requested: $requested,
+            repository: $repo.nameWithOwner,
+            default_branch: ($repo.defaultBranchRef.name // null),
+            private: $repo.isPrivate,
+            archived: $repo.isArchived,
+            url: $repo.url,
+            status: (
+                if $repo.isArchived then "ARCHIVED"
+                elif ($workflows | length) == 0 then "NO_WORKFLOWS"
+                elif ($runs | length) == 0 then "NO_RUNS"
+                elif (($runs[0].status // "") | ascii_downcase) != "completed" then "RUNNING"
+                elif (($runs[0].conclusion // "") | ascii_downcase) == "success" then "PASS"
+                else "ATTENTION"
+                end
+            ),
+            workflows: {
+                count: ($workflows | length),
+                active: ([$workflows[] | select((.state // "") == "active")] | length),
+                items: $workflows
+            },
+            runs: {
+                count: ($runs | length),
+                latest: (
+                    if ($runs | length) == 0 then null
+                    else {
+                        id: $runs[0].databaseId,
+                        workflow: $runs[0].workflowName,
+                        status: $runs[0].status,
+                        conclusion: $runs[0].conclusion,
+                        branch: $runs[0].headBranch,
+                        created_at: $runs[0].createdAt
+                    }
+                    end
+                )
+            }
+        }'
+}
+
 templates() {
     cat <<'EOF'
 [
@@ -445,6 +504,7 @@ Usage:
   px watch <repo> <run-id>
   px rerun <repo> <run-id>
   px cancel <repo> <run-id>
+  px audit <repo>
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
 
@@ -458,6 +518,7 @@ Examples:
   px inspect dev 123456789
   px logs dev 123456789
   px run dev px-smoke.yml
+  px audit taskbars
   px templates
   px create dev smoke my-first-action
   px create dev shell-check shell-syntax manual --preview
@@ -557,6 +618,10 @@ case "$cmd" in
         run_id="${2:-}"
         [[ -n "$run_id" ]] || die "run id required"
         gh run cancel "$run_id" -R "$repo"
+        ;;
+
+    audit)
+        audit_repo "$@"
         ;;
 
     templates)
