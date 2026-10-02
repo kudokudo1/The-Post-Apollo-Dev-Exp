@@ -589,7 +589,7 @@ room_inspect() {
     local action="${3:-status}"
     local repo branch base repo_json base_encoded branch_encoded compare_json
 
-    [[ -n "$key" ]] || die "usage: px room <repo> <team> [status|diff|log]"
+    [[ -n "$key" ]] || die "usage: px room <repo> <team> [status|diff|log|prepare]"
     [[ -n "$team" ]] || die "room team required"
     need gh
     need jq
@@ -603,14 +603,48 @@ room_inspect() {
     branch_encoded="$(jq -rn --arg v "$branch" '$v | @uri')"
 
     case "$action" in
-        status|diff)
+        status|diff|prepare)
             compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" </dev/null)"
             if [[ "$action" == "status" ]]; then
                 jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
                     {action:"status",repository:$repo,team:$team,branch:$branch,base:$base,relation:($c.status//"unknown"),ahead:($c.ahead_by//0),behind:($c.behind_by//0),head:(if (($c.commits//[])|length)>0 then $c.commits[-1].sha else ($c.merge_base_commit.sha//null) end)}'
-            else
+            elif [[ "$action" == "diff" ]]; then
                 jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
                     {action:"diff",repository:$repo,team:$team,branch:$branch,base:$base,relation:($c.status//"unknown"),ahead:($c.ahead_by//0),behind:($c.behind_by//0),files:[($c.files//[])[]|{path:.filename,status:.status,additions:(.additions//0),deletions:(.deletions//0)}],totals:{files:(($c.files//[])|length),additions:([($c.files//[])[]|(.additions//0)]|add//0),deletions:([($c.files//[])[]|(.deletions//0)]|add//0)}}'
+            else
+                jq -n --arg repo "$repo" --arg team "$team" --arg branch "$branch" --arg base "$base" --argjson c "$compare_json" '
+                    def integration_mode:
+                        if ($c.status // "") == "identical" then "ALREADY_AT_MAIN"
+                        elif ($c.status // "") == "ahead" then "FAST_FORWARD"
+                        elif ($c.status // "") == "behind" then "NO_UNIQUE_COMMITS"
+                        elif ($c.status // "") == "diverged" then "DIVERGED"
+                        else "REVIEW_REQUIRED"
+                        end;
+                    {
+                        action:"prepare",
+                        repository:$repo,
+                        team:$team,
+                        branch:$branch,
+                        base:$base,
+                        relation:($c.status//"unknown"),
+                        mode: integration_mode,
+                        ahead:($c.ahead_by//0),
+                        behind:($c.behind_by//0),
+                        totals:{
+                            files:(($c.files//[])|length),
+                            additions:([($c.files//[])[]|(.additions//0)]|add//0),
+                            deletions:([($c.files//[])[]|(.deletions//0)]|add//0)
+                        },
+                        files:[
+                            ($c.files//[])[0:8][]
+                            | {
+                                path:.filename,
+                                status:.status,
+                                additions:(.additions//0),
+                                deletions:(.deletions//0)
+                            }
+                        ]
+                    }'
             fi
             ;;
         log)
@@ -656,7 +690,7 @@ Usage:
   px rerun <repo> <run-id>
   px cancel <repo> <run-id>
   px audit <repo>
-  px room <repo> <team> [status|diff|log]
+  px room <repo> <team> [status|diff|log|prepare]
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
 
@@ -671,7 +705,7 @@ Examples:
   px logs dev 123456789
   px run dev px-smoke.yml
   px audit taskbars
-  px room taskbars T6 diff
+  px room taskbars T6 prepare
   px templates
   px create dev smoke my-first-action
   px create dev shell-check shell-syntax manual --preview
