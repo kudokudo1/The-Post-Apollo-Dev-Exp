@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PX_SOURCE="$(readlink -f -- "${BASH_SOURCE[0]}")"
+ROOT="$(cd -- "$(dirname -- "$PX_SOURCE")/.." && pwd)"
 REGISTRY="${PX_REPO_REGISTRY:-$ROOT/config/repos.tsv}"
 LIMIT="${PX_RUN_LIMIT:-10}"
 TOOLBOX_NAME="${PX_TOOLBOX:-fedora-toolbox-44}"
