@@ -436,7 +436,7 @@ audit_rooms_for() {
 
         branch_encoded="$(jq -rn --arg value "$branch" '$value | @uri')"
 
-        if compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" 2>/dev/null)"; then
+        if compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" </dev/null 2>/dev/null)"; then
             relation="$(jq -r '.status // "unknown"' <<<"$compare_json")"
             ahead="$(jq -r '.ahead_by // 0' <<<"$compare_json")"
             behind="$(jq -r '.behind_by // 0' <<<"$compare_json")"
