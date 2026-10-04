@@ -422,86 +422,123 @@ audit_rooms_for() {
     local repo_key team responsibility branch
     local base_encoded branch_encoded compare_json item
     local relation ahead behind state head updated_at
-
-    [[ -f "$ROOMS_REGISTRY" ]] || {
-        printf '[]\n'
-        return 0
-    }
+    local -A seen_branches=()
 
     base_encoded="$(jq -rn --arg value "$base" '$value | @uri')"
 
-    while IFS=$'\t' read -r repo_key team responsibility branch; do
-        [[ -z "$repo_key" || "$repo_key" == \#* ]] && continue
-        [[ "$repo_key" == "$repo" ]] || continue
+    # Registered rooms are optional metadata/aliases.
+    # They are emitted first so existing friendly names remain intact.
+    if [[ -f "$ROOMS_REGISTRY" ]]; then
+        while IFS=$'\t' read -r repo_key team responsibility branch; do
+            [[ -z "$repo_key" || "$repo_key" == \#* ]] && continue
+            [[ "$repo_key" == "$repo" ]] || continue
+            [[ -n "$branch" ]] || continue
 
-        branch_encoded="$(jq -rn --arg value "$branch" '$value | @uri')"
+            [[ -n "${seen_branches[$branch]+x}" ]] && continue
+            seen_branches["$branch"]=1
 
-        if compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" </dev/null 2>/dev/null)"; then
-            relation="$(jq -r '.status // "unknown"' <<<"$compare_json")"
-            ahead="$(jq -r '.ahead_by // 0' <<<"$compare_json")"
-            behind="$(jq -r '.behind_by // 0' <<<"$compare_json")"
+            branch_encoded="$(jq -rn --arg value "$branch" '$value | @uri')"
 
-            if (( ahead == 0 && behind == 0 )); then
-                state="AT_MAIN"
-            elif (( ahead == 0 && behind > 0 )); then
-                state="IN_MAIN"
-            elif (( ahead > 0 && behind == 0 )); then
-                state="AHEAD"
+            if compare_json="$(gh api "repos/$repo/compare/${base_encoded}...${branch_encoded}" 2>/dev/null)"; then
+                relation="$(jq -r '.status // "unknown"' <<<"$compare_json")"
+                ahead="$(jq -r '.ahead_by // 0' <<<"$compare_json")"
+                behind="$(jq -r '.behind_by // 0' <<<"$compare_json")"
+
+                if (( ahead == 0 && behind == 0 )); then
+                    state="AT_MAIN"
+                elif (( ahead == 0 && behind > 0 )); then
+                    state="IN_MAIN"
+                elif (( ahead > 0 && behind == 0 )); then
+                    state="AHEAD"
+                else
+                    state="DIVERGED"
+                fi
+
+                if (( ahead > 0 )); then
+                    head="$(jq -r '.commits[-1].sha // ""' <<<"$compare_json")"
+                    updated_at="$(jq -r '.commits[-1].commit.committer.date // ""' <<<"$compare_json")"
+                else
+                    head="$(jq -r '.merge_base_commit.sha // ""' <<<"$compare_json")"
+                    updated_at="$(jq -r '.merge_base_commit.commit.committer.date // ""' <<<"$compare_json")"
+                fi
+
+                item="$(jq -n \
+                    --arg team "$team" \
+                    --arg responsibility "$responsibility" \
+                    --arg branch "$branch" \
+                    --arg state "$state" \
+                    --arg relation "$relation" \
+                    --arg head "$head" \
+                    --arg updated_at "$updated_at" \
+                    --argjson ahead "$ahead" \
+                    --argjson behind "$behind" \
+                    '{
+                        team: $team,
+                        responsibility: $responsibility,
+                        branch: $branch,
+                        exists: true,
+                        source: "registry",
+                        state: $state,
+                        relation: $relation,
+                        ahead: $ahead,
+                        behind: $behind,
+                        head: (if $head == "" then null else $head end),
+                        updated_at: (if $updated_at == "" then null else $updated_at end)
+                    }')"
             else
-                state="DIVERGED"
+                item="$(jq -n \
+                    --arg team "$team" \
+                    --arg responsibility "$responsibility" \
+                    --arg branch "$branch" \
+                    '{
+                        team: $team,
+                        responsibility: $responsibility,
+                        branch: $branch,
+                        exists: false,
+                        source: "registry",
+                        state: "MISSING",
+                        relation: null,
+                        ahead: null,
+                        behind: null,
+                        head: null,
+                        updated_at: null
+                    }')"
             fi
 
-            if (( ahead > 0 )); then
-                head="$(jq -r '.commits[-1].sha // ""' <<<"$compare_json")"
-                updated_at="$(jq -r '.commits[-1].commit.committer.date // ""' <<<"$compare_json")"
-            else
-                head="$(jq -r '.merge_base_commit.sha // ""' <<<"$compare_json")"
-                updated_at="$(jq -r '.merge_base_commit.commit.committer.date // ""' <<<"$compare_json")"
-            fi
+            rooms="$(jq --argjson item "$item" '. + [$item]' <<<"$rooms")"
+        done < "$ROOMS_REGISTRY"
+    fi
 
-            item="$(jq -n \
-                --arg team "$team" \
-                --arg responsibility "$responsibility" \
-                --arg branch "$branch" \
-                --arg state "$state" \
-                --arg relation "$relation" \
-                --arg head "$head" \
-                --arg updated_at "$updated_at" \
-                --argjson ahead "$ahead" \
-                --argjson behind "$behind" \
-                '{
-                    team: $team,
-                    responsibility: $responsibility,
-                    branch: $branch,
-                    exists: true,
-                    state: $state,
-                    relation: $relation,
-                    ahead: $ahead,
-                    behind: $behind,
-                    head: (if $head == "" then null else $head end),
-                    updated_at: (if $updated_at == "" then null else $updated_at end)
-                }')"
-        else
-            item="$(jq -n \
-                --arg team "$team" \
-                --arg responsibility "$responsibility" \
-                --arg branch "$branch" \
-                '{
-                    team: $team,
-                    responsibility: $responsibility,
-                    branch: $branch,
-                    exists: false,
-                    state: "MISSING",
-                    relation: null,
-                    ahead: null,
-                    behind: null,
-                    head: null,
-                    updated_at: null
-                }')"
-        fi
+    # Any GitHub branch not already registered is automatically a room.
+    while IFS=$'\t' read -r branch head; do
+        [[ -n "$branch" ]] || continue
+        [[ "$branch" == "$base" ]] && continue
+        [[ -n "${seen_branches[$branch]+x}" ]] && continue
+
+        seen_branches["$branch"]=1
+
+        item="$(jq -n \
+            --arg branch "$branch" \
+            --arg head "$head" \
+            '{
+                team: $branch,
+                responsibility: "AUTO DISCOVERED",
+                branch: $branch,
+                exists: true,
+                source: "discovered",
+                state: "DISCOVERED",
+                relation: null,
+                ahead: null,
+                behind: null,
+                head: (if $head == "" then null else $head end),
+                updated_at: null
+            }')"
 
         rooms="$(jq --argjson item "$item" '. + [$item]' <<<"$rooms")"
-    done < "$ROOMS_REGISTRY"
+    done < <(
+        gh api --paginate "repos/$repo/branches?per_page=100" \
+            --jq '.[] | [.name, .commit.sha] | @tsv'
+    )
 
     printf '%s\n' "$rooms"
 }
@@ -575,12 +612,38 @@ audit_repo() {
 
 room_branch_for() {
     local repo="$1"
-    local team="$2"
-    [[ -f "$ROOMS_REGISTRY" ]] || die "room registry not found: $ROOMS_REGISTRY"
-    awk -F '\t' -v repo="$repo" -v team="$team" '
-        $1 == repo && $2 == team { print $4; found=1; exit }
-        END { if (!found) exit 1 }
-    ' "$ROOMS_REGISTRY"
+    local room="$2"
+    local branch=""
+    local encoded=""
+
+    # Preserve friendly aliases from the optional registry.
+    if [[ -f "$ROOMS_REGISTRY" ]]; then
+        branch="$(
+            awk -F '\t' -v repo="$repo" -v room="$room" '
+                $1 == repo && ($2 == room || $4 == room) {
+                    print $4
+                    found=1
+                    exit
+                }
+                END { if (!found) exit 1 }
+            ' "$ROOMS_REGISTRY" 2>/dev/null || true
+        )"
+    fi
+
+    if [[ -n "$branch" ]]; then
+        printf '%s\n' "$branch"
+        return 0
+    fi
+
+    # Otherwise the room ID may simply be a real Git branch.
+    encoded="$(jq -rn --arg value "$room" '$value | @uri')"
+
+    if gh api "repos/$repo/branches/$encoded" >/dev/null 2>&1; then
+        printf '%s\n' "$room"
+        return 0
+    fi
+
+    die "room or branch not found: $room"
 }
 
 room_inspect() {
