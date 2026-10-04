@@ -4,9 +4,13 @@
 
 ![](BUILD/assets/design/chassis/focus-rail.svg)
 
+![Post Apollo // Dev Experience](./BUILD/assets/design/post-apollo-dev-exp-banner.svg)
+
 > **STATE //** active \~\~ **VIEW //** developer control plane
 
-> **The Post-Apollo Dev Experience is the repository-control and automation layer used to inspect, run, and manage work across the Post-Apollo project family.**
+The developer control layer of the Post-Apollo Family — bringing projects, repositories, tools, automation, and remote services into one cohesive relationship between tools and operator, maintaining continuity across platforms while creating a more centralized, connected workflow.
+
+**PUBLIC FAMILY //** [META APOLLO LOGOS](https://github.com/kudokudo1/Meta-Apollo-Logos) · [FOREST](https://github.com/kudokudo1/The-Post-Apollo-Forest-Project) · [SWAYPX](https://github.com/kudokudo1/Post-Apollo-SwayPx) · [LAN MOUSE // 2-PLAYER MODE](https://github.com/kudokudo1/Lan-Mouse-2-Player-Mode)
 
 ### 🧭 MAP // REPOSITORY
 
