@@ -2,8 +2,18 @@ name: PX Smoke Test
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - bin/px
+      - config/repos.tsv
+      - docs/control-plane.md
+      - docs/workflow-factory.md
+      - tests/test-px-factory.sh
+      - tests/test-px-runs.sh
+      - .github/workflows/px-smoke.yml
   push:
     branches:
+      - main
       - automation/px-control-bus-v0
       - automation/px-workflow-factory-v0
       - automation/px-json-contract-v0
@@ -15,6 +25,7 @@ on:
       - docs/control-plane.md
       - docs/workflow-factory.md
       - tests/test-px-factory.sh
+      - tests/test-px-runs.sh
       - .github/workflows/px-smoke.yml
 
 permissions:
@@ -33,6 +44,7 @@ jobs:
         run: |
           bash -n bin/px
           bash -n tests/test-px-factory.sh
+          bash -n tests/test-px-runs.sh
 
       - name: Exercise local PX commands
         run: |
@@ -42,6 +54,9 @@ jobs:
 
       - name: Test workflow factory
         run: ./tests/test-px-factory.sh
+
+      - name: Test exact-SHA run evidence
+        run: ./tests/test-px-runs.sh
 
       - name: Report execution identity
         run: |
