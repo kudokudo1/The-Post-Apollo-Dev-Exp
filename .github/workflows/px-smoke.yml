@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - main
+      - feature/doc3-px-runs-regression
       - automation/px-control-bus-v0
       - automation/px-workflow-factory-v0
       - automation/px-json-contract-v0
