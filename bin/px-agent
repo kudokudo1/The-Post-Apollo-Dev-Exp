@@ -471,10 +471,11 @@ def cancel_session(args) -> dict:
 
 
 CONTEXT_VERSION = 1
-PATIENT_CHART_LIMIT = 8
-ROOM_CHART_LIMIT = 12
-RECENT_MESSAGE_LIMIT = 8
-CONTEXT_ITEM_TEXT_LIMIT = 1200
+PATIENT_CHART_LIMIT = 6
+ROOM_CHART_LIMIT = 10
+RECENT_MESSAGE_LIMIT = 6
+CONTEXT_ITEM_TEXT_LIMIT = 900
+CONTEXT_CHANGED_FILE_LIMIT = 40
 
 
 def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
@@ -606,9 +607,28 @@ def render_live_context(payload: dict) -> str:
         "DIRTY: " + ("YES" if git.get("dirty") else "NO"),
         (
             "CHANGED FILES: "
-            + ", ".join(
-                str(value)
-                for value in (git.get("changedFiles") or [])
+            + (
+                ", ".join(
+                    str(value)
+                    for value in (
+                        git.get("changedFiles") or []
+                    )[:CONTEXT_CHANGED_FILE_LIMIT]
+                )
+                or "NONE"
+            )
+            + (
+                " // +"
+                + str(
+                    max(
+                        0,
+                        len(git.get("changedFiles") or [])
+                        - CONTEXT_CHANGED_FILE_LIMIT,
+                    )
+                )
+                + " MORE"
+                if len(git.get("changedFiles") or [])
+                   > CONTEXT_CHANGED_FILE_LIMIT
+                else ""
             )
         ),
         (
