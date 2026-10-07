@@ -1109,8 +1109,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             app.open_output(
                 format!("{} // ERROR", action.title),
                 format!(
-                    "OPERATION {operation_id}\n\nEXECUTION\n"
-                    + "could not launch PX mutation: {error}{warning}"
+                    "OPERATION {operation_id}\n\nEXECUTION\ncould not launch PX mutation: {error}{warning}"
                 ),
             );
             return;
@@ -1162,8 +1161,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "mutation succeeded; post-op verification arguments were unavailable",
                 ));
                 text = format!(
-                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\n"
-                    + "POST-OP VERIFY\nNOT STARTED // {error}{warning}"
+                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}{warning}"
                 );
                 app.open_output(
                     format!("{} // REMOTE // VERIFY FAILED", action.title),
@@ -1188,8 +1186,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "mutation succeeded; post-op verification could not launch",
                 ));
                 text = format!(
-                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\n"
-                    + "POST-OP VERIFY\nCOULD NOT LAUNCH // {error}{warning}"
+                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}{warning}"
                 );
                 app.open_output(
                     format!("{} // REMOTE // VERIFY FAILED", action.title),
@@ -1221,8 +1218,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             ));
             verify_text = format!("EXIT {code}\n\n{verify_text}");
             text = format!(
-                "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\n"
-                + "POST-OP VERIFY\n{verify_text}{warning}"
+                "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
             );
             app.open_output(
                 format!("{} // REMOTE // VERIFY FAILED", action.title),
@@ -1242,8 +1238,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             "mutation and post-op verification succeeded",
         ));
         text = format!(
-            "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\n"
-            + "POST-OP VERIFY\n{verify_text}{warning}"
+            "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
         );
         app.open_output(
             format!("{} // REMOTE // VERIFIED", action.title),
