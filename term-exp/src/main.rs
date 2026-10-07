@@ -357,6 +357,11 @@ fn handle_key(
                             return Ok(());
                         }
 
+                        if let Err(error) = validate_typed_argument(argument, &value) {
+                            app.status = Some(error);
+                            return Ok(());
+                        }
+
                         commit_argument_value(app, model, action, value);
                     }
                 }
@@ -683,6 +688,7 @@ fn known_value_choices(
             resolver::chart_entry_choices(&model.px_path, room).map(Some)
         }
         "workflow_template" => resolver::workflow_template_choices(&model.px_path).map(Some),
+        "command" => resolver::command_choices(&model.px_path).map(Some),
         "branch" | "ref" => {
             let repository =
                 repository.ok_or_else(|| "select a repository first".to_owned())?;
@@ -742,6 +748,41 @@ fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
                 argument.kind
             ));
         }
+    }
+}
+
+fn validate_typed_argument(argument: &ActionArgument, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+
+    match argument.kind.as_str() {
+        "integer" => value
+            .parse::<i64>()
+            .map(|_| ())
+            .map_err(|_| format!("{} must be an integer", argument.name)),
+        "slug" => {
+            let valid = value
+                .chars()
+                .next()
+                .map(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+                .unwrap_or(false)
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || character == '-');
+
+            if valid {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} must match [a-z0-9][a-z0-9-]*",
+                    argument.name
+                ))
+            }
+        }
+        _ => Ok(()),
     }
 }
 
