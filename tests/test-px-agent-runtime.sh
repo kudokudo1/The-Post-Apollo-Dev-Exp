@@ -54,6 +54,9 @@ export PX_AGENT_PROVIDER_CONFIG="$TMP/providers.json"
 
 patient_chart_json="$(printf '%s' 'Provider identity must never replace Room identity.' | "$ROOT/bin/px" hospital chart-entry-add --scope PATIENT --patient-id patient-taskbars --entry-kind INVARIANT --title "Room identity" --priority 95 --author-role operator --author-id operator --body-stdin --json)"
 room_chart_json="$(printf '%s' 'Keep Application Audio work inside the T6 Bed and preserve supervised checkpoints.' | "$ROOT/bin/px" hospital chart-entry-add --scope ROOM --room-id T6 --entry-kind CONSTRAINT --title "T6 scope" --priority 90 --author-role operator --author-id operator --body-stdin --json)"
+assignment_json="$("$ROOT/bin/px" hospital assignment-create --room-id T6 --title "Application Audio extraction" --goal "Extract shared APP/WINDOW/TAB audio ownership into the reusable service." --constraints "Do not invent canonical application identity." --definition-done "Consumers use the shared audio service and runtime contracts pass." --permissions-json '["READ","EDIT","TEST"]' --checklist "- [ ] service\n- [ ] consumers\n- [ ] tests" --open-questions "Wait for identity authority where necessary." --phase IMPLEMENTATION --json)"
+assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$assignment_json")"
+assignment_active_json="$("$ROOT/bin/px" hospital assignment-activate "$assignment_id" --json)"
 
 providers_json="$("$ROOT/bin/px" agent providers --json)"
 created_json="$("$ROOT/bin/px" agent session-create     --room-id T6     --doctor-id doctor-t6     --provider-id mock     --working-directory "$BED"     --session-id session-t6-agent     --json)"
@@ -68,7 +71,7 @@ session_json="$("$ROOT/bin/px" hospital session session-t6-agent --json)"
 messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 200 --json)"
 
-python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED" <<'PY'
+python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$assignment_json"     "$assignment_active_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED" <<'PY'
 import json
 import pathlib
 import sys
@@ -78,12 +81,14 @@ created = json.loads(sys.argv[2])
 context = json.loads(sys.argv[3])
 patient_chart = json.loads(sys.argv[4])
 room_chart = json.loads(sys.argv[5])
-turn_one = json.loads(sys.argv[6])
-turn_two = json.loads(sys.argv[7])
-session = json.loads(sys.argv[8])
-messages = json.loads(sys.argv[9])
-events = json.loads(sys.argv[10])
-bed = pathlib.Path(sys.argv[11])
+assignment = json.loads(sys.argv[6])
+assignment_active = json.loads(sys.argv[7])
+turn_one = json.loads(sys.argv[8])
+turn_two = json.loads(sys.argv[9])
+session = json.loads(sys.argv[10])
+messages = json.loads(sys.argv[11])
+events = json.loads(sys.argv[12])
+bed = pathlib.Path(sys.argv[13])
 
 assert providers == [
     {
@@ -109,6 +114,14 @@ assert context["session"]["id"] == "session-t6-agent", context
 assert context["room"]["id"] == "T6", context
 assert context["room"]["patientId"] == "patient-taskbars", context
 assert context["room"]["repository"] == "kudokudo1/taskbars-post-apollo", context
+assert context["room"]["assignmentId"] == assignment["id"], context
+assert context["assignment"]["id"] == assignment["id"], context
+assert context["assignment"]["status"] == "ACTIVE", context
+assert context["assignment"]["phase"] == "IMPLEMENTATION", context
+assert context["assignment"]["permissions"] == ["READ", "EDIT", "TEST"], context
+assert "Extract shared APP/WINDOW/TAB audio ownership" in context["renderedText"], context
+assert "Do not invent canonical application identity." in context["renderedText"], context
+assert assignment_active["room"]["assignmentId"] == assignment["id"], assignment_active
 assert context["git"]["status"] == "VERIFIED", context
 assert context["git"]["dirty"] is False, context
 assert len(context["git"]["headSha"]) == 40, context
@@ -124,6 +137,10 @@ assert turn_one["providerSessionId"] == "mock-provider-session", turn_one
 assert turn_two["assistant"] == "MOCK: second task", turn_two
 assert turn_two["providerSessionId"] == "mock-provider-session", turn_two
 
+assert turn_one["context"]["assignmentId"] == assignment["id"], turn_one
+assert turn_one["context"]["assignmentStatus"] == "ACTIVE", turn_one
+assert turn_one["context"]["assignmentPhase"] == "IMPLEMENTATION", turn_one
+assert turn_one["context"]["assignmentPermissions"] == ["READ", "EDIT", "TEST"], turn_one
 assert turn_one["context"]["patientChartEntryIds"] == [patient_chart["id"]], turn_one
 assert turn_one["context"]["roomChartEntryIds"] == [room_chart["id"]], turn_one
 assert turn_one["context"]["recentMessageIds"] == [], turn_one

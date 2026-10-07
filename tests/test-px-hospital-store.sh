@@ -114,7 +114,7 @@ older = json.loads(sys.argv[29])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 9, payload
+    assert payload["schema_version"] == 10, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -126,6 +126,7 @@ for payload in (init, status):
         "room_reports": 0,
         "chart_entries": 0,
         "chart_suggestions": 0,
+        "assignments": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -257,7 +258,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("9",), version
+    assert version == ("10",), version
 
     tables = {
         row[0]
@@ -265,7 +266,7 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions", "assignments"):
         assert table in tables, (table, tables)
 
     room_columns = {
@@ -292,6 +293,37 @@ try:
     assert str(journal_mode).lower() == "wal", journal_mode
 finally:
     conn.close()
+PY
+
+assignment_json="$("$ROOT/bin/px" hospital assignment-create --room-id T6 --title "Finish Application Audio extraction" --goal "Move shared application audio ownership into the service without breaking APP/WINDOW/TAB consumers." --constraints "Do not invent canonical application identity." --definition-done "Audio service owns discovery and mutations; consumers only read the service." --permissions-json '["READ","EDIT","TEST","COMMIT"]' --checklist "- [ ] service\n- [ ] consumers\n- [ ] tests" --open-questions "Identity contract remains external." --phase IMPLEMENTATION --created-by-role operator --created-by-id operator --json)"
+assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$assignment_json")"
+assignment_ready_json="$("$ROOT/bin/px" hospital assignment-status "$assignment_id" READY --json)"
+assignment_active_json="$("$ROOT/bin/px" hospital assignment-activate "$assignment_id" --json)"
+assignment_updated_json="$("$ROOT/bin/px" hospital assignment-update "$assignment_id" --phase VERIFY --checklist "- [x] service\n- [x] consumers\n- [ ] tests" --json)"
+assignments_json="$("$ROOT/bin/px" hospital assignments --room-id T6 --status ALL --json)"
+room_after_assignment_json="$("$ROOT/bin/px" hospital room T6 --json)"
+
+python3 - "$assignment_json" "$assignment_ready_json" "$assignment_active_json" "$assignment_updated_json" "$assignments_json" "$room_after_assignment_json" <<'PY'
+import json
+import sys
+
+created = json.loads(sys.argv[1])
+ready = json.loads(sys.argv[2])
+active = json.loads(sys.argv[3])
+updated = json.loads(sys.argv[4])
+rows = json.loads(sys.argv[5])
+room = json.loads(sys.argv[6])
+
+assert created["status"] == "DRAFT", created
+assert created["roomId"] == "T6", created
+assert created["permissions"] == ["READ", "EDIT", "TEST", "COMMIT"], created
+assert ready["status"] == "READY", ready
+assert active["assignment"]["status"] == "ACTIVE", active
+assert active["room"]["assignmentId"] == created["id"], active
+assert updated["phase"] == "VERIFY", updated
+assert "- [x] service" in updated["checklist"], updated
+assert [row["id"] for row in rows] == [created["id"]], rows
+assert room["assignmentId"] == created["id"], room
 PY
 
 suggestion_json="$(printf '%s' 'Keep operator authority over durable memory promotion.' | "$ROOT/bin/px" hospital chart-suggestion-add --scope ROOM --room-id T6 --entry-kind DECISION --title "Chart authority" --priority 88 --doctor-id doctor-t6 --provider-id codex --source-room-id T6 --source-session-id session-t6-1 --source-message-id "$incoming_id" --body-stdin --json)"

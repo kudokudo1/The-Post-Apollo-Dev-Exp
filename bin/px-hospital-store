@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -291,6 +291,41 @@ CREATE INDEX IF NOT EXISTS idx_chart_suggestions_source_session
     ON chart_suggestions(source_session_id, suggestion_id DESC);
 """
 
+
+SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS assignments (
+    assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    patient_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    goal_md TEXT NOT NULL,
+    constraints_md TEXT NOT NULL DEFAULT '',
+    definition_done_md TEXT NOT NULL DEFAULT '',
+    permissions_json TEXT NOT NULL DEFAULT '["READ"]',
+    checklist_md TEXT NOT NULL DEFAULT '',
+    open_questions_md TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL DEFAULT 'PLANNING',
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    source_session_id TEXT,
+    source_message_id INTEGER,
+    created_by_role TEXT NOT NULL DEFAULT 'operator',
+    created_by_id TEXT NOT NULL DEFAULT 'operator',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(status IN ('DRAFT', 'READY', 'ACTIVE', 'PAUSED', 'COMPLETE', 'CANCELLED')),
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_room
+    ON assignments(room_id, status, assignment_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_patient
+    ON assignments(patient_id, status, assignment_id DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -428,12 +463,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 9
 
+    if version < 10:
+        conn.executescript(SCHEMA_V10)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("10",),
+        )
+        conn.commit()
+        version = 10
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions", "assignments"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -2210,6 +2254,365 @@ def chart_suggestion_promote(conn: sqlite3.Connection, args) -> dict:
         "entry": chart_entry_record(conn, entry_id),
     }
 
+
+ASSIGNMENT_PERMISSIONS = (
+    "READ",
+    "EDIT",
+    "TEST",
+    "COMMIT",
+    "PUSH",
+    "OPEN_PR",
+    "INTEGRATE",
+)
+
+
+def normalize_assignment_permissions(value: str) -> list[str]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Hospital Assignment permissions JSON is invalid: {exc}"
+        )
+
+    if not isinstance(parsed, list):
+        raise RuntimeError(
+            "Hospital Assignment permissions JSON must be an array"
+        )
+
+    out = []
+    for raw in parsed:
+        permission = str(raw or "").strip().upper().replace(" ", "_")
+        if permission not in ASSIGNMENT_PERMISSIONS:
+            raise RuntimeError(
+                "Hospital Assignment permission must be one of "
+                + ", ".join(ASSIGNMENT_PERMISSIONS)
+            )
+        if permission not in out:
+            out.append(permission)
+
+    if "READ" not in out:
+        out.insert(0, "READ")
+    return out
+
+
+def normalize_assignment(row: sqlite3.Row) -> dict:
+    try:
+        permissions = json.loads(str(row["permissions_json"] or "[]"))
+    except json.JSONDecodeError:
+        permissions = []
+
+    return {
+        "id": str(row["assignment_id"]),
+        "roomId": str(row["room_id"] or ""),
+        "patientId": str(row["patient_id"] or ""),
+        "title": str(row["title"] or ""),
+        "goal": str(row["goal_md"] or ""),
+        "constraints": str(row["constraints_md"] or ""),
+        "definitionOfDone": str(row["definition_done_md"] or ""),
+        "permissions": permissions if isinstance(permissions, list) else [],
+        "checklist": str(row["checklist_md"] or ""),
+        "openQuestions": str(row["open_questions_md"] or ""),
+        "phase": str(row["phase"] or "PLANNING"),
+        "status": str(row["status"] or "DRAFT"),
+        "sourceSessionId": str(row["source_session_id"] or ""),
+        "sourceMessageId": (
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else ""
+        ),
+        "createdByRole": str(row["created_by_role"] or ""),
+        "createdById": str(row["created_by_id"] or ""),
+        "createdAt": str(row["created_at"] or ""),
+        "updatedAt": str(row["updated_at"] or ""),
+    }
+
+
+def assignment_record(
+    conn: sqlite3.Connection,
+    assignment_id: int,
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM assignments WHERE assignment_id = ?",
+        (assignment_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Assignment: {assignment_id}"
+        )
+    return normalize_assignment(row)
+
+
+def validate_assignment_source(
+    conn: sqlite3.Connection,
+    room_id: str,
+    session_id: str,
+    message_id,
+) -> None:
+    if session_id:
+        row = conn.execute(
+            "SELECT room_id FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"unknown Hospital Assignment source session: {session_id}"
+            )
+        if str(row["room_id"] or "") != room_id:
+            raise RuntimeError(
+                "Hospital Assignment source session belongs to another Room"
+            )
+
+    if message_id is not None:
+        row = conn.execute(
+            "SELECT room_id, session_id FROM messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"unknown Hospital Assignment source message: {message_id}"
+            )
+        if str(row["room_id"] or "") != room_id:
+            raise RuntimeError(
+                "Hospital Assignment source message belongs to another Room"
+            )
+        if session_id and str(row["session_id"] or "") != session_id:
+            raise RuntimeError(
+                "Hospital Assignment source message belongs to another session"
+            )
+
+
+def assignment_create(conn: sqlite3.Connection, args) -> dict:
+    room_id = str(args.room_id or "").strip()
+    room = conn.execute(
+        "SELECT patient_id FROM rooms WHERE room_id = ?",
+        (room_id,),
+    ).fetchone()
+    if room is None:
+        raise RuntimeError(f"unknown Hospital room: {room_id}")
+
+    goal = str(args.goal or "").strip()
+    if not goal:
+        raise RuntimeError("Hospital Assignment goal is empty")
+
+    session_id = str(args.source_session_id or "").strip()
+    validate_assignment_source(
+        conn,
+        room_id,
+        session_id,
+        args.source_message_id,
+    )
+    permissions = normalize_assignment_permissions(args.permissions_json)
+
+    cur = conn.execute(
+        """
+        INSERT INTO assignments(
+            room_id, patient_id, title, goal_md, constraints_md,
+            definition_done_md, permissions_json, checklist_md,
+            open_questions_md, phase, status, source_session_id,
+            source_message_id, created_by_role, created_by_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)
+        """,
+        (
+            room_id,
+            room["patient_id"],
+            str(args.title or "").strip(),
+            goal,
+            str(args.constraints or "").strip(),
+            str(args.definition_done or "").strip(),
+            json.dumps(permissions),
+            str(args.checklist or "").strip(),
+            str(args.open_questions or "").strip(),
+            str(args.phase or "PLANNING").strip().upper() or "PLANNING",
+            session_id or None,
+            args.source_message_id,
+            str(args.created_by_role or "operator").strip() or "operator",
+            str(args.created_by_id or "operator").strip() or "operator",
+        ),
+    )
+    conn.commit()
+    return assignment_record(conn, int(cur.lastrowid))
+
+
+def assignment_update(conn: sqlite3.Connection, args) -> dict:
+    current = conn.execute(
+        "SELECT * FROM assignments WHERE assignment_id = ?",
+        (args.assignment_id,),
+    ).fetchone()
+    if current is None:
+        raise RuntimeError(
+            f"unknown Hospital Assignment: {args.assignment_id}"
+        )
+
+    fields = []
+    values = []
+    mapping = (
+        ("title", "title"),
+        ("goal", "goal_md"),
+        ("constraints", "constraints_md"),
+        ("definition_done", "definition_done_md"),
+        ("checklist", "checklist_md"),
+        ("open_questions", "open_questions_md"),
+        ("phase", "phase"),
+    )
+    for attr, column in mapping:
+        value = getattr(args, attr)
+        if value is None:
+            continue
+        if attr == "goal" and not str(value).strip():
+            raise RuntimeError("Hospital Assignment goal is empty")
+        fields.append(f"{column} = ?")
+        values.append(
+            str(value).strip().upper()
+            if attr == "phase"
+            else str(value)
+        )
+
+    if args.permissions_json is not None:
+        fields.append("permissions_json = ?")
+        values.append(
+            json.dumps(
+                normalize_assignment_permissions(args.permissions_json)
+            )
+        )
+
+    if not fields:
+        return assignment_record(conn, args.assignment_id)
+
+    fields.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(args.assignment_id)
+    conn.execute(
+        f"UPDATE assignments SET {', '.join(fields)} WHERE assignment_id = ?",
+        tuple(values),
+    )
+    conn.commit()
+    return assignment_record(conn, args.assignment_id)
+
+
+def assignment_status(conn: sqlite3.Connection, args) -> dict:
+    current = conn.execute(
+        "SELECT room_id, status FROM assignments WHERE assignment_id = ?",
+        (args.assignment_id,),
+    ).fetchone()
+    if current is None:
+        raise RuntimeError(
+            f"unknown Hospital Assignment: {args.assignment_id}"
+        )
+
+    requested = str(args.status or "").strip().upper()
+    conn.execute(
+        """
+        UPDATE assignments
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE assignment_id = ?
+        """,
+        (requested, args.assignment_id),
+    )
+
+    if requested in ("COMPLETE", "CANCELLED"):
+        conn.execute(
+            """
+            UPDATE rooms
+            SET current_assignment_id = '', updated_at = CURRENT_TIMESTAMP
+            WHERE room_id = ? AND current_assignment_id = ?
+            """,
+            (str(current["room_id"]), str(args.assignment_id)),
+        )
+
+    conn.commit()
+    return assignment_record(conn, args.assignment_id)
+
+
+def assignment_activate(conn: sqlite3.Connection, args) -> dict:
+    row = conn.execute(
+        "SELECT * FROM assignments WHERE assignment_id = ?",
+        (args.assignment_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Assignment: {args.assignment_id}"
+        )
+    if str(row["status"] or "") in ("COMPLETE", "CANCELLED"):
+        raise RuntimeError(
+            "Hospital Assignment cannot activate a terminal record"
+        )
+
+    room_id = str(row["room_id"] or "")
+    current_room = conn.execute(
+        "SELECT current_assignment_id FROM rooms WHERE room_id = ?",
+        (room_id,),
+    ).fetchone()
+    old_id = str(current_room["current_assignment_id"] or "") if current_room else ""
+
+    if old_id and old_id != str(args.assignment_id):
+        conn.execute(
+            """
+            UPDATE assignments
+            SET status = 'PAUSED', updated_at = CURRENT_TIMESTAMP
+            WHERE assignment_id = ? AND status = 'ACTIVE'
+            """,
+            (int(old_id),),
+        )
+
+    conn.execute(
+        """
+        UPDATE assignments
+        SET status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP
+        WHERE assignment_id = ?
+        """,
+        (args.assignment_id,),
+    )
+    conn.execute(
+        """
+        UPDATE rooms
+        SET current_assignment_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE room_id = ?
+        """,
+        (str(args.assignment_id), room_id),
+    )
+    conn.commit()
+
+    return {
+        "assignment": assignment_record(conn, args.assignment_id),
+        "room": room_record(conn, room_id),
+    }
+
+
+def assignments_list(conn: sqlite3.Connection, args) -> list:
+    room_id = str(args.room_id or "").strip()
+    if args.limit < 1 or args.limit > 500:
+        raise RuntimeError(
+            "Hospital Assignment limit must be between 1 and 500"
+        )
+
+    where = ["room_id = ?"]
+    values = [room_id]
+    status = str(args.status or "ALL").strip().upper()
+    if status != "ALL":
+        where.append("status = ?")
+        values.append(status)
+    values.append(args.limit)
+
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM assignments
+        WHERE {' AND '.join(where)}
+        ORDER BY
+            CASE status
+                WHEN 'ACTIVE' THEN 0
+                WHEN 'READY' THEN 1
+                WHEN 'PAUSED' THEN 2
+                WHEN 'DRAFT' THEN 3
+                ELSE 4
+            END,
+            assignment_id DESC
+        LIMIT ?
+        """,
+        tuple(values),
+    ).fetchall()
+    return [normalize_assignment(row) for row in rows]
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="px hospital",
@@ -2332,6 +2735,71 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--limit", type=int, default=200)
     events.add_argument("--before-id", type=int)
     events.add_argument("--json", action="store_true")
+
+
+    assignment_create_parser = sub.add_parser("assignment-create")
+    assignment_create_parser.add_argument("--room-id", required=True)
+    assignment_create_parser.add_argument("--title", default="")
+    assignment_create_parser.add_argument("--goal", required=True)
+    assignment_create_parser.add_argument("--constraints", default="")
+    assignment_create_parser.add_argument("--definition-done", default="")
+    assignment_create_parser.add_argument(
+        "--permissions-json",
+        default='["READ"]',
+    )
+    assignment_create_parser.add_argument("--checklist", default="")
+    assignment_create_parser.add_argument("--open-questions", default="")
+    assignment_create_parser.add_argument("--phase", default="PLANNING")
+    assignment_create_parser.add_argument("--source-session-id", default="")
+    assignment_create_parser.add_argument("--source-message-id", type=int)
+    assignment_create_parser.add_argument("--created-by-role", default="operator")
+    assignment_create_parser.add_argument("--created-by-id", default="operator")
+    assignment_create_parser.add_argument("--json", action="store_true")
+
+    assignment_get = sub.add_parser("assignment")
+    assignment_get.add_argument("assignment_id", type=int)
+    assignment_get.add_argument("--json", action="store_true")
+
+    assignment_list_parser = sub.add_parser("assignments")
+    assignment_list_parser.add_argument("--room-id", required=True)
+    assignment_list_parser.add_argument(
+        "--status",
+        default="ALL",
+        choices=(
+            "DRAFT", "READY", "ACTIVE", "PAUSED", "COMPLETE",
+            "CANCELLED", "ALL", "draft", "ready", "active",
+            "paused", "complete", "cancelled", "all",
+        ),
+    )
+    assignment_list_parser.add_argument("--limit", type=int, default=100)
+    assignment_list_parser.add_argument("--json", action="store_true")
+
+    assignment_update_parser = sub.add_parser("assignment-update")
+    assignment_update_parser.add_argument("assignment_id", type=int)
+    assignment_update_parser.add_argument("--title")
+    assignment_update_parser.add_argument("--goal")
+    assignment_update_parser.add_argument("--constraints")
+    assignment_update_parser.add_argument("--definition-done")
+    assignment_update_parser.add_argument("--permissions-json")
+    assignment_update_parser.add_argument("--checklist")
+    assignment_update_parser.add_argument("--open-questions")
+    assignment_update_parser.add_argument("--phase")
+    assignment_update_parser.add_argument("--json", action="store_true")
+
+    assignment_status_parser = sub.add_parser("assignment-status")
+    assignment_status_parser.add_argument("assignment_id", type=int)
+    assignment_status_parser.add_argument(
+        "status",
+        choices=(
+            "DRAFT", "READY", "ACTIVE", "PAUSED", "COMPLETE", "CANCELLED",
+            "draft", "ready", "active", "paused", "complete", "cancelled",
+        ),
+    )
+    assignment_status_parser.add_argument("--json", action="store_true")
+
+    assignment_activate_parser = sub.add_parser("assignment-activate")
+    assignment_activate_parser.add_argument("assignment_id", type=int)
+    assignment_activate_parser.add_argument("--json", action="store_true")
 
     chart_add = sub.add_parser("chart-entry-add")
     chart_add.add_argument(
@@ -2598,6 +3066,21 @@ def main() -> int:
                     ),
                     args.json,
                 )
+            elif args.command == "assignment-create":
+                emit_data(assignment_create(conn, args), args.json)
+            elif args.command == "assignment":
+                emit_data(
+                    assignment_record(conn, args.assignment_id),
+                    args.json,
+                )
+            elif args.command == "assignments":
+                emit_data(assignments_list(conn, args), args.json)
+            elif args.command == "assignment-update":
+                emit_data(assignment_update(conn, args), args.json)
+            elif args.command == "assignment-status":
+                emit_data(assignment_status(conn, args), args.json)
+            elif args.command == "assignment-activate":
+                emit_data(assignment_activate(conn, args), args.json)
             elif args.command == "chart-entry-add":
                 emit_data(chart_entry_add(conn, args), args.json)
             elif args.command == "chart-entry":

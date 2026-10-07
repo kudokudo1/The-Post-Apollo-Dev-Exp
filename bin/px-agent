@@ -493,6 +493,12 @@ def live_context_payload(
     room_id = str(session.get("roomId") or "")
     room = px_hospital("room", room_id)
     patient_id = str(room.get("patientId") or "")
+    assignment_id = str(room.get("assignmentId") or "")
+    assignment = (
+        px_hospital("assignment", assignment_id)
+        if assignment_id
+        else {}
+    )
     cwd_text = (
         str(working_directory or "").strip()
         or str(session.get("workingDirectory") or "").strip()
@@ -549,6 +555,7 @@ def live_context_payload(
             "repository": str(room.get("repository") or ""),
             "assignmentId": str(room.get("assignmentId") or ""),
         },
+        "assignment": assignment,
         "git": git_evidence,
         "patientChart": patient_chart,
         "roomChart": room_chart,
@@ -581,6 +588,7 @@ def render_live_context(payload: dict) -> str:
     session = payload.get("session") or {}
     room = payload.get("room") or {}
     git = payload.get("git") or {}
+    assignment = payload.get("assignment") or {}
     recent = payload.get("recentMessages") or []
 
     lines = [
@@ -599,6 +607,29 @@ def render_live_context(payload: dict) -> str:
         "PROVIDER: " + str(session.get("providerId") or ""),
         "ASSIGNMENT: " + str(room.get("assignmentId") or ""),
         "BED: " + str(session.get("workingDirectory") or ""),
+        "",
+        "CURRENT ASSIGNMENT // SUPERVISED ORDER",
+        "STATUS: " + str(assignment.get("status") or "NONE"),
+        "PHASE: " + str(assignment.get("phase") or ""),
+        "TITLE: " + str(assignment.get("title") or ""),
+        "GOAL:",
+        clip_context_text(assignment.get("goal") or "NONE"),
+        "CONSTRAINTS:",
+        clip_context_text(assignment.get("constraints") or "NONE"),
+        "DEFINITION OF DONE:",
+        clip_context_text(assignment.get("definitionOfDone") or "NONE"),
+        "PERMISSIONS: "
+        + (
+            ", ".join(
+                str(value)
+                for value in (assignment.get("permissions") or [])
+            )
+            or "READ"
+        ),
+        "CHECKLIST:",
+        clip_context_text(assignment.get("checklist") or "NONE"),
+        "OPEN QUESTIONS:",
+        clip_context_text(assignment.get("openQuestions") or "NONE"),
         "",
         "LIVE GIT",
         "EVIDENCE: " + str(git.get("status") or "UNAVAILABLE"),
@@ -678,8 +709,15 @@ def render_live_context(payload: dict) -> str:
 
 def context_summary(payload: dict) -> dict:
     git = payload.get("git") or {}
+    assignment = payload.get("assignment") or {}
     return {
         "version": int(payload.get("version") or CONTEXT_VERSION),
+        "assignmentId": str(assignment.get("id") or ""),
+        "assignmentStatus": str(assignment.get("status") or ""),
+        "assignmentPhase": str(assignment.get("phase") or ""),
+        "assignmentPermissions": list(
+            assignment.get("permissions") or []
+        ),
         "patientChartEntryIds": [
             str(row.get("id") or "")
             for row in (payload.get("patientChart") or [])
