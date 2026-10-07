@@ -4,6 +4,7 @@ set -euo pipefail
 PX_SOURCE="$(readlink -f -- "${BASH_SOURCE[0]}")"
 ROOT="$(cd -- "$(dirname -- "$PX_SOURCE")/.." && pwd)"
 REGISTRY="${PX_REPO_REGISTRY:-$ROOT/config/repos.tsv}"
+ACTIONS_REGISTRY="${PX_ACTION_REGISTRY:-$ROOT/config/actions.json}"
 ROOMS_REGISTRY="${PX_ROOMS_REGISTRY:-$ROOT/config/audit-rooms.tsv}"
 LIMIT="${PX_RUN_LIMIT:-10}"
 TOOLBOX_NAME="${PX_TOOLBOX:-fedora-toolbox-44}"
@@ -1232,6 +1233,95 @@ room_verify() {
         }'
 }
 
+actions() {
+    local format="human"
+    local query=""
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            --json)
+                format="json"
+                ;;
+            -h|--help)
+                cat <<'EOF'
+Usage:
+  px actions [query] [--json]
+
+Without a query, returns the full semantic action registry.
+A query matches action id, title, category, summary, and keywords.
+EOF
+                return 0
+                ;;
+            -*)
+                die "unknown actions option: $arg"
+                ;;
+            *)
+                [[ -z "$query" ]] || die "actions accepts at most one query"
+                query="$arg"
+                ;;
+        esac
+    done
+
+    [[ -f "$ACTIONS_REGISTRY" ]] \
+        || die "action registry not found: $ACTIONS_REGISTRY"
+
+    if [[ "$format" == "json" && -z "$query" ]]; then
+        cat "$ACTIONS_REGISTRY"
+        return 0
+    fi
+
+    need jq
+
+    if [[ "$format" == "json" ]]; then
+        jq --arg query "$query" '
+            . as $registry
+            | ($query | ascii_downcase) as $needle
+            | {
+                version: $registry.version,
+                actions: [
+                    $registry.actions[]
+                    | (
+                        [
+                            .id,
+                            .title,
+                            .category,
+                            .summary,
+                            ((.keywords // []) | join(" "))
+                        ]
+                        | join(" ")
+                        | ascii_downcase
+                      ) as $haystack
+                    | select($haystack | contains($needle))
+                ]
+              }
+        ' "$ACTIONS_REGISTRY"
+        return 0
+    fi
+
+    jq -r --arg query "$query" '
+        ($query | ascii_downcase) as $needle
+        | "ID\tCATEGORY\tTITLE",
+          (
+            .actions[]
+            | (
+                [
+                    .id,
+                    .title,
+                    .category,
+                    .summary,
+                    ((.keywords // []) | join(" "))
+                ]
+                | join(" ")
+                | ascii_downcase
+              ) as $haystack
+            | select($needle == "" or ($haystack | contains($needle)))
+            | [.id, .category, .title]
+            | @tsv
+          )
+    ' "$ACTIONS_REGISTRY"
+}
+
 templates() {
     cat <<'EOF'
 [
@@ -1276,6 +1366,7 @@ Usage:
   px merge <repo> <team> <branch> <room-head> <base> <base-head> <result-tree> <local-path>
   px integrate <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px verify <repo> <team> <base> <expected-base-head> <expected-room-head>
+  px actions [query] [--json]
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
   px delete-workflow <repo> <workflow-path> [ref]
@@ -1294,6 +1385,8 @@ Examples:
   px run dev px-smoke.yml
   px audit taskbars
   px room taskbars T6 prepare
+  px actions --json
+  px actions hospital
   px templates
   px create dev smoke my-first-action
   px create dev shell-check shell-syntax manual --preview
@@ -1424,6 +1517,10 @@ case "$cmd" in
 
     verify)
         room_verify "$@"
+        ;;
+
+    actions)
+        actions "$@"
         ;;
 
     templates)
