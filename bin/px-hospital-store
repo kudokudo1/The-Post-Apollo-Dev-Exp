@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -116,6 +116,14 @@ ALTER TABLE rooms
     ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
 """
 
+SCHEMA_V5 = """
+ALTER TABLE sessions
+    ADD COLUMN active_pid INTEGER;
+
+ALTER TABLE sessions
+    ADD COLUMN turn_started_at TEXT NOT NULL DEFAULT '';
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -207,6 +215,15 @@ def migrate(conn: sqlite3.Connection) -> int:
         )
         conn.commit()
         version = 4
+
+    if version < 5:
+        conn.executescript(SCHEMA_V5)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("5",),
+        )
+        conn.commit()
+        version = 5
 
     return version
 
@@ -605,6 +622,16 @@ def normalize_session(row: sqlite3.Row) -> dict:
             if "last_error" in keys
             else ""
         ),
+        "activePid": (
+            int(row["active_pid"])
+            if "active_pid" in keys and row["active_pid"] is not None
+            else 0
+        ),
+        "turnStartedAt": (
+            str(row["turn_started_at"] or "")
+            if "turn_started_at" in keys
+            else ""
+        ),
         "startedAt": str(row["started_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
         "endedAt": str(row["ended_at"] or ""),
@@ -649,6 +676,20 @@ def session_runtime_update(conn: sqlite3.Connection, args) -> dict:
 
     if args.clear_error:
         fields.append("last_error = ''")
+
+    if args.active_pid is not None:
+        fields.append("active_pid = ?")
+        values.append(args.active_pid)
+
+    if args.clear_active_pid:
+        fields.append("active_pid = NULL")
+
+    if args.turn_started_at is not None:
+        fields.append("turn_started_at = ?")
+        values.append(args.turn_started_at)
+
+    if args.clear_turn_started:
+        fields.append("turn_started_at = ''")
 
     if args.ended:
         fields.append("ended_at = CURRENT_TIMESTAMP")
@@ -977,6 +1018,10 @@ def build_parser() -> argparse.ArgumentParser:
     session_runtime.add_argument("--last-exit-code", type=int)
     session_runtime.add_argument("--last-error")
     session_runtime.add_argument("--clear-error", action="store_true")
+    session_runtime.add_argument("--active-pid", type=int)
+    session_runtime.add_argument("--clear-active-pid", action="store_true")
+    session_runtime.add_argument("--turn-started-at")
+    session_runtime.add_argument("--clear-turn-started", action="store_true")
     session_runtime.add_argument("--ended", action="store_true")
     session_runtime.add_argument("--json", action="store_true")
 
