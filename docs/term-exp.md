@@ -78,14 +78,23 @@ Mutation handling is deliberately staged:
 - `local` mutations resolve all arguments, freeze the exact PX command, show a
   preview, then require a second confirmation screen and the word `LOCAL`;
 - generic `remote` and `external` mutations can resolve and preview their exact
-  frozen targets but remain execution-locked;
-- Hospital fast-forward integration is the first narrow remote exception:
+  frozen targets but remain execution-locked unless the action declares a
+  certified execution policy;
+- Hospital fast-forward integration is a narrow remote exception:
   TERM EXP re-runs `px room <repo> <room> prepare`, requires its branch, Room
   HEAD, base, and base HEAD to match the frozen selection exactly, then asks
   for the explicit word `REMOTE` before calling the already-guarded
   `px integrate` contract;
-- after that integration succeeds, TERM EXP automatically calls `px verify`
-  and reports execution success separately from post-operation verification.
+- GitHub workflow-run cancellation is the first `px-guarded` GitHub remote
+  action: PX preflights the exact run, TERM EXP freezes PX's target token,
+  revalidates it immediately before execution, requires `REMOTE`, journals
+  the cancellation request, and then asks PX to verify that the run reached
+  `completed/cancelled`;
+- other GitHub remote actions such as dispatch, rerun, workflow creation, and
+  workflow deletion remain preview-only until their own PX guard and
+  verification contracts are certified;
+- after guarded remote execution, TERM EXP reports execution success separately
+  from post-operation verification.
 
 Changing UI selection after a preview cannot silently retarget a pending
 mutation because execution uses the frozen command shown in the preview.

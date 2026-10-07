@@ -142,6 +142,166 @@ commits_for() {
     '
 }
 
+
+github_run_guard_record() {
+    local repo="$1"
+    local run_id="$2"
+
+    gh run view "$run_id" -R "$repo" \
+        --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
+}
+
+mutation_preflight() {
+    local action_id="${1:-}"
+    local arguments_json="${2:-}"
+
+    [[ -n "$action_id" ]] || die "mutation action id required"
+    [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
+
+    need jq
+
+    case "$action_id" in
+        github.run.cancel)
+            need gh
+
+            local repository_key repo run_id run_json actual_id
+            local workflow status conclusion head_branch head_sha token
+            local allowed="true" reason="" summary=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.cancel preflight requires repository"
+            [[ -n "$run_id" ]] || die "github.run.cancel preflight requires run_id"
+
+            repo="$(repo_for "$repository_key")"
+            run_json="$(github_run_guard_record "$repo" "$run_id")"
+
+            actual_id="$(jq -r '.databaseId // ""' <<<"$run_json")"
+            [[ "$actual_id" == "$run_id" ]] \
+                || die "GitHub returned run $actual_id while guarding run $run_id"
+
+            workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
+            status="$(jq -r '.status // ""' <<<"$run_json")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+            head_branch="$(jq -r '.headBranch // ""' <<<"$run_json")"
+            head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+
+            if [[ -z "$status" ]]; then
+                allowed="false"
+                reason="RUN STATUS IS UNKNOWN"
+            elif [[ "${status,,}" == "completed" ]]; then
+                allowed="false"
+                reason="RUN ALREADY COMPLETED"
+                [[ -n "$conclusion" ]] && reason+=" // ${conclusion^^}"
+            fi
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg runId "$run_id" \
+                --arg workflow "$workflow" \
+                --arg headSha "$head_sha" \
+                '{repository:$repository,runId:$runId,workflow:$workflow,headSha:$headSha}')"
+
+            summary="CANCEL // $workflow // #$run_id // ${status^^}"
+            [[ -n "$head_branch" ]] && summary+=" // $head_branch"
+            [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    target:$target
+                }'
+            ;;
+        *)
+            die "no PX mutation preflight policy for action: $action_id"
+            ;;
+    esac
+}
+
+mutation_verify() {
+    local action_id="${1:-}"
+    local arguments_json="${2:-}"
+
+    [[ -n "$action_id" ]] || die "mutation action id required"
+    [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
+
+    need jq
+
+    case "$action_id" in
+        github.run.cancel)
+            need gh
+
+            local repository_key repo run_id run_json
+            local status="" conclusion="" workflow="" summary="" reason=""
+            local passed="false"
+            local attempt
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.cancel verification requires repository"
+            [[ -n "$run_id" ]] || die "github.run.cancel verification requires run_id"
+
+            repo="$(repo_for "$repository_key")"
+
+            for attempt in 1 2 3 4 5; do
+                run_json="$(github_run_guard_record "$repo" "$run_id")"
+                status="$(jq -r '.status // ""' <<<"$run_json")"
+                conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+                workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
+
+                if [[ "${status,,}" == "completed" ]]; then
+                    break
+                fi
+
+                [[ "$attempt" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "${status,,}" == "completed"
+                    && "${conclusion,,}" == "cancelled" ]]; then
+                passed="true"
+                summary="CANCEL VERIFIED // $workflow // #$run_id"
+            elif [[ "${status,,}" == "completed" ]]; then
+                reason="RUN COMPLETED AS ${conclusion^^} BEFORE CANCELLATION WAS VERIFIED"
+                summary="CANCEL VERIFY FAILED // $workflow // #$run_id"
+            else
+                reason="RUN STILL ${status^^} AFTER CANCELLATION REQUEST"
+                summary="CANCEL VERIFY PENDING // $workflow // #$run_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        *)
+            die "no PX mutation verification policy for action: $action_id"
+            ;;
+    esac
+}
+
 validate_slug() {
     local slug="$1"
     [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -1421,6 +1581,8 @@ Usage:
   px runs <repo> [limit] [sha]
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
+  px mutation-preflight <action-id> <arguments-json>
+  px mutation-verify <action-id> <arguments-json>
   px run <repo> <workflow> [ref]
   px watch <repo> <run-id>
   px rerun <repo> <run-id>
@@ -1603,6 +1765,14 @@ case "$cmd" in
         run_id="${2:-}"
         [[ -n "$run_id" ]] || die "run id required"
         gh run cancel "$run_id" -R "$repo"
+        ;;
+
+    mutation-preflight)
+        mutation_preflight "$@"
+        ;;
+
+    mutation-verify)
+        mutation_verify "$@"
         ;;
 
     audit)
