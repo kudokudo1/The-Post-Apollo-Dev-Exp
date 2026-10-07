@@ -282,7 +282,6 @@ struct Tool {
 struct Model {
     actions: ActionRegistry,
     tools: ToolRegistry,
-    repositories: Vec<RepositoryRecord>,
     px_path: PathBuf,
 }
 
@@ -384,12 +383,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let px_path = resolve_px_path();
     let actions: ActionRegistry = load_json(&px_path, &["actions", "--json"])?;
     let tools: ToolRegistry = load_json(&px_path, &["tools", "--json"])?;
-    let repositories: RepositoryRegistry = load_json(&px_path, &["repos", "--json"])?;
 
     let model = Model {
         actions,
         tools,
-        repositories: repositories.repositories,
         px_path,
     };
 
@@ -811,16 +808,26 @@ fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[Stri
     app.open_output(action.title.clone(), text);
 }
 
-fn repository_choices(model: &Model) -> Vec<ActionChoiceItem> {
-    model
+fn repository_registry(model: &Model) -> Result<RepositoryRegistry, String> {
+    load_choice_json(
+        model,
+        &["repos".to_owned(), "--json".to_owned()],
+        "repository registry",
+    )
+}
+
+fn repository_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, String> {
+    let registry = repository_registry(model)?;
+
+    Ok(registry
         .repositories
-        .iter()
+        .into_iter()
         .map(|repository| ActionChoiceItem {
             value: repository.alias.clone(),
-            label: repository.alias.clone(),
-            detail: repository.repository.clone(),
+            label: repository.alias,
+            detail: repository.repository,
         })
-        .collect()
+        .collect())
 }
 
 fn selected_argument_value<'a>(
@@ -837,13 +844,15 @@ fn selected_argument_value<'a>(
         .filter(|value| !value.is_empty())
 }
 
-fn repository_slug<'a>(model: &'a Model, value: &'a str) -> &'a str {
-    model
+fn repository_slug(model: &Model, value: &str) -> Result<String, String> {
+    let registry = repository_registry(model)?;
+
+    Ok(registry
         .repositories
-        .iter()
+        .into_iter()
         .find(|repository| repository.alias == value)
-        .map(|repository| repository.repository.as_str())
-        .unwrap_or(value)
+        .map(|repository| repository.repository)
+        .unwrap_or_else(|| value.to_owned()))
 }
 
 fn load_choice_json<T>(
@@ -958,12 +967,16 @@ fn room_choices(
         ],
         "Hospital rooms",
     )?;
-    let repository = repository.map(|value| repository_slug(model, value));
+    let repository = match repository {
+        Some(value) => Some(repository_slug(model, value)?),
+        None => None,
+    };
 
     Ok(rows
         .into_iter()
         .filter(|room| {
             repository
+                .as_deref()
                 .map(|wanted| room.repository.is_empty() || room.repository == wanted)
                 .unwrap_or(true)
         })
@@ -1374,7 +1387,7 @@ fn known_value_choices(
         .or_else(|| selected_argument_value(action, values, "ref"));
 
     match argument.kind.as_str() {
-        "repository" => Ok(Some(repository_choices(model))),
+        "repository" => repository_choices(model).map(Some),
         "workflow" => {
             let repository =
                 repository.ok_or_else(|| "select a repository first".to_owned())?;
