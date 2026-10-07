@@ -409,6 +409,133 @@ fn tool_rank(tool: &Tool) -> u8 {
     }
 }
 
+fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+
+    let allow_actions = !matches!(scope, SearchScope::Tools);
+    let allow_tools = matches!(scope, SearchScope::All | SearchScope::Tools);
+
+    if allow_actions {
+        for action in &model.actions.actions {
+            if let SearchScope::Category(category) = scope {
+                if !action.category.eq_ignore_ascii_case(category) {
+                    continue;
+                }
+            }
+
+            let searchable = format!(
+                "{} {} {} {}",
+                action.id, action.title, action.category, action.summary
+            );
+
+            let score = if query.is_empty() {
+                Some(1000)
+            } else {
+                fuzzy_score(query, &searchable).map(|score| score + 1000)
+            };
+
+            if let Some(score) = score {
+                items.push(SearchItem {
+                    kind: SearchKind::Action,
+                    key: action.id.clone(),
+                    title: action.title.clone(),
+                    subtitle: format!("{} · {}", action.category, action.summary),
+                    score,
+                });
+            }
+        }
+    }
+
+    if allow_tools && !query.is_empty() {
+        for tool in preferred_tools(&model.tools.tools) {
+            let searchable = format!(
+                "{} {} {} {}",
+                tool.name, tool.path, tool.backend, tool.environment
+            );
+
+            if let Some(score) = fuzzy_score(query, &searchable) {
+                items.push(SearchItem {
+                    kind: SearchKind::Tool,
+                    key: tool.name.clone(),
+                    title: tool.name.clone(),
+                    subtitle: format!("{} · {}", tool.environment, tool.path),
+                    score,
+                });
+            }
+        }
+    }
+
+    if matches!(scope, SearchScope::Tools) && query.is_empty() {
+        for tool in preferred_tools(&model.tools.tools).into_iter().take(128) {
+            items.push(SearchItem {
+                kind: SearchKind::Tool,
+                key: tool.name.clone(),
+                title: tool.name.clone(),
+                subtitle: format!("{} · {}", tool.environment, tool.path),
+                score: 0,
+            });
+        }
+    }
+
+    items.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+
+    items.truncate(128);
+    items
+}
+
+fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let query_chars: Vec<char> = query.chars().collect();
+    let mut query_index = 0usize;
+    let mut score = 0i64;
+    let mut last_match = None;
+
+    for (index, character) in candidate.chars().enumerate() {
+        if query_index >= query_chars.len() {
+            break;
+        }
+
+        if character != query_chars[query_index] {
+            continue;
+        }
+
+        score += 20;
+
+        if index == 0 {
+            score += 25;
+        }
+
+        if let Some(previous) = last_match {
+            if index == previous + 1 {
+                score += 30;
+            } else {
+                score -= (index.saturating_sub(previous + 1) as i64).min(10);
+            }
+        }
+
+        last_match = Some(index);
+        query_index += 1;
+    }
+
+    if query_index == query_chars.len() {
+        score -= candidate.chars().count() as i64 / 8;
+        Some(score)
+    } else {
+        None
+    }
+}
+
 fn draw(frame: &mut Frame, model: &Model) {
     let area = frame.area();
     frame.render_widget(
