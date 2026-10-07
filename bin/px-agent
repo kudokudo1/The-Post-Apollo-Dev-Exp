@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1914,6 +1915,239 @@ def run_quick(args) -> dict:
     return payload
 
 
+def orchestrate_ready(args) -> dict:
+    rooms = px_hospital("rooms")
+    candidates = []
+    queued = []
+    skipped = []
+
+    for room in rooms:
+        room_id = str(room.get("id") or "")
+        if not room_id:
+            continue
+
+        ready = px_hospital(
+            "assignments",
+            "--room-id", room_id,
+            "--status", "READY",
+            "--limit", "500",
+        )
+        if not ready:
+            continue
+
+        primary = ready[0]
+        for extra in ready[1:]:
+            queued.append({
+                "roomId": room_id,
+                "assignmentId": str(extra.get("id") or ""),
+                "reason": "SAME_ROOM_QUEUE",
+            })
+
+        sessions = px_hospital(
+            "sessions",
+            "--room-id", room_id,
+        )
+        session = None
+        for row in sessions:
+            status = str(row.get("status") or "").upper()
+            if status in ("FAILED", "ENDED"):
+                continue
+            session = row
+            break
+
+        if session is None:
+            skipped.append({
+                "roomId": room_id,
+                "assignmentId": str(primary.get("id") or ""),
+                "reason": "NO_PERSISTENT_SESSION",
+            })
+            continue
+
+        status = str(session.get("status") or "").upper()
+        active_pid = int(session.get("activePid") or 0)
+        if status == "OPERATING" or active_pid > 0:
+            skipped.append({
+                "roomId": room_id,
+                "assignmentId": str(primary.get("id") or ""),
+                "sessionId": str(session.get("id") or ""),
+                "reason": "DOCTOR_ALREADY_OPERATING",
+            })
+            continue
+
+        candidates.append({
+            "room": room,
+            "assignment": primary,
+            "session": session,
+        })
+
+    bed_counts = {}
+    branch_counts = {}
+    for item in candidates:
+        room = item["room"]
+        bed = os.path.abspath(
+            os.path.expanduser(str(room.get("bedPath") or "").strip())
+        ) if str(room.get("bedPath") or "").strip() else ""
+        repo = str(room.get("repository") or "").strip()
+        branch = str(room.get("branch") or "").strip()
+        item["bedKey"] = bed
+        item["branchKey"] = (
+            repo + "\n" + branch
+            if repo and branch
+            else ""
+        )
+        if bed:
+            bed_counts[bed] = bed_counts.get(bed, 0) + 1
+        if item["branchKey"]:
+            key = item["branchKey"]
+            branch_counts[key] = branch_counts.get(key, 0) + 1
+
+    startable = []
+    for item in candidates:
+        room = item["room"]
+        assignment = item["assignment"]
+        session = item["session"]
+        reason = ""
+        if item["bedKey"] and bed_counts.get(item["bedKey"], 0) > 1:
+            reason = "BED_COLLISION"
+        elif (
+            item["branchKey"]
+            and branch_counts.get(item["branchKey"], 0) > 1
+        ):
+            reason = "BRANCH_COLLISION"
+
+        if reason:
+            skipped.append({
+                "roomId": str(room.get("id") or ""),
+                "assignmentId": str(assignment.get("id") or ""),
+                "sessionId": str(session.get("id") or ""),
+                "reason": reason,
+            })
+            continue
+        startable.append(item)
+
+    plan = [
+        {
+            "roomId": str(item["room"].get("id") or ""),
+            "assignmentId": str(item["assignment"].get("id") or ""),
+            "sessionId": str(item["session"].get("id") or ""),
+            "bedPath": str(item["room"].get("bedPath") or ""),
+            "repository": str(item["room"].get("repository") or ""),
+            "branch": str(item["room"].get("branch") or ""),
+        }
+        for item in startable
+    ]
+
+    if args.dry_run:
+        return {
+            "dryRun": True,
+            "readyCount": len(candidates) + len(queued) + len(skipped),
+            "startableCount": len(startable),
+            "plan": plan,
+            "started": [],
+            "failed": [],
+            "skipped": skipped,
+            "queued": queued,
+        }
+
+    activated = []
+    for item in startable:
+        assignment_id = str(item["assignment"].get("id") or "")
+        room_id = str(item["room"].get("id") or "")
+        session_id = str(item["session"].get("id") or "")
+        try:
+            activation = px_hospital(
+                "assignment-activate",
+                assignment_id,
+            )
+            activated.append({
+                "roomId": room_id,
+                "assignmentId": assignment_id,
+                "sessionId": session_id,
+                "activation": activation,
+            })
+        except Exception as exc:
+            skipped.append({
+                "roomId": room_id,
+                "assignmentId": assignment_id,
+                "sessionId": session_id,
+                "reason": "ACTIVATION_FAILED",
+                "error": str(exc),
+            })
+
+    def launch(item: dict) -> dict:
+        quick_args = argparse.Namespace(
+            session_id=item["sessionId"],
+            quick_command="CONTINUE",
+            author_id=args.author_id,
+            timeout=args.timeout,
+        )
+        try:
+            result = run_quick(quick_args)
+            return {
+                "ok": True,
+                **item,
+                "result": result,
+            }
+        except Exception as exc:
+            try:
+                px_hospital(
+                    "assignment-status",
+                    item["assignmentId"],
+                    "PAUSED",
+                )
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                **item,
+                "error": str(exc),
+            }
+
+    started = []
+    failed = []
+    workers = max(1, min(int(args.max_workers), 16))
+    if activated:
+        with ThreadPoolExecutor(
+            max_workers=min(workers, len(activated))
+        ) as pool:
+            futures = {
+                pool.submit(launch, item): item
+                for item in activated
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result.get("ok"):
+                    started.append(result)
+                else:
+                    failed.append(result)
+
+    started.sort(key=lambda row: row["roomId"])
+    failed.sort(key=lambda row: row["roomId"])
+    skipped.sort(
+        key=lambda row: (
+            str(row.get("roomId") or ""),
+            str(row.get("assignmentId") or ""),
+        )
+    )
+    queued.sort(
+        key=lambda row: (
+            str(row.get("roomId") or ""),
+            str(row.get("assignmentId") or ""),
+        )
+    )
+
+    return {
+        "dryRun": False,
+        "readyCount": len(candidates) + len(queued) + len(skipped),
+        "startableCount": len(startable),
+        "plan": plan,
+        "started": started,
+        "failed": failed,
+        "skipped": skipped,
+        "queued": queued,
+    }
+
+
 def run_report_feedback(args) -> dict:
     session = px_hospital("session", args.session_id)
 
@@ -2077,6 +2311,13 @@ def build_parser():
     quick.add_argument("--timeout", type=int, default=1800)
     quick.add_argument("--json", action="store_true")
 
+    orchestrate = sub.add_parser("orchestrate-ready")
+    orchestrate.add_argument("--author-id", default="operator")
+    orchestrate.add_argument("--timeout", type=int, default=1800)
+    orchestrate.add_argument("--max-workers", type=int, default=8)
+    orchestrate.add_argument("--dry-run", action="store_true")
+    orchestrate.add_argument("--json", action="store_true")
+
     report_feedback = sub.add_parser("report-feedback")
     report_feedback.add_argument("session_id")
     report_feedback.add_argument("report_id", type=int)
@@ -2121,6 +2362,8 @@ def main() -> int:
             emit(cancel_session(args), args.json)
         elif args.command == "quick":
             emit(run_quick(args), args.json)
+        elif args.command == "orchestrate-ready":
+            emit(orchestrate_ready(args), args.json)
         elif args.command == "report-feedback":
             emit(run_report_feedback(args), args.json)
         else:
