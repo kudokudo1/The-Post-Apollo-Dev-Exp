@@ -1212,7 +1212,10 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
 
     if mutation_requires_arm(action) && !app.mutation_armed {
         app.mode = Mode::MutationPreview;
-        app.status = Some("REMOTE EXECUTION REFUSED // action is not armed".to_owned());
+        app.status = Some(format!(
+            "{} EXECUTION REFUSED // action is not armed",
+            action.mutation.to_uppercase()
+        ));
         return;
     }
 
@@ -1222,7 +1225,10 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             app.mutation_armed = false;
             app.mutation_preflight.clear();
             app.mutation_preflight_token.clear();
-            app.status = Some(format!("REMOTE EXECUTION REFUSED // {error}"));
+            app.status = Some(format!(
+                "{} EXECUTION REFUSED // {error}",
+                action.mutation.to_uppercase()
+            ));
             return;
         }
     }
@@ -1324,7 +1330,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1401,7 +1411,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
         );
         app.open_output(
-            format!("{} // REMOTE // VERIFIED", action.title),
+            format!(
+                "{} // {} // VERIFIED",
+                action.title,
+                action.mutation.to_uppercase()
+            ),
             text,
         );
         return;
