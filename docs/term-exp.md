@@ -47,8 +47,21 @@ The first interaction model is now live:
   two-column layout;
 - `q`, `Esc`, and `Ctrl-C` preserve clean terminal exit behavior.
 
-Selection is browse-only in this lane. Action execution and specialist tool
-delegation are intentionally the next layer.
+Tool selection can now delegate a guarded specialist set:
+
+- Lazygit;
+- Neovim;
+- btop;
+- Zellij;
+- fzf.
+
+TERM EXP re-resolves the selected specialist through `px which --json` at
+launch time, suspends raw/alternate-screen mode, runs the exact resolved
+invocation, and restores TERM EXP when the specialist exits.
+
+Other discovered tools remain visible but are not launched yet. Semantic PX
+actions also remain browse-only until argument collection and mutation policy
+are wired.
 
 ## Architecture
 
