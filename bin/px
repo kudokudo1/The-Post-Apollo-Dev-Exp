@@ -243,6 +243,394 @@ hospital_session_guard_events() {
     python3 "$ROOT/bin/px-hospital-store" events "$session_id" --limit 1000 --json
 }
 
+recovery_refuse() {
+    local as_json="$1"
+    local operation_id="$2"
+    local reason="$3"
+
+    if [[ "$as_json" == "true" ]]; then
+        jq -n \
+            --arg operationId "$operation_id" \
+            --arg reason "$reason" \
+            '{
+                recovered:false,
+                operationId:$operationId,
+                reason:$reason
+            }'
+    else
+        printf 'RECOVERY REFUSED // %s\n' "$reason" >&2
+    fi
+
+    return 1
+}
+
+execute_operation_recovery() {
+    local operation_id="${1:-}"
+    shift || true
+
+    local as_json="false"
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --json) as_json="true" ;;
+            *) die "unknown operation recover option: $arg" ;;
+        esac
+    done
+
+    [[ -n "$operation_id" ]] || die "operation id required for recovery"
+
+    need python3
+    need jq
+    need gh
+    need base64
+    need sha256sum
+    need awk
+
+    local facts strategy plan_available executor_available
+    local repo base workflow_path install_commit recorded_blob
+    local verified_base_sha expected_yaml_sha recorded_yaml_sha
+    local encoded_base metadata current_blob current_yaml_sha current_head
+    local verified_history install_history
+    local recovery_command arguments_json before_json recovery_record recovery_id
+    local final_metadata final_blob delete_output delete_status=0
+    local after_json verification_json after_head head_history delete_commit
+    local lookup_tmp lookup_error="" finish_summary
+
+    facts="$(python3 "$ROOT/bin/px-operation-store" recovery "$operation_id" --json)"
+    strategy="$(jq -r '.strategy // ""' <<<"$facts")"
+    plan_available="$(jq -r '.planAvailable // false' <<<"$facts")"
+    executor_available="$(jq -r '.executorAvailable // false' <<<"$facts")"
+
+    if [[ "$strategy" != "DELETE_CREATED_WORKFLOW"
+            || "$plan_available" != "true"
+            || "$executor_available" != "true" ]]; then
+        recovery_refuse "$as_json" "$operation_id" \
+            "no executable workflow-creation recovery plan is available"
+    fi
+
+    repo="$(jq -r '.plan.repository // ""' <<<"$facts")"
+    base="$(jq -r '.plan.base // ""' <<<"$facts")"
+    workflow_path="$(jq -r '.plan.path // ""' <<<"$facts")"
+    install_commit="$(jq -r '.plan.installCommit // ""' <<<"$facts")"
+    recorded_blob="$(jq -r '.plan.remoteBlobSha // ""' <<<"$facts")"
+    verified_base_sha="$(jq -r '.plan.verifiedBaseSha // ""' <<<"$facts")"
+    expected_yaml_sha="$(jq -r '.plan.expectedYamlSha // ""' <<<"$facts")"
+
+    [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded repository identity is invalid"
+    case "$workflow_path" in
+        .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+        *) recovery_refuse "$as_json" "$operation_id" "recorded workflow path is invalid" ;;
+    esac
+    [[ "$workflow_path" != *".."* ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded workflow path contains parent traversal"
+    [[ -n "$base" && -n "$install_commit" && -n "$recorded_blob"
+        && -n "$verified_base_sha" && -n "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded recovery identity is incomplete"
+
+    recorded_yaml_sha="$(jq -j '.plan.yaml // ""' <<<"$facts" | sha256sum | awk '{print $1}')"
+    [[ "$recorded_yaml_sha" == "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded YAML no longer matches its verified hash"
+
+    encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+    lookup_tmp="$(mktemp)"
+    if metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>"$lookup_tmp")"; then
+        :
+    else
+        lookup_error="$(cat "$lookup_tmp")"
+        rm -f "$lookup_tmp"
+        recovery_refuse "$as_json" "$operation_id" \
+            "recorded workflow target is unavailable; it may already be absent or repository state changed // ${lookup_error:-unknown GitHub error}"
+    fi
+    rm -f "$lookup_tmp"
+
+    [[ "$(jq -r '.type // ""' <<<"$metadata")" == "file" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded workflow target is no longer a file"
+
+    current_blob="$(jq -r '.sha // ""' <<<"$metadata")"
+    [[ "$current_blob" == "$recorded_blob" ]] \
+        || recovery_refuse "$as_json" "$operation_id" \
+            "workflow content changed after the recorded creation // expected blob $recorded_blob // current $current_blob"
+
+    current_yaml_sha="$(github_remote_file_sha256 "$repo" "$workflow_path" "$base")"
+    [[ "$current_yaml_sha" == "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" \
+            "workflow bytes changed after the recorded creation // expected $expected_yaml_sha // current $current_yaml_sha"
+
+    current_head="$(github_ref_sha "$repo" "$base")"
+    [[ -n "$current_head" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded base branch has no current head"
+
+    verified_history="$(gh api "repos/$repo/compare/$verified_base_sha...$current_head" --jq '.status')" \
+        || recovery_refuse "$as_json" "$operation_id" "could not validate verified base ancestry"
+    case "$verified_history" in
+        identical|ahead) ;;
+        *) recovery_refuse "$as_json" "$operation_id" \
+            "base history diverged after verification // status $verified_history" ;;
+    esac
+
+    install_history="$(gh api "repos/$repo/compare/$install_commit...$current_head" --jq '.status')" \
+        || recovery_refuse "$as_json" "$operation_id" "could not validate install commit ancestry"
+    case "$install_history" in
+        identical|ahead) ;;
+        *) recovery_refuse "$as_json" "$operation_id" \
+            "install commit is no longer in the base history // status $install_history" ;;
+    esac
+
+    recovery_command="$(jq -nc \
+        --arg repo "$repo" \
+        --arg path "$workflow_path" \
+        --arg base "$base" \
+        --arg blob "$recorded_blob" \
+        '["delete-workflow",$repo,$path,$base,"--expect-sha",$blob,"--json"]')"
+
+    arguments_json="$(jq -nc \
+        --arg sourceOperationId "$operation_id" \
+        --arg repository "$repo" \
+        --arg base "$base" \
+        --arg path "$workflow_path" \
+        --arg blobSha "$recorded_blob" \
+        '{
+            sourceOperationId:$sourceOperationId,
+            repository:$repository,
+            base:$base,
+            path:$path,
+            blobSha:$blobSha
+        }')"
+
+    before_json="$(jq -nc \
+        --arg sourceOperationId "$operation_id" \
+        --arg strategy "$strategy" \
+        --arg currentHead "$current_head" \
+        --arg currentBlobSha "$current_blob" \
+        --arg currentYamlSha "$current_yaml_sha" \
+        --arg verifiedHistory "$verified_history" \
+        --arg installHistory "$install_history" \
+        --argjson plan "$(jq -c '.plan' <<<"$facts")" \
+        '{
+            sourceOperationId:$sourceOperationId,
+            strategy:$strategy,
+            plan:$plan,
+            live:{
+                head:$currentHead,
+                blobSha:$currentBlobSha,
+                yamlSha:$currentYamlSha,
+                verifiedHistory:$verifiedHistory,
+                installHistory:$installHistory
+            }
+        }')"
+
+    recovery_record="$(python3 "$ROOT/bin/px-operation-store" start \
+        --action-id "px.operation.recover.workflow.create" \
+        --title "Recover Workflow Creation" \
+        --mutation remote \
+        --recovery EVIDENCE_ONLY \
+        --command-json "$recovery_command" \
+        --arguments-json "$arguments_json" \
+        --before-json "$before_json" \
+        --json)"
+    recovery_id="$(jq -r '.id // ""' <<<"$recovery_record")"
+    [[ -n "$recovery_id" ]] || die "recovery journal returned no operation id"
+
+    if final_metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>/dev/null)"; then
+        final_blob="$(jq -r '.sha // ""' <<<"$final_metadata")"
+    else
+        final_blob=""
+    fi
+
+    if [[ "$final_blob" != "$recorded_blob" ]]; then
+        after_json="$(jq -nc \
+            --arg refusal "STALE_TARGET" \
+            --arg expectedBlob "$recorded_blob" \
+            --arg currentBlob "$final_blob" \
+            '{refusal:$refusal,expectedBlob:$expectedBlob,currentBlob:$currentBlob}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status FAILED \
+            --exit-code 1 \
+            --verification-status NOT_RUN \
+            --after-json "$after_json" \
+            --verification-json '{}' \
+            --result-summary "recovery refused because workflow identity changed after journal start" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow identity changed immediately before recovery execution"
+    fi
+
+    lookup_tmp="$(mktemp)"
+    if delete_output="$("$ROOT/bin/px" delete-workflow \
+        "$repo" "$workflow_path" "$base" \
+        --expect-sha "$recorded_blob" --json 2>"$lookup_tmp")"; then
+        delete_status=0
+    else
+        delete_status=$?
+        lookup_error="$(cat "$lookup_tmp")"
+        rm -f "$lookup_tmp"
+        after_json="$(jq -nc \
+            --arg stdout "$delete_output" \
+            --arg stderr "$lookup_error" \
+            '{stdout:$stdout,stderr:$stderr}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status FAILED \
+            --exit-code "$delete_status" \
+            --verification-status NOT_RUN \
+            --after-json "$after_json" \
+            --verification-json '{}' \
+            --result-summary "workflow creation recovery execution failed" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow deletion failed // ${lookup_error:-unknown error}"
+    fi
+    rm -f "$lookup_tmp"
+
+    delete_commit="$(jq -r '.commit // ""' <<<"$delete_output")"
+    after_json="$(jq -nc --argjson delete "$delete_output" '{delete:$delete}')"
+
+    lookup_tmp="$(mktemp)"
+    if gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" >/dev/null 2>"$lookup_tmp"; then
+        lookup_error="workflow still exists after recovery deletion"
+        rm -f "$lookup_tmp"
+        verification_json="$(jq -nc \
+            --arg reason "$lookup_error" \
+            --arg previousHead "$current_head" \
+            '{passed:false,reason:$reason,previousHead:$previousHead}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status FAILED \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "$lookup_error" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" "$lookup_error"
+    else
+        lookup_error="$(cat "$lookup_tmp")"
+    fi
+    rm -f "$lookup_tmp"
+
+    if ! grep -qiE '404|not found' <<<"$lookup_error"; then
+        verification_json="$(jq -nc \
+            --arg reason "${lookup_error:-workflow absence could not be verified}" \
+            --arg previousHead "$current_head" \
+            '{passed:false,reason:$reason,previousHead:$previousHead}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status UNAVAILABLE \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "workflow deletion succeeded but absence could not be verified" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow deletion succeeded but absence could not be verified"
+    fi
+
+    after_head="$(github_ref_sha "$repo" "$base")"
+    [[ -n "$after_head" ]] || die "recovery verification could not resolve the base head"
+
+    head_history="$(gh api "repos/$repo/compare/$current_head...$after_head" --jq '.status')" \
+        || die "recovery verification could not compare branch heads"
+
+    if [[ "$after_head" == "$current_head" || "$head_history" != "ahead" ]]; then
+        verification_json="$(jq -nc \
+            --arg reason "base branch did not advance through the recovery deletion" \
+            --arg previousHead "$current_head" \
+            --arg currentHead "$after_head" \
+            --arg history "$head_history" \
+            '{passed:false,reason:$reason,previousHead:$previousHead,currentHead:$currentHead,history:$history}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status FAILED \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "workflow recovery deletion could not be tied to an advancing branch" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow was deleted but branch advancement could not be verified"
+    fi
+
+    if [[ -n "$delete_commit" ]]; then
+        install_history="$(gh api "repos/$repo/compare/$delete_commit...$after_head" --jq '.status')" \
+            || die "recovery verification could not validate delete commit ancestry"
+        case "$install_history" in
+            identical|ahead) ;;
+            *)
+                verification_json="$(jq -nc \
+                    --arg reason "delete commit is not in the current base history" \
+                    --arg deleteCommit "$delete_commit" \
+                    --arg currentHead "$after_head" \
+                    --arg history "$install_history" \
+                    '{passed:false,reason:$reason,deleteCommit:$deleteCommit,currentHead:$currentHead,history:$history}')"
+                python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+                    --status COMPLETE --exit-code 0 \
+                    --verification-status FAILED \
+                    --after-json "$after_json" \
+                    --verification-json "$verification_json" \
+                    --result-summary "workflow recovery delete commit was not retained in base history" \
+                    --json >/dev/null
+                recovery_refuse "$as_json" "$operation_id" \
+                    "delete commit is not in the current base history"
+                ;;
+        esac
+    fi
+
+    verification_json="$(jq -nc \
+        --argjson passed true \
+        --arg repository "$repo" \
+        --arg base "$base" \
+        --arg path "$workflow_path" \
+        --arg previousHead "$current_head" \
+        --arg currentHead "$after_head" \
+        --arg deleteCommit "$delete_commit" \
+        --arg history "$head_history" \
+        '{
+            passed:$passed,
+            repository:$repository,
+            base:$base,
+            path:$path,
+            fileAbsent:true,
+            previousHead:$previousHead,
+            currentHead:$currentHead,
+            deleteCommit:(if $deleteCommit == "" then null else $deleteCommit end),
+            history:$history
+        }')"
+
+    finish_summary="workflow creation recovery executed and verified"
+    python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+        --status COMPLETE --exit-code 0 \
+        --verification-status PASSED \
+        --after-json "$after_json" \
+        --verification-json "$verification_json" \
+        --result-summary "$finish_summary" \
+        --json >/dev/null
+
+    if [[ "$as_json" == "true" ]]; then
+        jq -n \
+            --arg operationId "$operation_id" \
+            --arg recoveryOperationId "$recovery_id" \
+            --arg strategy "$strategy" \
+            --arg repository "$repo" \
+            --arg base "$base" \
+            --arg path "$workflow_path" \
+            --arg deleteCommit "$delete_commit" \
+            --arg previousHead "$current_head" \
+            --arg currentHead "$after_head" \
+            '{
+                recovered:true,
+                operationId:$operationId,
+                recoveryOperationId:$recoveryOperationId,
+                strategy:$strategy,
+                repository:$repository,
+                base:$base,
+                path:$path,
+                deleteCommit:(if $deleteCommit == "" then null else $deleteCommit end),
+                previousHead:$previousHead,
+                currentHead:$currentHead,
+                verification:"PASSED"
+            }'
+    else
+        printf 'RECOVERY VERIFIED // %s // %s@%s\n' \
+            "$workflow_path" "$base" "${after_head:0:8}"
+    fi
+}
+
 mutation_preflight() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
@@ -2646,12 +3034,12 @@ Usage:
   px term
   px tui
   px operations [--limit N] [--status RUNNING|COMPLETE|FAILED] [--json]
-  px operation <start|finish|get|list|recovery> ...
+  px operation <start|finish|get|list|recovery|recover> ...
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
             [--script=PATH] [--expect-base=BRANCH] [--expect-base-sha=SHA]
             [--expect-yaml-sha=SHA256]
-  px delete-workflow <repo> <workflow-path> [ref] [--expect-sha SHA]
+  px delete-workflow <repo> <workflow-path> [ref] [--expect-sha SHA] [--json]
   px hospital <init|status> [--json]
   px agent <providers|session-create|turn|status|cancel|quick> ...
 
@@ -2873,7 +3261,12 @@ case "$cmd" in
 
     operation)
         need python3
-        python3 "$ROOT/bin/px-operation-store" "$@"
+        if [[ "${1:-}" == "recover" ]]; then
+            shift
+            execute_operation_recovery "$@"
+        else
+            python3 "$ROOT/bin/px-operation-store" "$@"
+        fi
         ;;
 
     templates)
@@ -2900,11 +3293,20 @@ case "$cmd" in
         workflow="${2:-}"
         ref="${3:-}"
         expected_sha=""
+        delete_format="human"
 
         if [[ "${4:-}" == "--expect-sha" ]]; then
             expected_sha="${5:-}"
             [[ -n "$expected_sha" ]] || die "workflow delete expected SHA is missing"
-            [[ -z "${6:-}" ]] || die "unknown delete-workflow argument: ${6}"
+            if [[ "${6:-}" == "--json" ]]; then
+                delete_format="json"
+                [[ -z "${7:-}" ]] || die "unknown delete-workflow argument: ${7}"
+            elif [[ -n "${6:-}" ]]; then
+                die "unknown delete-workflow argument: ${6}"
+            fi
+        elif [[ "${4:-}" == "--json" ]]; then
+            delete_format="json"
+            [[ -z "${5:-}" ]] || die "unknown delete-workflow argument: ${5}"
         elif [[ -n "${4:-}" ]]; then
             die "unknown delete-workflow argument: ${4}"
         fi
@@ -2941,12 +3343,30 @@ case "$cmd" in
             die "workflow delete refused: content SHA changed after confirmation // expected $expected_sha // current $sha"
         fi
 
-        gh api --method DELETE "repos/$repo/contents/$workflow" \
+        delete_response="$(gh api --method DELETE "repos/$repo/contents/$workflow" \
             -f "message=Delete workflow $workflow" \
             -f "sha=$sha" \
-            -f "branch=$ref" >/dev/null
+            -f "branch=$ref")"
+        delete_commit="$(jq -r '.commit.sha // ""' <<<"$delete_response")"
 
-        printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        if [[ "$delete_format" == "json" ]]; then
+            jq -n \
+                --arg repository "$repo" \
+                --arg path "$workflow" \
+                --arg ref "$ref" \
+                --arg blobSha "$sha" \
+                --arg commit "$delete_commit" \
+                '{
+                    deleted:true,
+                    repository:$repository,
+                    path:$path,
+                    ref:$ref,
+                    blobSha:$blobSha,
+                    commit:(if $commit == "" then null else $commit end)
+                }'
+        else
+            printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        fi
         ;;
 
     help|-h|--help)
