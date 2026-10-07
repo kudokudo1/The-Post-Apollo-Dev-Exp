@@ -821,6 +821,7 @@ fn known_value_choices(
         "workflow_template" => resolver::workflow_template_choices(&model.px_path).map(Some),
         "command" => resolver::command_choices(&model.px_path).map(Some),
         "operation" => resolver::operation_choices(&model.px_path).map(Some),
+        "stale_operation" => resolver::stale_operation_choices(&model.px_path).map(Some),
         "branch" | "ref" => {
             let repository =
                 repository.ok_or_else(|| "select a repository first".to_owned())?;
