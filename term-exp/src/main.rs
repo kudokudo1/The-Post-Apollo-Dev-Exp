@@ -804,6 +804,53 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
     items
 }
 
+fn action_search_score(action: &Action, query: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(500);
+    }
+
+    let mut scores = vec![
+        search_field_score(query, &action.title),
+        search_field_score(query, &action.id),
+        search_field_score(query, &action.category),
+    ];
+
+    scores.extend(
+        action
+            .keywords
+            .iter()
+            .map(|keyword| search_field_score(query, keyword)),
+    );
+
+    let query_lower = query.to_lowercase();
+    if action.summary.to_lowercase().contains(&query_lower) {
+        scores.push(search_field_score(query, &action.summary).map(|score| score - 250));
+    }
+
+    scores.into_iter().flatten().max()
+}
+
+fn search_field_score(query: &str, candidate: &str) -> Option<i64> {
+    let query_lower = query.to_lowercase();
+    let candidate_lower = candidate.to_lowercase();
+
+    if query_lower.is_empty() {
+        return Some(0);
+    }
+
+    let base = fuzzy_score(&query_lower, &candidate_lower)?;
+
+    if candidate_lower == query_lower {
+        Some(base + 2000)
+    } else if candidate_lower.starts_with(&query_lower) {
+        Some(base + 1400)
+    } else if candidate_lower.contains(&query_lower) {
+        Some(base + 900)
+    } else {
+        Some(base)
+    }
+}
+
 fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     let query = query.to_lowercase();
     let candidate = candidate.to_lowercase();
