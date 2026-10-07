@@ -2,11 +2,14 @@
 import argparse
 import json
 import os
+import signal
+import time
 import re
 import shutil
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -362,6 +365,111 @@ def store_event(session_id: str, event_type: str, payload: dict) -> None:
     )
 
 
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def elapsed_seconds(started_at: str) -> int:
+    value = str(started_at or "").strip()
+    if not value:
+        return 0
+
+    try:
+        started = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+
+    return max(
+        0,
+        int((datetime.now(timezone.utc) - started).total_seconds()),
+    )
+
+
+def status_payload(session_id: str) -> dict:
+    session = px_hospital("session", session_id)
+    return {
+        "session": session,
+        "status": str(session.get("status") or "IDLE"),
+        "activePid": int(session.get("activePid") or 0),
+        "turnStartedAt": str(session.get("turnStartedAt") or ""),
+        "elapsedSeconds": elapsed_seconds(
+            str(session.get("turnStartedAt") or "")
+        ),
+        "operating": (
+            str(session.get("status") or "").upper() == "OPERATING"
+            and int(session.get("activePid") or 0) > 0
+        ),
+    }
+
+
+def terminate_process_group(pid: int, grace_seconds: float = 1.5) -> bool:
+    if pid <= 0:
+        return False
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+def cancel_session(args) -> dict:
+    session = px_hospital("session", args.session_id)
+    active_pid = int(session.get("activePid") or 0)
+    status = str(session.get("status") or "").upper()
+
+    if status != "OPERATING" or active_pid <= 0:
+        return {
+            "cancelled": False,
+            "reason": "NOT_OPERATING",
+            "session": session,
+        }
+
+    updated = px_hospital(
+        "session-runtime",
+        args.session_id,
+        "--status", "PAUSED",
+        "--clear-active-pid",
+        "--clear-turn-started",
+        "--clear-error",
+    )
+
+    signalled = terminate_process_group(active_pid)
+
+    store_event(
+        args.session_id,
+        "turn.cancelled",
+        {
+            "activePid": active_pid,
+            "signalled": signalled,
+            "reason": args.reason,
+        },
+    )
+
+    return {
+        "cancelled": True,
+        "signalled": signalled,
+        "reason": args.reason,
+        "session": updated,
+    }
+
+
 def run_turn(args) -> dict:
     session = px_hospital("session", args.session_id)
     provider_id = str(session.get("providerId") or "").strip()
@@ -430,13 +538,6 @@ def run_turn(args) -> dict:
         ]
 
     px_hospital(
-        "session-runtime",
-        args.session_id,
-        "--working-directory", str(cwd),
-        "--status", "OPERATING",
-        "--clear-error",
-    )
-    px_hospital(
         "message-append",
         "--room-id", str(session["roomId"]),
         "--session-id", args.session_id,
@@ -458,22 +559,57 @@ def run_turn(args) -> dict:
     )
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
-            input=provider_input,
             text=True,
             cwd=str(cwd),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        px_hospital(
+            "session-runtime",
+            args.session_id,
+            "--status", "FAILED",
+            "--clear-active-pid",
+            "--clear-turn-started",
+            "--last-error", f"provider launch failed: {exc}",
+        )
+        store_event(
+            args.session_id,
+            "turn.failed",
+            {"reason": "launch-failed", "detail": str(exc)},
+        )
+        raise RuntimeError(f"provider launch failed: {exc}") from exc
+
+    turn_started_at = now_iso()
+    px_hospital(
+        "session-runtime",
+        args.session_id,
+        "--working-directory", str(cwd),
+        "--status", "OPERATING",
+        "--active-pid", str(proc.pid),
+        "--turn-started-at", turn_started_at,
+        "--clear-error",
+    )
+
+    try:
+        stdout_text, stderr_text = proc.communicate(
+            input=provider_input,
             timeout=args.timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        terminate_process_group(proc.pid)
+        stdout_text, stderr_text = proc.communicate()
         px_hospital(
             "session-runtime",
             args.session_id,
             "--status", "FAILED",
             "--last-exit-code", "124",
+            "--clear-active-pid",
+            "--clear-turn-started",
             "--last-error", f"provider turn timed out after {args.timeout}s",
         )
         store_event(
@@ -485,6 +621,18 @@ def run_turn(args) -> dict:
             f"provider turn timed out after {args.timeout}s"
         ) from exc
 
+    current_session = px_hospital("session", args.session_id)
+    if str(current_session.get("status") or "").upper() == "PAUSED":
+        return {
+            "session": current_session,
+            "providerId": provider_id,
+            "providerSessionId": provider_session_id,
+            "assistant": "",
+            "eventCount": 0,
+            "stderr": stderr_text.strip(),
+            "cancelled": True,
+        }
+
     observed_id = ""
     assistant = ""
     normalized_events = []
@@ -493,12 +641,12 @@ def run_turn(args) -> dict:
     try:
         if effective_dialect == "hermes-text":
             observed_id, assistant, normalized_events = parse_hermes_text(
-                proc.stdout,
-                proc.stderr,
+                stdout_text,
+                stderr_text,
             )
         else:
             observed_id, assistant, normalized_events = parse_jsonl(
-                proc.stdout,
+                stdout_text,
                 effective_dialect,
             )
     except RuntimeError as exc:
@@ -521,6 +669,8 @@ def run_turn(args) -> dict:
             args.session_id,
             "--status", "FAILED",
             "--last-exit-code", str(proc.returncode),
+            "--clear-active-pid",
+            "--clear-turn-started",
             "--last-error", detail,
         )
         store_event(
@@ -539,7 +689,7 @@ def run_turn(args) -> dict:
     if proc.returncode != 0 or parse_error or not assistant:
         detail = (
             parse_error
-            or proc.stderr.strip()
+            or stderr_text.strip()
             or (
                 "provider returned no assistant text"
                 if not assistant
@@ -551,6 +701,8 @@ def run_turn(args) -> dict:
             args.session_id,
             "--status", "FAILED",
             "--last-exit-code", str(proc.returncode),
+            "--clear-active-pid",
+            "--clear-turn-started",
             "--last-error", detail,
         ]
         if effective_id:
@@ -565,7 +717,7 @@ def run_turn(args) -> dict:
             {
                 "reason": detail,
                 "exitCode": proc.returncode,
-                "stderr": proc.stderr[-4000:],
+                "stderr": stderr_text[-4000:],
             },
         )
         raise RuntimeError(detail)
@@ -588,6 +740,8 @@ def run_turn(args) -> dict:
         "--working-directory", str(cwd),
         "--status", "WAITING",
         "--last-exit-code", str(proc.returncode),
+        "--clear-active-pid",
+        "--clear-turn-started",
         "--clear-error",
     ]
     if effective_id:
@@ -613,7 +767,7 @@ def run_turn(args) -> dict:
         "providerSessionId": effective_id,
         "assistant": assistant,
         "eventCount": len(normalized_events),
-        "stderr": proc.stderr.strip(),
+        "stderr": stderr_text.strip(),
     }
 
 
@@ -647,6 +801,15 @@ def build_parser():
     turn.add_argument("--timeout", type=int, default=1800)
     turn.add_argument("--json", action="store_true")
 
+    status = sub.add_parser("status")
+    status.add_argument("session_id")
+    status.add_argument("--json", action="store_true")
+
+    cancel = sub.add_parser("cancel")
+    cancel.add_argument("session_id")
+    cancel.add_argument("--reason", default="OPERATOR")
+    cancel.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -666,6 +829,10 @@ def main() -> int:
             emit(create_session(args), args.json)
         elif args.command == "turn":
             emit(run_turn(args), args.json)
+        elif args.command == "status":
+            emit(status_payload(args.session_id), args.json)
+        elif args.command == "cancel":
+            emit(cancel_session(args), args.json)
         else:
             raise RuntimeError(f"unsupported agent command: {args.command}")
     except (OSError, RuntimeError) as exc:

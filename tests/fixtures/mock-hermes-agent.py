@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import time
 
 args = sys.argv[1:]
 session_id = os.environ.get(
@@ -23,6 +24,9 @@ if not prompt:
 
 if "FORCE_SESSION_MISMATCH" in prompt:
     session_id = "different-provider-session"
+
+if "SLOW_TURN" in prompt:
+    time.sleep(30)
 
 reply = "MOCK: " + prompt
 

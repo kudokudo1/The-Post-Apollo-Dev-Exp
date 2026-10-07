@@ -122,6 +122,96 @@ assert types.count("provider.text") == 2, types
 assert types.count("provider.result") == 2, types
 PY
 
+CANCEL_BED="$TMP/t8-bed"
+mkdir -p "$CANCEL_BED"
+
+"$ROOT/bin/px" hospital room-bind T8 \
+    --repository kudokudo1/taskbars-post-apollo \
+    --patient-id patient-taskbars \
+    --patient-label TASKBARS \
+    --team T8 \
+    --branch feature/cancel-test \
+    --bed-path "$CANCEL_BED" \
+    --doctor-id doctor-t8 \
+    --json >/dev/null
+
+"$ROOT/bin/px" agent session-create \
+    --room-id T8 \
+    --doctor-id doctor-t8 \
+    --provider-id mock \
+    --working-directory "$CANCEL_BED" \
+    --session-id session-t8-cancel \
+    --json >/dev/null
+
+(
+    printf '%s\n' '{"prompt":"SLOW_TURN"}' | \
+        "$ROOT/bin/px" agent turn session-t8-cancel \
+            --prompt-json-stdin \
+            --timeout 60 \
+            --json
+) >"$TMP/cancel-turn.json" 2>"$TMP/cancel-turn.err" &
+turn_pid=$!
+
+operating=false
+for _ in $(seq 1 100); do
+    status_json="$("$ROOT/bin/px" agent status session-t8-cancel --json)"
+    if python3 - "$status_json" <<'PY'
+import json
+import sys
+status = json.loads(sys.argv[1])
+raise SystemExit(
+    0
+    if status["operating"] and status["activePid"] > 0
+    else 1
+)
+PY
+    then
+        operating=true
+        break
+    fi
+    sleep 0.05
+done
+
+if [[ "$operating" != true ]]; then
+    printf 'agent turn never entered OPERATING state\n' >&2
+    cat "$TMP/cancel-turn.err" >&2 || true
+    kill "$turn_pid" 2>/dev/null || true
+    wait "$turn_pid" 2>/dev/null || true
+    exit 1
+fi
+
+cancel_json="$("$ROOT/bin/px" agent cancel session-t8-cancel --reason OPERATOR --json)"
+wait "$turn_pid"
+
+cancel_turn_json="$(cat "$TMP/cancel-turn.json")"
+cancel_status_json="$("$ROOT/bin/px" agent status session-t8-cancel --json)"
+cancel_events_json="$("$ROOT/bin/px" hospital events session-t8-cancel --limit 100 --json)"
+
+python3 - \
+    "$cancel_json" \
+    "$cancel_turn_json" \
+    "$cancel_status_json" \
+    "$cancel_events_json" <<'PY'
+import json
+import sys
+
+cancelled = json.loads(sys.argv[1])
+turn = json.loads(sys.argv[2])
+status = json.loads(sys.argv[3])
+events = json.loads(sys.argv[4])
+
+assert cancelled["cancelled"] is True, cancelled
+assert cancelled["reason"] == "OPERATOR", cancelled
+assert turn["cancelled"] is True, turn
+assert turn["assistant"] == "", turn
+assert status["status"] == "PAUSED", status
+assert status["operating"] is False, status
+assert status["activePid"] == 0, status
+assert status["turnStartedAt"] == "", status
+assert status["elapsedSeconds"] == 0, status
+assert any(row["type"] == "turn.cancelled" for row in events), events
+PY
+
 set +e
 mismatch_output="$(printf '%s' 'FORCE_SESSION_MISMATCH' |     "$ROOT/bin/px" agent turn session-t6-agent         --prompt-stdin         --timeout 30         --json 2>&1)"
 mismatch_status=$?
