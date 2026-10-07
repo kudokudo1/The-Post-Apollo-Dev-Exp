@@ -158,6 +158,59 @@ struct WorkflowTemplateRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct CheckpointRecord {
+    id: String,
+    #[serde(default, rename = "roomId")]
+    room_id: String,
+    #[serde(default, rename = "sessionId")]
+    session_id: String,
+    #[serde(default, rename = "doctorId")]
+    doctor_id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomReportRecord {
+    id: String,
+    #[serde(default, rename = "sessionId")]
+    session_id: String,
+    #[serde(default, rename = "doctorId")]
+    doctor_id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default, rename = "headSha")]
+    head_sha: String,
+    #[serde(default, rename = "gitEvidenceStatus")]
+    git_evidence_status: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChartEntryRecord {
+    id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    priority: i64,
+    #[serde(default)]
+    status: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct BranchRegistry {
     #[serde(default, rename = "defaultBranch")]
     default_branch: String,
@@ -1064,6 +1117,158 @@ fn workflow_template_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, Str
         .collect())
 }
 
+fn checkpoint_choices(model: &Model, room: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<CheckpointRecord> = load_choice_json(
+        model,
+        &[
+            "hospital".to_owned(),
+            "checkpoints".to_owned(),
+            room.to_owned(),
+            "--limit".to_owned(),
+            "50".to_owned(),
+            "--json".to_owned(),
+        ],
+        "Room checkpoints",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .rev()
+        .map(|checkpoint| {
+            let mut details = Vec::new();
+
+            if !checkpoint.kind.is_empty() {
+                details.push(checkpoint.kind.clone());
+            }
+            if !checkpoint.doctor_id.is_empty() {
+                details.push(format!("doctor {}", checkpoint.doctor_id));
+            }
+            if !checkpoint.session_id.is_empty() {
+                details.push(format!("session {}", checkpoint.session_id));
+            }
+            if !checkpoint.created_at.is_empty() {
+                details.push(checkpoint.created_at);
+            }
+
+            let preview = checkpoint.body.lines().next().unwrap_or("").trim();
+            let label = if preview.is_empty() {
+                format!("#{}", checkpoint.id)
+            } else {
+                format!("#{}  {}", checkpoint.id, preview)
+            };
+
+            ActionChoiceItem {
+                value: checkpoint.id,
+                label,
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
+fn report_choices(model: &Model, room: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<RoomReportRecord> = load_choice_json(
+        model,
+        &[
+            "hospital".to_owned(),
+            "room-reports".to_owned(),
+            room.to_owned(),
+            "--limit".to_owned(),
+            "50".to_owned(),
+            "--json".to_owned(),
+        ],
+        "Room reports",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .rev()
+        .map(|report| {
+            let title = if report.title.is_empty() {
+                report.kind.clone()
+            } else {
+                report.title
+            };
+            let mut details = Vec::new();
+
+            if !report.doctor_id.is_empty() {
+                details.push(format!("doctor {}", report.doctor_id));
+            }
+            if !report.session_id.is_empty() {
+                details.push(format!("session {}", report.session_id));
+            }
+            if !report.branch.is_empty() {
+                details.push(report.branch);
+            }
+            if !report.head_sha.is_empty() {
+                details.push(report.head_sha.chars().take(8).collect());
+            }
+            if !report.git_evidence_status.is_empty() {
+                details.push(report.git_evidence_status);
+            }
+            if !report.created_at.is_empty() {
+                details.push(report.created_at);
+            }
+
+            ActionChoiceItem {
+                value: report.id.clone(),
+                label: format!("#{}  {}", report.id, title),
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
+fn chart_entry_choices(model: &Model, room: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<ChartEntryRecord> = load_choice_json(
+        model,
+        &[
+            "hospital".to_owned(),
+            "chart-entries".to_owned(),
+            "--scope".to_owned(),
+            "ROOM".to_owned(),
+            "--room-id".to_owned(),
+            room.to_owned(),
+            "--status".to_owned(),
+            "ALL".to_owned(),
+            "--limit".to_owned(),
+            "200".to_owned(),
+            "--json".to_owned(),
+        ],
+        "Room Chart entries",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|entry| {
+            let label_text = if entry.title.is_empty() {
+                entry.kind.clone()
+            } else {
+                entry.title
+            };
+            let mut details = vec![
+                entry.kind,
+                format!("P{}", entry.priority),
+                entry.status,
+            ];
+
+            if !entry.created_at.is_empty() {
+                details.push(entry.created_at);
+            }
+
+            ActionChoiceItem {
+                value: entry.id.clone(),
+                label: format!("#{}  {}", entry.id, label_text),
+                detail: details
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            }
+        })
+        .collect())
+}
+
 fn branch_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
     let registry: BranchRegistry = load_choice_json(
         model,
@@ -1170,6 +1375,18 @@ fn known_value_choices(
         "doctor" => doctor_choices(model).map(Some),
         "provider" => provider_choices(model).map(Some),
         "session" => session_choices(model, room).map(Some),
+        "checkpoint" => {
+            let room = room.ok_or_else(|| "select a Room first".to_owned())?;
+            checkpoint_choices(model, room).map(Some)
+        }
+        "report" => {
+            let room = room.ok_or_else(|| "select a Room first".to_owned())?;
+            report_choices(model, room).map(Some)
+        }
+        "chart_entry" => {
+            let room = room.ok_or_else(|| "select a Room first".to_owned())?;
+            chart_entry_choices(model, room).map(Some)
+        }
         "workflow_template" => workflow_template_choices(model).map(Some),
         "branch" | "ref" => {
             let repository =
