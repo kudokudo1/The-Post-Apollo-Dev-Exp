@@ -263,10 +263,48 @@ assert (
 ), report
 assert report["checkpoint"]["body"] == report["result"]["assistant"], report
 
+for heading in (
+    "## IMPLEMENTATION",
+    "## HOW TO USE",
+    "## VERIFY",
+    "## WATCH OUT FOR",
+    "## CHECKLIST",
+    "## NEXT",
+    "## DECISIONS",
+):
+    assert heading in report["result"]["assistant"], (heading, report)
+
+room_report = report["roomReport"]
+assert room_report["roomId"] == "T6", room_report
+assert room_report["sessionId"] == "session-t6-agent", room_report
+assert room_report["checkpointId"] == report["checkpoint"]["id"], room_report
+assert room_report["sourceMessageId"] == report["result"]["assistantMessageId"], room_report
+assert room_report["providerId"] == "mock", room_report
+assert room_report["kind"] == "DOCTOR_NOTE", room_report
+assert room_report["repository"] == "kudokudo1/taskbars-post-apollo", room_report
+assert room_report["gitEvidenceStatus"] == "VERIFIED", room_report
+assert room_report["dirty"] is True, room_report
+assert room_report["changedFiles"] == ["tracked.txt"], room_report
+assert room_report["changedFileCount"] == 1, room_report
+assert room_report["insertions"] == 1, room_report
+assert room_report["deletions"] == 0, room_report
+assert len(room_report["headSha"]) == 40, room_report
+assert room_report["branch"], room_report
+
+assert report["gitEvidence"]["status"] == "VERIFIED", report
+assert report["gitEvidence"]["changedFiles"] == ["tracked.txt"], report
+assert report["gitEvidence"]["insertions"] == 1, report
+
 assert len(checkpoints) == 1, checkpoints
 assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
 assert checkpoints[0]["sessionId"] == "session-t6-agent", checkpoints
 assert checkpoints[0]["providerId"] == "mock", checkpoints
+
+assert len(room_reports) == 1, room_reports
+assert room_reports[0]["id"] == room_report["id"], room_reports
+
+types = [row["type"] for row in events]
+assert "room_report.created" in types, types
 
 assert pause["command"] == "PAUSE", pause
 assert pause["result"]["paused"] is True, pause
