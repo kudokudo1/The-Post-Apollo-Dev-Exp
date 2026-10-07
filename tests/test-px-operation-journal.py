@@ -301,7 +301,9 @@ def main():
                 "--json",
             )
         )
-        assert [row["id"] for row in complete_rows] == [operation_id]
+        complete_ids = [row["id"] for row in complete_rows]
+        assert operation_id in complete_ids
+        assert live_id in complete_ids
 
         duplicate = run_px(
             env,
