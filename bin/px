@@ -1371,7 +1371,7 @@ Usage:
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
   px delete-workflow <repo> <workflow-path> [ref]
   px hospital <init|status> [--json]
-  px agent <providers|session-create|turn|status|cancel> ...
+  px agent <providers|session-create|turn|status|cancel|quick> ...
 
 Workflow factory:
   trigger: manual | push | manual+push
