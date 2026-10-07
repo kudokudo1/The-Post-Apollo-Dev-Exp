@@ -160,6 +160,8 @@ struct MutationPreflightResult {
     reason: String,
     #[serde(default)]
     token: String,
+    #[serde(default, rename = "frozenCommand")]
+    frozen_command: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1073,6 +1075,10 @@ fn arm_px_guarded_mutation(
         return Err("PX mutation preflight returned no target token".to_owned());
     }
 
+    if !preflight.frozen_command.is_empty() {
+        app.mutation_args = preflight.frozen_command;
+    }
+
     app.mutation_armed = true;
     app.mutation_preflight = if preflight.summary.is_empty() {
         "PX GUARDED TARGET ARMED".to_owned()
@@ -1114,6 +1120,12 @@ fn revalidate_px_guarded_mutation(
         || preflight.token != app.mutation_preflight_token
     {
         return Err("PX guarded target identity changed after confirmation".to_owned());
+    }
+
+    if !preflight.frozen_command.is_empty()
+        && preflight.frozen_command != app.mutation_args
+    {
+        return Err("PX guarded command changed after confirmation".to_owned());
     }
 
     Ok(())

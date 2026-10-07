@@ -11,6 +11,54 @@ cat > "$tmp/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+if [[ "${1:-} ${2:-}" == "workflow list" ]]; then
+    state="${GH_WORKFLOW_STATE:-active}"
+    printf '[{"id":77,"name":"PX / deploy","path":".github/workflows/deploy.yml","state":"%s"}]\n' "$state"
+    exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "repo view" ]]; then
+    printf 'main\n'
+    exit 0
+fi
+
+if [[ "${1:-}" == "api" ]]; then
+    case "${2:-}" in
+        repos/owner/repo/commits/main)
+            printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+            exit 0
+            ;;
+        repos/owner/repo/contents/.github/workflows/deploy.yml?ref=main)
+            printf 'blob-deploy-main\n'
+            exit 0
+            ;;
+    esac
+fi
+
+if [[ "${1:-} ${2:-}" == "run list" ]]; then
+    old='{"attempt":1,"databaseId":900,"workflowName":"PX / deploy","status":"completed","conclusion":"success","headBranch":"main","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"workflow_dispatch","createdAt":"2026-10-07T00:00:00Z","url":"https://example.invalid/run/900"}'
+    new1='{"attempt":1,"databaseId":901,"workflowName":"PX / deploy","status":"queued","conclusion":"","headBranch":"main","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"workflow_dispatch","createdAt":"2026-10-07T00:01:00Z","url":"https://example.invalid/run/901"}'
+    new2='{"attempt":1,"databaseId":902,"workflowName":"PX / deploy","status":"queued","conclusion":"","headBranch":"main","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"workflow_dispatch","createdAt":"2026-10-07T00:01:01Z","url":"https://example.invalid/run/902"}'
+
+    case "${GH_DISPATCH_STATE:-baseline}" in
+        baseline)
+            printf '[%s]\n' "$old"
+            ;;
+        new_one)
+            printf '[%s,%s]\n' "$old" "$new1"
+            ;;
+        new_two)
+            printf '[%s,%s,%s]\n' "$old" "$new1" "$new2"
+            ;;
+        *)
+            printf 'unknown GH_DISPATCH_STATE: %s\n' "${GH_DISPATCH_STATE:-}" >&2
+            exit 2
+            ;;
+    esac
+    exit 0
+fi
+
 if [[ "${1:-} ${2:-}" == "run view" ]]; then
     case "${GH_RUN_STATE:-in_progress}" in
         in_progress)
@@ -124,8 +172,49 @@ jq -e '
   and (.summary | contains("RERUN VERIFIED"))
 ' <<<"$rerun_verified" >/dev/null
 
-if "$ROOT/bin/px" mutation-preflight github.workflow.run "$arguments" >/dev/null 2>&1; then
-    printf 'uncertified workflow dispatch unexpectedly received a mutation preflight policy\n' >&2
+dispatch_arguments='{"repository":"dev","workflow":".github/workflows/deploy.yml","ref":""}'
+
+export GH_WORKFLOW_STATE=active
+export GH_DISPATCH_STATE=baseline
+dispatch_preflight="$("$ROOT/bin/px" mutation-preflight github.workflow.run "$dispatch_arguments")"
+dispatch_token="$(jq -r '.token' <<<"$dispatch_preflight")"
+jq -e '
+  .allowed == true
+  and .frozenCommand == ["run","owner/repo",".github/workflows/deploy.yml","main"]
+  and (.token | fromjson | .workflowPath) == ".github/workflows/deploy.yml"
+  and (.token | fromjson | .ref) == "main"
+  and (.token | fromjson | .refSha) == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  and (.token | fromjson | .workflowBlobSha) == "blob-deploy-main"
+  and (.token | fromjson | .beforeRunIds) == [900]
+  and (.summary | contains("DISPATCH // PX / deploy"))
+' <<<"$dispatch_preflight" >/dev/null
+
+export GH_DISPATCH_STATE=new_one
+dispatch_verified="$("$ROOT/bin/px" mutation-verify github.workflow.run "$dispatch_arguments" "$dispatch_token")"
+jq -e '
+  .passed == true
+  and .target.databaseId == 901
+  and .target.event == "workflow_dispatch"
+  and (.summary | contains("DISPATCH VERIFIED"))
+' <<<"$dispatch_verified" >/dev/null
+
+export GH_DISPATCH_STATE=new_two
+dispatch_ambiguous="$("$ROOT/bin/px" mutation-verify github.workflow.run "$dispatch_arguments" "$dispatch_token")"
+jq -e '
+  .passed == false
+  and (.reason | contains("AMBIGUOUS"))
+' <<<"$dispatch_ambiguous" >/dev/null
+
+export GH_DISPATCH_STATE=baseline
+export GH_WORKFLOW_STATE=disabled_manually
+dispatch_disabled="$("$ROOT/bin/px" mutation-preflight github.workflow.run "$dispatch_arguments")"
+jq -e '
+  .allowed == false
+  and (.reason | contains("WORKFLOW IS NOT ACTIVE"))
+' <<<"$dispatch_disabled" >/dev/null
+
+if "$ROOT/bin/px" mutation-preflight workflow.create '{"repository":"dev"}' >/dev/null 2>&1; then
+    printf 'uncertified workflow creation unexpectedly received a mutation preflight policy\n' >&2
     exit 1
 fi
 

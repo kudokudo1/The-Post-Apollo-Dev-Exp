@@ -477,7 +477,8 @@
         "dispatch",
         "workflow"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "github.run.watch",
