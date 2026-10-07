@@ -50,7 +50,9 @@ jq -e '
   and any(.actions[]; .id == "px.tool.resolve")
   and any(.actions[]; .id == "px.term.open")
   and any(.actions[]; .id == "px.operations.list")
+  and any(.actions[]; .id == "px.operations.stale")
   and any(.actions[]; .id == "px.operation.view")
+  and any(.actions[]; .id == "px.operation.reconcile")
   and any(.actions[]; .id == "px.operation.recovery")
   and any(.actions[]; .id == "px.operation.recover.execute")
 ' <<<"$registry" >/dev/null
@@ -127,6 +129,27 @@ self_journaled_contract="$(jq -c '
   }
 ' <<<"$registry")"
 [[ "$self_journaled_contract" == '{"ids":["px.operation.recover.execute"],"invalid":[]}' ]]
+
+interrupted_operation_contract="$(jq -c '
+  {
+    stale: (
+      .actions[]
+      | select(.id == "px.operations.stale")
+      | {mutation,recovery,command}
+    ),
+    reconcile: (
+      .actions[]
+      | select(.id == "px.operation.reconcile")
+      | {
+          mutation,
+          recovery,
+          command,
+          argument: (.arguments[0] | {name,required,kind})
+        }
+    )
+  }
+' <<<"$registry")"
+[[ "$interrupted_operation_contract" == '{"stale":{"mutation":"read","recovery":"NONE","command":["operation","stale","--json"]},"reconcile":{"mutation":"local","recovery":"EVIDENCE_ONLY","command":["operation","reconcile","{operation_id}","--json"],"argument":{"name":"operation_id","required":true,"kind":"stale_operation"}}}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
