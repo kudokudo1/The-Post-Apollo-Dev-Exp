@@ -28,6 +28,7 @@ jq -e '
       and ((.choices // []) | type == "array")
     )
     and (.mutation | IN("read", "local", "remote", "external"))
+    and (.recovery | IN("NONE", "EVIDENCE_ONLY", "REF_RECOVERABLE", "CONTENT_RECOVERABLE"))
     and (.requires | type == "array")
     and (.keywords | type == "array")
   )
@@ -49,6 +50,23 @@ jq -e '
   and any(.actions[]; .id == "px.term.open")
 ' <<<"$registry" >/dev/null
 
+
+recovery_contract="$(jq -c '
+  {
+    read_non_none: [.actions[] | select(.mutation == "read" and .recovery != "NONE")] | length,
+    mutation_undeclared: [
+      .actions[]
+      | select(.mutation != "read")
+      | select(.recovery == null or .recovery == "")
+    ] | length,
+    integrate: (
+      .actions[]
+      | select(.id == "hospital.integration.integrate")
+      | .recovery
+    )
+  }
+' <<<"$registry")"
+[[ "$recovery_contract" == '{"read_non_none":0,"mutation_undeclared":0,"integrate":"EVIDENCE_ONLY"}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]

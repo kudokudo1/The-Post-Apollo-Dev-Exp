@@ -51,6 +51,8 @@ struct Action {
     arguments: Vec<ActionArgument>,
     mutation: String,
     #[serde(default)]
+    recovery: String,
+    #[serde(default)]
     keywords: Vec<String>,
 }
 
@@ -125,6 +127,22 @@ struct SearchItem {
 struct ResolveResult {
     status: String,
     selected: Option<ResolvedTool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HospitalPrepareResult {
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    head: String,
+    #[serde(default)]
+    base: String,
+    #[serde(default, rename = "base_head")]
+    base_head: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,7 +451,16 @@ fn handle_key(
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => app.back_to_search(),
                 KeyCode::Enter => {
-                    if mutation_execution_enabled(action) {
+                    if mutation_requires_arm(action) {
+                        match arm_hospital_integration(app, model, action) {
+                            Ok(()) => app.open_mutation_confirm(),
+                            Err(error) => {
+                                app.mutation_armed = false;
+                                app.mutation_preflight.clear();
+                                app.status = Some(format!("ARM REFUSED // {error}"));
+                            }
+                        }
+                    } else if mutation_execution_enabled(action) {
                         app.open_mutation_confirm();
                     } else {
                         app.status = Some(format!(
@@ -459,10 +486,7 @@ fn handle_key(
             let expected = mutation_confirmation_phrase(action);
 
             match key.code {
-                KeyCode::Esc => {
-                    let args = app.mutation_args.clone();
-                    app.open_mutation_preview(args);
-                }
+                KeyCode::Esc => app.return_to_mutation_preview(),
                 KeyCode::Backspace => {
                     app.mutation_confirm_buffer.pop();
                     app.status = None;
@@ -721,6 +745,20 @@ fn selected_argument_value<'a>(
         .filter(|value| !value.is_empty())
 }
 
+fn selected_argument_named<'a>(
+    action: &Action,
+    values: &'a [String],
+    name: &str,
+) -> Option<&'a str> {
+    action
+        .arguments
+        .iter()
+        .position(|argument| argument.name == name)
+        .and_then(|index| values.get(index))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+}
+
 fn known_value_choices(
     model: &Model,
     action: &Action,
@@ -859,8 +897,12 @@ fn validate_typed_argument(argument: &ActionArgument, value: &str) -> Result<(),
     }
 }
 
+fn mutation_requires_arm(action: &Action) -> bool {
+    action.id == "hospital.integration.integrate"
+}
+
 fn mutation_execution_enabled(action: &Action) -> bool {
-    action.mutation == "local"
+    action.mutation == "local" || mutation_requires_arm(action)
 }
 
 fn mutation_confirmation_phrase(action: &Action) -> &'static str {
@@ -870,6 +912,113 @@ fn mutation_confirmation_phrase(action: &Action) -> &'static str {
         "external" => "EXTERNAL",
         _ => "CONFIRM",
     }
+}
+
+fn validate_hospital_prepare(
+    action: &Action,
+    values: &[String],
+    prepare: &HospitalPrepareResult,
+) -> Result<String, String> {
+    let expected_branch = selected_argument_named(action, values, "branch")
+        .ok_or_else(|| "integration branch is missing".to_owned())?;
+    let expected_head = selected_argument_named(action, values, "room_head")
+        .ok_or_else(|| "integration Room HEAD is missing".to_owned())?;
+    let expected_base = selected_argument_named(action, values, "base")
+        .ok_or_else(|| "integration base branch is missing".to_owned())?;
+    let expected_base_head = selected_argument_named(action, values, "base_head")
+        .ok_or_else(|| "integration base HEAD is missing".to_owned())?;
+
+    if !prepare.action.eq_ignore_ascii_case("prepare") {
+        return Err(format!(
+            "PX Room prepare returned unexpected action {}",
+            prepare.action
+        ));
+    }
+    if !prepare.mode.eq_ignore_ascii_case("FAST_FORWARD") {
+        return Err(format!(
+            "integration is not fast-forwardable (mode {})",
+            prepare.mode
+        ));
+    }
+    if prepare.branch != expected_branch {
+        return Err("Room branch changed since selection".to_owned());
+    }
+    if prepare.head != expected_head {
+        return Err("Room HEAD changed since selection".to_owned());
+    }
+    if prepare.base != expected_base {
+        return Err("base branch changed since selection".to_owned());
+    }
+    if prepare.base_head != expected_base_head {
+        return Err("base HEAD changed since selection".to_owned());
+    }
+
+    Ok(format!(
+        "FAST_FORWARD ARMED // {}@{} -> {}@{}",
+        expected_branch,
+        expected_head.chars().take(8).collect::<String>(),
+        expected_base,
+        expected_base_head.chars().take(8).collect::<String>()
+    ))
+}
+
+fn arm_hospital_integration(
+    app: &mut App,
+    model: &Model,
+    action: &Action,
+) -> Result<(), String> {
+    let repository = selected_argument_named(action, &app.prompt_values, "repository")
+        .ok_or_else(|| "integration repository is missing".to_owned())?;
+    let team = selected_argument_named(action, &app.prompt_values, "team")
+        .ok_or_else(|| "integration Room is missing".to_owned())?;
+
+    let output = Command::new(&model.px_path)
+        .args(["room", repository, team, "prepare"])
+        .output()
+        .map_err(|error| format!("could not run PX Room prepare: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        return Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "PX Room prepare failed".to_owned()
+        });
+    }
+
+    let prepare: HospitalPrepareResult = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("PX Room prepare returned invalid JSON: {error}"))?;
+    let summary = validate_hospital_prepare(action, &app.prompt_values, &prepare)?;
+
+    app.mutation_armed = true;
+    app.mutation_preflight = summary;
+    Ok(())
+}
+
+fn hospital_integration_verify_args(
+    action: &Action,
+    values: &[String],
+) -> Result<Vec<String>, String> {
+    let repository = selected_argument_named(action, values, "repository")
+        .ok_or_else(|| "verification repository is missing".to_owned())?;
+    let team = selected_argument_named(action, values, "team")
+        .ok_or_else(|| "verification Room is missing".to_owned())?;
+    let base = selected_argument_named(action, values, "base")
+        .ok_or_else(|| "verification base branch is missing".to_owned())?;
+    let room_head = selected_argument_named(action, values, "room_head")
+        .ok_or_else(|| "verification Room HEAD is missing".to_owned())?;
+
+    Ok(vec![
+        "verify".to_owned(),
+        repository.to_owned(),
+        team.to_owned(),
+        base.to_owned(),
+        room_head.to_owned(),
+        room_head.to_owned(),
+    ])
 }
 
 fn prepare_mutation_preview(app: &mut App, action: &Action, values: &[String]) {
@@ -889,6 +1038,12 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         return;
     }
 
+    if mutation_requires_arm(action) && !app.mutation_armed {
+        app.mode = Mode::MutationPreview;
+        app.status = Some("REMOTE EXECUTION REFUSED // action is not armed".to_owned());
+        return;
+    }
+
     let output = match Command::new(&model.px_path)
         .args(&app.mutation_args)
         .output()
@@ -903,15 +1058,74 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         }
     };
 
+    let execution_success = output.status.success();
     let mut text = display_output(&output.stdout, &output.stderr);
 
-    if !output.status.success() {
+    if !execution_success {
         let code = output
             .status
             .code()
             .map(|value| value.to_string())
             .unwrap_or_else(|| "signal".to_owned());
-        text = format!("EXIT {code}\n\n{text}");
+        text = format!("EXECUTION\nEXIT {code}\n\n{text}");
+        app.open_output(
+            format!("{} // {} // FAILED", action.title, action.mutation.to_uppercase()),
+            text,
+        );
+        return;
+    }
+
+    if mutation_requires_arm(action) {
+        let verify_args = match hospital_integration_verify_args(action, &app.prompt_values) {
+            Ok(args) => args,
+            Err(error) => {
+                text = format!(
+                    "EXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}"
+                );
+                app.open_output(
+                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    text,
+                );
+                return;
+            }
+        };
+
+        let verify = match Command::new(&model.px_path).args(&verify_args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                text = format!(
+                    "EXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}"
+                );
+                app.open_output(
+                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    text,
+                );
+                return;
+            }
+        };
+        let mut verify_text = display_output(&verify.stdout, &verify.stderr);
+
+        if !verify.status.success() {
+            let code = verify
+                .status
+                .code()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "signal".to_owned());
+            verify_text = format!("EXIT {code}\n\n{verify_text}");
+            text = format!("EXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}");
+            app.open_output(
+                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                text,
+            );
+            return;
+        }
+
+        text = format!("EXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}");
+        app.open_output(
+            format!("{} // REMOTE // VERIFIED", action.title),
+            text,
+        );
+        return;
     }
 
     app.open_output(
@@ -1812,6 +2026,13 @@ fn draw_mutation_preview(frame: &mut Frame, area: Rect, app: &App, model: &Model
                 Style::default().fg(if executable { CYAN } else { ORANGE }),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("RECOVERY  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if action.recovery.is_empty() { "UNDECLARED" } else { &action.recovery },
+                Style::default().fg(ORANGE),
+            ),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "RESOLVED ARGUMENTS",
@@ -1853,6 +2074,17 @@ fn draw_mutation_preview(frame: &mut Frame, area: Rect, app: &App, model: &Model
             Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
         )),
     ]);
+
+    if mutation_requires_arm(action) {
+        lines.push(Line::from(Span::styled(
+            if app.mutation_armed {
+                format!("ARMED // {}", app.mutation_preflight)
+            } else {
+                "ARM REQUIRED // Enter runs PX Room prepare against the frozen target".to_owned()
+            },
+            Style::default().fg(if app.mutation_armed { CYAN } else { ORANGE }),
+        )));
+    }
 
     if executable {
         lines.push(Line::from(
@@ -2023,6 +2255,7 @@ mod tests {
             command: Vec::new(),
             arguments: Vec::new(),
             mutation: "read".to_owned(),
+            recovery: "NONE".to_owned(),
             keywords: Vec::new(),
         }
     }
@@ -2113,6 +2346,7 @@ mod tests {
                 },
             ],
             mutation: "read".to_owned(),
+            recovery: "NONE".to_owned(),
             keywords: Vec::new(),
         };
 
@@ -2150,6 +2384,7 @@ mod tests {
                 },
             ],
             mutation: "read".to_owned(),
+            recovery: "NONE".to_owned(),
             keywords: Vec::new(),
         };
 
@@ -2215,21 +2450,153 @@ mod tests {
         assert!(output.contains("warning"));
     }
 
+    fn integration_action() -> Action {
+        Action {
+            id: "hospital.integration.integrate".to_owned(),
+            title: "Integrate Room".to_owned(),
+            category: "Hospital".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "integrate".to_owned(),
+                "{repository}".to_owned(),
+                "{team}".to_owned(),
+                "{branch}".to_owned(),
+                "{room_head}".to_owned(),
+                "{base}".to_owned(),
+                "{base_head}".to_owned(),
+                "{local_path}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "team".to_owned(),
+                    required: true,
+                    kind: "room".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "branch".to_owned(),
+                    required: true,
+                    kind: "branch".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "room_head".to_owned(),
+                    required: true,
+                    kind: "commit".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "base".to_owned(),
+                    required: true,
+                    kind: "branch".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "base_head".to_owned(),
+                    required: true,
+                    kind: "commit".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "local_path".to_owned(),
+                    required: true,
+                    kind: "path".to_owned(),
+                    choices: Vec::new(),
+                },
+            ],
+            mutation: "remote".to_owned(),
+            recovery: "EVIDENCE_ONLY".to_owned(),
+            keywords: Vec::new(),
+        }
+    }
+
     #[test]
-    fn mutation_execution_policy_only_allows_local_actions() {
+    fn mutation_execution_policy_keeps_remote_and_external_locked_except_guarded_integration() {
         let mut local = action("local", "AI");
         local.mutation = "local".to_owned();
+        local.recovery = "EVIDENCE_ONLY".to_owned();
         let mut remote = action("remote", "GitHub");
         remote.mutation = "remote".to_owned();
+        remote.recovery = "EVIDENCE_ONLY".to_owned();
         let mut external = action("external", "AI");
         external.mutation = "external".to_owned();
+        external.recovery = "EVIDENCE_ONLY".to_owned();
+        let integration = integration_action();
 
         assert!(mutation_execution_enabled(&local));
         assert!(!mutation_execution_enabled(&remote));
         assert!(!mutation_execution_enabled(&external));
+        assert!(mutation_execution_enabled(&integration));
+        assert!(mutation_requires_arm(&integration));
+        assert!(!mutation_requires_arm(&remote));
         assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
-        assert_eq!(mutation_confirmation_phrase(&remote), "REMOTE");
+        assert_eq!(mutation_confirmation_phrase(&integration), "REMOTE");
         assert_eq!(mutation_confirmation_phrase(&external), "EXTERNAL");
+    }
+
+    #[test]
+    fn hospital_prepare_must_match_the_exact_frozen_integration_target() {
+        let action = integration_action();
+        let values = vec![
+            "taskbars".to_owned(),
+            "T6".to_owned(),
+            "feature/t6".to_owned(),
+            "aaaaaaaaaaaaaaaa".to_owned(),
+            "main".to_owned(),
+            "bbbbbbbbbbbbbbbb".to_owned(),
+            "/tmp/taskbars".to_owned(),
+        ];
+        let prepare = HospitalPrepareResult {
+            action: "prepare".to_owned(),
+            mode: "FAST_FORWARD".to_owned(),
+            branch: "feature/t6".to_owned(),
+            head: "aaaaaaaaaaaaaaaa".to_owned(),
+            base: "main".to_owned(),
+            base_head: "bbbbbbbbbbbbbbbb".to_owned(),
+        };
+
+        assert!(validate_hospital_prepare(&action, &values, &prepare).is_ok());
+
+        let moved = HospitalPrepareResult {
+            head: "cccccccccccccccc".to_owned(),
+            ..prepare
+        };
+        assert_eq!(
+            validate_hospital_prepare(&action, &values, &moved).unwrap_err(),
+            "Room HEAD changed since selection"
+        );
+    }
+
+    #[test]
+    fn hospital_integration_verification_uses_the_operated_room_head_as_new_base() {
+        let action = integration_action();
+        let values = vec![
+            "taskbars".to_owned(),
+            "T6".to_owned(),
+            "feature/t6".to_owned(),
+            "aaaaaaaaaaaaaaaa".to_owned(),
+            "main".to_owned(),
+            "bbbbbbbbbbbbbbbb".to_owned(),
+            "/tmp/taskbars".to_owned(),
+        ];
+
+        assert_eq!(
+            hospital_integration_verify_args(&action, &values).unwrap(),
+            vec![
+                "verify",
+                "taskbars",
+                "T6",
+                "main",
+                "aaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaa",
+            ]
+        );
     }
 
     #[test]
@@ -2262,6 +2629,7 @@ mod tests {
                 },
             ],
             mutation: "local".to_owned(),
+            recovery: "EVIDENCE_ONLY".to_owned(),
             keywords: Vec::new(),
         };
         let mut app = App::new();
