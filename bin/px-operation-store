@@ -202,10 +202,17 @@ def normalize_record(row: sqlite3.Row) -> dict:
         except json.JSONDecodeError:
             return {}
 
-    owner_status, owner_reason = owner_state(row)
     interrupted_at = str(row["interrupted_at"] or "")
     stored_status = str(row["status"])
     effective_status = "INTERRUPTED" if interrupted_at else stored_status
+
+    if interrupted_at or stored_status == "RUNNING":
+        owner_status, owner_reason = owner_state(row)
+    else:
+        owner_status = "CLOSED"
+        owner_reason = (
+            "operation journal is terminal; owner liveness no longer determines lifecycle"
+        )
 
     return {
         "id": str(row["operation_id"]),
