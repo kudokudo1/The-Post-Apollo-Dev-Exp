@@ -1852,6 +1852,61 @@ mod tests {
     }
 
     #[test]
+    fn typed_argument_validation_rejects_bad_integer_and_slug() {
+        let integer = ActionArgument {
+            name: "limit".to_owned(),
+            required: false,
+            kind: "integer".to_owned(),
+            choices: Vec::new(),
+        };
+        let slug = ActionArgument {
+            name: "slug".to_owned(),
+            required: true,
+            kind: "slug".to_owned(),
+            choices: Vec::new(),
+        };
+
+        assert!(validate_typed_argument(&integer, "20").is_ok());
+        assert!(validate_typed_argument(&integer, "twenty").is_err());
+        assert!(validate_typed_argument(&slug, "my-workflow").is_ok());
+        assert!(validate_typed_argument(&slug, "My Workflow").is_err());
+    }
+
+    #[test]
+    fn known_value_filter_matches_label_value_and_detail() {
+        let mut app = App::new();
+        app.choice_items = vec![
+            ActionChoiceItem {
+                value: "doctor-t6".to_owned(),
+                label: "T6 Doctor".to_owned(),
+                detail: "Hospital READY".to_owned(),
+            },
+            ActionChoiceItem {
+                value: "taskbars".to_owned(),
+                label: "taskbars".to_owned(),
+                detail: "kudokudo1/taskbars-post-apollo".to_owned(),
+            },
+        ];
+
+        app.choice_query = "hospital".to_owned();
+        assert_eq!(filtered_choice_indices(&app), vec![0]);
+
+        app.choice_query = "kudokudo1".to_owned();
+        assert_eq!(filtered_choice_indices(&app), vec![1]);
+
+        app.choice_query = "doctor-t6".to_owned();
+        assert_eq!(filtered_choice_indices(&app), vec![0]);
+    }
+
+    #[test]
+    fn display_output_pretty_prints_json_and_preserves_stderr() {
+        let output = display_output(br#"{"ok":true}"#, b"warning");
+        assert!(output.contains("\"ok\": true"));
+        assert!(output.contains("STDERR"));
+        assert!(output.contains("warning"));
+    }
+
+    #[test]
     fn search_selector_does_not_move_leader_selector() {
         let mut app = App::new();
         app.leader_selected = 3;
