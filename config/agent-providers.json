@@ -11,7 +11,7 @@
     "hermes": {
       "name": "HERMES",
       "command": "hermes",
-      "dialect": "hermes-stream-json",
+      "dialect": "hermes-auto",
       "startArgs": ["chat", "--format", "stream-json", "--query-file", "-"],
       "resumeArgs": ["chat", "--resume", "{provider_session_id}", "--format", "stream-json", "--query-file", "-"]
     }
