@@ -356,6 +356,14 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
     if not patient_id:
         raise RuntimeError("Hospital room bind requires a patient identity")
 
+    existing = conn.execute(
+        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        (args.room_id,),
+    ).fetchone()
+    provider_id = str(args.provider_id or "").strip()
+    if not provider_id && existing is not None:
+        provider_id = str(existing["provider_id"] or "")
+
     conn.execute(
         """
         INSERT INTO patients(patient_id, repository, label)
@@ -398,7 +406,7 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
             args.branch or "",
             args.bed_path or "",
             args.doctor_id or "",
-            args.provider_id or "",
+            provider_id,
             args.assignment_id or "",
         ),
     )
@@ -409,6 +417,14 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
 
 def room_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
+
+    existing = conn.execute(
+        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        (args.room_id,),
+    ).fetchone()
+    provider_id = str(args.provider_id or "").strip()
+    if not provider_id && existing is not None:
+        provider_id = str(existing["provider_id"] or "")
 
     conn.execute(
         """
@@ -434,7 +450,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
             args.branch or "",
             args.bed_path or "",
             args.doctor_id or "",
-            args.provider_id or "",
+            provider_id,
             args.assignment_id or "",
         ),
     )
