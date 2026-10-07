@@ -207,6 +207,13 @@ Read-side journal actions are normal semantic PX actions, so TERM EXP can list,
 inspect, and show recovery facts without requiring operation IDs to be
 memorized.
 
+TERM EXP also exposes `Recover PX Operation` as a semantic remote action. The
+operator chooses the source operation from the same journal selector; PX
+preflight then freezes the operation id, recovery strategy, repository/base,
+workflow path, blob SHA, YAML hash, install commit, and verified base SHA.
+Only an operation whose recovery facts advertise a certified executor can arm
+the action.
+
 Recovery classes describe guarantees, not wishes:
 
 - `NONE` — no recovery operation is declared;
@@ -281,3 +288,11 @@ When those checks pass, PX journals a new `EVIDENCE_ONLY` remote recovery
 operation, deletes only the recorded blob, then verifies that the file is absent
 and the base advanced through the delete commit before reporting recovery as
 passed.
+
+TERM EXP uses the `px-self-journaled` execution policy for this surface. That
+means TERM EXP still shows the frozen mutation preview, re-runs PX preflight
+immediately before execution, and requires the explicit word `REMOTE`, but it
+does **not** create a second outer mutation journal record. The certified PX
+recovery executor remains the sole owner of the recovery journal and
+post-recovery verification. Its returned `recoveryOperationId` and verification
+result are displayed directly in TERM EXP.
