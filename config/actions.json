@@ -135,32 +135,12 @@
       "id": "px.operations.list",
       "title": "List PX Operations",
       "category": "PX",
-      "summary": "List durable mutation journal records captured by PX.",
+      "summary": "List recent durable mutation journal records captured by PX.",
       "command": [
         "operations",
-        "--limit",
-        "{limit?}",
-        "--status",
-        "{status?}",
         "--json"
       ],
-      "arguments": [
-        {
-          "name": "limit",
-          "required": false,
-          "kind": "integer"
-        },
-        {
-          "name": "status",
-          "required": false,
-          "kind": "enum",
-          "choices": [
-            "RUNNING",
-            "COMPLETE",
-            "FAILED"
-          ]
-        }
-      ],
+      "arguments": [],
       "mutation": "read",
       "recovery": "NONE",
       "requires": [
