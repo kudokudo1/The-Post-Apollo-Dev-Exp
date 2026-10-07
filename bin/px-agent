@@ -1093,6 +1093,12 @@ def run_quick(args) -> dict:
 
 def run_report_feedback(args) -> dict:
     session = px_hospital("session", args.session_id)
+
+    if str(session.get("status") or "").upper() == "OPERATING":
+        raise RuntimeError(
+            "Hospital Doctor is already operating in this persistent session"
+        )
+
     report = px_hospital("room-report", str(args.report_id))
 
     session_room = str(session.get("roomId") or "")

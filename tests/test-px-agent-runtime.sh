@@ -226,6 +226,75 @@ quick_report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["r
 feedback_json="$(printf '%s' 'The VERIFY section missed the regression test. Fix that and re-check the Room.' | "$ROOT/bin/px" agent report-feedback session-t6-agent "$quick_report_id" --feedback-stdin --timeout 30 --json)"
 feedback_messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 feedback_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 400 --json)"
+
+(
+    printf '%s' 'SLOW_TURN' | \
+        "$ROOT/bin/px" agent turn session-t6-agent \
+            --prompt-stdin \
+            --timeout 60 \
+            --json
+) >"$TMP/t6-slow-turn.json" 2>"$TMP/t6-slow-turn.err" &
+t6_turn_pid=$!
+
+t6_operating=false
+for _ in $(seq 1 100); do
+    t6_status_json="$("$ROOT/bin/px" agent status session-t6-agent --json)"
+    if python3 - "$t6_status_json" <<'PY'
+import json
+import sys
+status = json.loads(sys.argv[1])
+raise SystemExit(
+    0
+    if status["operating"] and status["activePid"] > 0
+    else 1
+)
+PY
+    then
+        t6_operating=true
+        break
+    fi
+    sleep 0.05
+done
+
+if [[ "$t6_operating" != true ]]; then
+    printf 'T6 guard turn never entered OPERATING state\n' >&2
+    kill "$t6_turn_pid" 2>/dev/null || true
+    wait "$t6_turn_pid" 2>/dev/null || true
+    exit 1
+fi
+
+set +e
+feedback_guard_output="$(printf '%s' 'This feedback must be refused while operating.' | \
+    "$ROOT/bin/px" agent report-feedback \
+        session-t6-agent \
+        "$quick_report_id" \
+        --feedback-stdin \
+        --timeout 30 \
+        --json 2>&1)"
+feedback_guard_status=$?
+set -e
+
+if [[ "$feedback_guard_status" -eq 0 ]]; then
+    printf 'expected report feedback concurrency guard to fail\n' >&2
+    kill "$t6_turn_pid" 2>/dev/null || true
+    wait "$t6_turn_pid" 2>/dev/null || true
+    exit 1
+fi
+
+case "$feedback_guard_output" in
+    *"already operating in this persistent session"*)
+        ;;
+    *)
+        printf 'unexpected report feedback guard failure: %s\n' "$feedback_guard_output" >&2
+        kill "$t6_turn_pid" 2>/dev/null || true
+        wait "$t6_turn_pid" 2>/dev/null || true
+        exit 1
+        ;;
+esac
+
+"$ROOT/bin/px" agent cancel session-t6-agent --reason TEST_GUARD --json >/dev/null
+wait "$t6_turn_pid"
+
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
 quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
