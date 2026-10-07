@@ -90,7 +90,7 @@ guarded_remote_contract="$(jq -c '
     ]
   }
 ' <<<"$registry")"
-[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun"],"invalid":[]}' ]]
+[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun","github.workflow.run"],"invalid":[]}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
