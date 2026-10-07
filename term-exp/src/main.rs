@@ -1727,6 +1727,38 @@ mod tests {
     }
 
     #[test]
+    fn selected_repository_comes_from_structured_argument_value() {
+        let action = Action {
+            id: "inspect".to_owned(),
+            title: "Inspect".to_owned(),
+            category: "GitHub".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "inspect".to_owned(),
+                "{repository}".to_owned(),
+                "{run_id}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                },
+                ActionArgument {
+                    name: "run_id".to_owned(),
+                    required: true,
+                    kind: "run".to_owned(),
+                },
+            ],
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
+        };
+
+        let values = vec!["taskbars".to_owned(), String::new()];
+        assert_eq!(selected_repository(&action, &values), Some("taskbars"));
+    }
+
+    #[test]
     fn search_selector_does_not_move_leader_selector() {
         let mut app = App::new();
         app.leader_selected = 3;
