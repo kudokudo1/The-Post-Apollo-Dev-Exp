@@ -1415,11 +1415,225 @@ shift || true
 
 case "$cmd" in
     repos)
-        printf '%-12s %s\n' ALIAS REPOSITORY
-        while IFS=$'\t' read -r alias repo; do
-            [[ -z "$alias" || "$alias" == \#* ]] && continue
-            printf '%-12s %s\n' "$alias" "$repo"
-        done < "$REGISTRY"
+        if [[ "${1:-}" == "--json" ]]; then
+            need jq
+            jq -Rn --rawfile registry "$REGISTRY" '
+                {
+                    version: 1,
+                    repositories: (
+                        $registry
+                        | split("\n")
+                        | map(
+                            select(length > 0)
+                            | select(startswith("#") | not)
+                            | split("\t")
+                            | select(length >= 2)
+                            | { alias: .[0], repository: .[1] }
+                        )
+                    )
+                }
+            '
+        else
+            printf '%-12s %s\n' ALIAS REPOSITORY
+            while IFS=
+    doctor)
+        need gh
+        need awk
+        printf 'registry: %s\n' "$REGISTRY"
+        gh auth status
+        ;;
+
+    workflows)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        workflows_for "$repo"
+        ;;
+
+    runs)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        limit="${2:-$LIMIT}"
+        sha="${3:-}"
+        if [[ -n "$sha" ]]; then
+            gh run list -R "$repo" --limit "$limit" --commit "$sha" \
+                --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt
+        else
+            gh run list -R "$repo" --limit "$limit" \
+                --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt
+        fi
+        ;;
+
+    inspect)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run view "$run_id" -R "$repo" \
+            --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url,jobs
+        ;;
+
+    logs)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run view "$run_id" -R "$repo" --log
+        ;;
+
+    run)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        workflow="${2:-}"
+        ref="${3:-}"
+        [[ -n "$workflow" ]] || die "workflow required"
+
+        if [[ -n "$ref" ]]; then
+            gh workflow run "$workflow" -R "$repo" --ref "$ref"
+        else
+            gh workflow run "$workflow" -R "$repo"
+        fi
+        ;;
+
+    watch)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run watch "$run_id" -R "$repo" --exit-status
+        ;;
+
+    rerun)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run rerun "$run_id" -R "$repo"
+        ;;
+
+    cancel)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        run_id="${2:-}"
+        [[ -n "$run_id" ]] || die "run id required"
+        gh run cancel "$run_id" -R "$repo"
+        ;;
+
+    audit)
+        audit_repo "$@"
+        ;;
+
+    room)
+        room_inspect "$@"
+        ;;
+
+    rehearse)
+        room_rehearse "$@"
+        ;;
+
+    merge)
+        room_merge "$@"
+        ;;
+
+    integrate)
+        room_integrate "$@"
+        ;;
+
+    verify)
+        room_verify "$@"
+        ;;
+
+    actions)
+        actions "$@"
+        ;;
+
+    tools)
+        need python3
+        python3 "$ROOT/bin/px-tools" "$@"
+        ;;
+
+    which)
+        need python3
+        python3 "$ROOT/bin/px-resolve" "$@"
+        ;;
+
+    term|tui)
+        bash "$ROOT/bin/px-term" "$@"
+        ;;
+
+    templates)
+        templates
+        ;;
+
+    create)
+        create_workflow "$@"
+        ;;
+
+    hospital)
+        need python3
+        python3 "$ROOT/bin/px-hospital-store" "$@"
+        ;;
+
+    agent)
+        need python3
+        python3 "$ROOT/bin/px-agent" "$@"
+        ;;
+
+    delete-workflow)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        workflow="${2:-}"
+        ref="${3:-}"
+
+        [[ -n "$workflow" ]] || die "workflow path required"
+        workflow="${workflow#./}"
+
+        case "$workflow" in
+            .github/workflows/*.yml|.github/workflows/*.yaml)
+                ;;
+            *)
+                die "workflow delete refused: path must be .github/workflows/*.yml or *.yaml"
+                ;;
+        esac
+
+        [[ "$workflow" != *".."* ]] \
+            || die "workflow delete refused: parent traversal is not allowed"
+
+        [[ -n "$ref" ]] || ref="$(default_branch_for "$repo")"
+        [[ -n "$ref" ]] || die "workflow delete target ref unavailable"
+
+        metadata="$(gh api "repos/$repo/contents/$workflow?ref=$ref")" \
+            || die "workflow not found on $ref: $workflow"
+
+        type="$(printf '%s' "$metadata" | jq -r '.type // empty')"
+        sha="$(printf '%s' "$metadata" | jq -r '.sha // empty')"
+
+        [[ "$type" == "file" ]] \
+            || die "workflow delete refused: target is not a file"
+        [[ -n "$sha" ]] \
+            || die "workflow delete refused: content SHA missing"
+
+        gh api --method DELETE "repos/$repo/contents/$workflow" \
+            -f "message=Delete workflow $workflow" \
+            -f "sha=$sha" \
+            -f "branch=$ref" >/dev/null
+
+        printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        ;;
+
+    help|-h|--help)
+        usage
+        ;;
+
+    *)
+        usage >&2
+        die "unknown command: $cmd"
+        ;;
+esac
+\t' read -r alias repo; do
+                [[ -z "$alias" || "$alias" == \#* ]] && continue
+                printf '%-12s %s\n' "$alias" "$repo"
+            done < "$REGISTRY"
+        fi
         ;;
 
     doctor)
