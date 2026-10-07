@@ -17,6 +17,8 @@ bind_json="$("$ROOT/bin/px" hospital room-bind T7 --repository kudokudo1/taskbar
 session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --doctor-id doctor-t6 --provider-id codex --status IDLE --json)"
 outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
 incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
+checkpoint_json="$(printf '%s' 'Checkpoint: presentation ownership narrowed.' | "$ROOT/bin/px" hospital checkpoint-append --room-id T6 --session-id session-t6-1 --checkpoint-kind MANUAL --body-stdin --json)"
+checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
 "$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
 rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
 doctors_json="$("$ROOT/bin/px" hospital doctors --json)"
@@ -35,6 +37,8 @@ python3 - \
     "$session_json" \
     "$outgoing_json" \
     "$incoming_json" \
+    "$checkpoint_json" \
+    "$checkpoints_json" \
     "$rooms_json" \
     "$doctors_json" \
     "$sessions_json" \
@@ -55,15 +59,17 @@ bound = json.loads(sys.argv[7])
 session = json.loads(sys.argv[8])
 outgoing = json.loads(sys.argv[9])
 incoming = json.loads(sys.argv[10])
-rooms = json.loads(sys.argv[11])
-doctors = json.loads(sys.argv[12])
-sessions = json.loads(sys.argv[13])
-messages = json.loads(sys.argv[14])
-older = json.loads(sys.argv[15])
+checkpoint = json.loads(sys.argv[11])
+checkpoints = json.loads(sys.argv[12])
+rooms = json.loads(sys.argv[13])
+doctors = json.loads(sys.argv[14])
+sessions = json.loads(sys.argv[15])
+messages = json.loads(sys.argv[16])
+older = json.loads(sys.argv[17])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 5, payload
+    assert payload["schema_version"] == 6, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -71,6 +77,7 @@ for payload in (init, status):
         "sessions": 0,
         "messages": 0,
         "session_events": 0,
+        "room_checkpoints": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -108,6 +115,15 @@ assert outgoing["body"] == "Inspect Application Audio ownership.", outgoing
 assert incoming["direction"] == "incoming", incoming
 assert incoming["body"] == "I found two remaining presentation bindings.", incoming
 
+assert checkpoint["roomId"] == "T6", checkpoint
+assert checkpoint["sessionId"] == "session-t6-1", checkpoint
+assert checkpoint["doctorId"] == "doctor-t6", checkpoint
+assert checkpoint["providerId"] == "codex", checkpoint
+assert checkpoint["kind"] == "MANUAL", checkpoint
+assert checkpoint["body"] == "Checkpoint: presentation ownership narrowed.", checkpoint
+assert len(checkpoints) == 1, checkpoints
+assert checkpoints[0]["id"] == checkpoint["id"], checkpoints
+
 assert len(rooms) == 2, rooms
 rooms_by_id = {row["id"]: row for row in rooms}
 assert rooms_by_id["T6"]["lastMessage"] == incoming["body"], rooms
@@ -134,7 +150,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("5",), version
+    assert version == ("6",), version
 
     tables = {
         row[0]
@@ -142,7 +158,7 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints"):
         assert table in tables, (table, tables)
 
     room_columns = {
