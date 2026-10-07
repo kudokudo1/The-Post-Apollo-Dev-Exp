@@ -2450,8 +2450,74 @@ mod tests {
         assert!(output.contains("warning"));
     }
 
+    fn integration_action() -> Action {
+        Action {
+            id: "hospital.integration.integrate".to_owned(),
+            title: "Integrate Room".to_owned(),
+            category: "Hospital".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "integrate".to_owned(),
+                "{repository}".to_owned(),
+                "{team}".to_owned(),
+                "{branch}".to_owned(),
+                "{room_head}".to_owned(),
+                "{base}".to_owned(),
+                "{base_head}".to_owned(),
+                "{local_path}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "team".to_owned(),
+                    required: true,
+                    kind: "room".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "branch".to_owned(),
+                    required: true,
+                    kind: "branch".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "room_head".to_owned(),
+                    required: true,
+                    kind: "commit".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "base".to_owned(),
+                    required: true,
+                    kind: "branch".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "base_head".to_owned(),
+                    required: true,
+                    kind: "commit".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "local_path".to_owned(),
+                    required: true,
+                    kind: "path".to_owned(),
+                    choices: Vec::new(),
+                },
+            ],
+            mutation: "remote".to_owned(),
+            recovery: "EVIDENCE_ONLY".to_owned(),
+            keywords: Vec::new(),
+        }
+    }
+
     #[test]
-    fn mutation_execution_policy_only_allows_local_actions() {
+    fn mutation_execution_policy_keeps_remote_and_external_locked_except_guarded_integration() {
         let mut local = action("local", "AI");
         local.mutation = "local".to_owned();
         local.recovery = "EVIDENCE_ONLY".to_owned();
@@ -2461,13 +2527,76 @@ mod tests {
         let mut external = action("external", "AI");
         external.mutation = "external".to_owned();
         external.recovery = "EVIDENCE_ONLY".to_owned();
+        let integration = integration_action();
 
         assert!(mutation_execution_enabled(&local));
         assert!(!mutation_execution_enabled(&remote));
         assert!(!mutation_execution_enabled(&external));
+        assert!(mutation_execution_enabled(&integration));
+        assert!(mutation_requires_arm(&integration));
+        assert!(!mutation_requires_arm(&remote));
         assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
-        assert_eq!(mutation_confirmation_phrase(&remote), "REMOTE");
+        assert_eq!(mutation_confirmation_phrase(&integration), "REMOTE");
         assert_eq!(mutation_confirmation_phrase(&external), "EXTERNAL");
+    }
+
+    #[test]
+    fn hospital_prepare_must_match_the_exact_frozen_integration_target() {
+        let action = integration_action();
+        let values = vec![
+            "taskbars".to_owned(),
+            "T6".to_owned(),
+            "feature/t6".to_owned(),
+            "aaaaaaaaaaaaaaaa".to_owned(),
+            "main".to_owned(),
+            "bbbbbbbbbbbbbbbb".to_owned(),
+            "/tmp/taskbars".to_owned(),
+        ];
+        let prepare = HospitalPrepareResult {
+            action: "prepare".to_owned(),
+            mode: "FAST_FORWARD".to_owned(),
+            branch: "feature/t6".to_owned(),
+            head: "aaaaaaaaaaaaaaaa".to_owned(),
+            base: "main".to_owned(),
+            base_head: "bbbbbbbbbbbbbbbb".to_owned(),
+        };
+
+        assert!(validate_hospital_prepare(&action, &values, &prepare).is_ok());
+
+        let moved = HospitalPrepareResult {
+            head: "cccccccccccccccc".to_owned(),
+            ..prepare
+        };
+        assert_eq!(
+            validate_hospital_prepare(&action, &values, &moved).unwrap_err(),
+            "Room HEAD changed since selection"
+        );
+    }
+
+    #[test]
+    fn hospital_integration_verification_uses_the_operated_room_head_as_new_base() {
+        let action = integration_action();
+        let values = vec![
+            "taskbars".to_owned(),
+            "T6".to_owned(),
+            "feature/t6".to_owned(),
+            "aaaaaaaaaaaaaaaa".to_owned(),
+            "main".to_owned(),
+            "bbbbbbbbbbbbbbbb".to_owned(),
+            "/tmp/taskbars".to_owned(),
+        ];
+
+        assert_eq!(
+            hospital_integration_verify_args(&action, &values).unwrap(),
+            vec![
+                "verify",
+                "taskbars",
+                "T6",
+                "main",
+                "aaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaa",
+            ]
+        );
     }
 
     #[test]
