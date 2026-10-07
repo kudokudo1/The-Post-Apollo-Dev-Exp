@@ -207,6 +207,25 @@ Read-side journal actions are normal semantic PX actions, so TERM EXP can list,
 inspect, and show recovery facts without requiring operation IDs to be
 memorized.
 
+PX now also tracks the exact process identity that owns each new RUNNING journal:
+PID, Linux boot id, and process start tick. A journal is considered stale only
+when that exact owner identity is gone or belongs to an earlier boot; elapsed
+time alone is never enough. This prevents long-running Doctor or integration
+work from being mislabeled merely because it took a while.
+
+`List Stale PX Operations` shows only proven-stale RUNNING records.
+`Mark Interrupted PX Operation` uses that stale-only selector and requires
+explicit `LOCAL` confirmation. Reconciliation does **not** guess whether the
+mutation succeeded or failed. It closes the journal as externally
+`INTERRUPTED`, records verification as unavailable, and stores execution
+outcome `UNKNOWN` with guidance to inspect domain state before retrying or
+recovering. Normal FAILED history stays distinct from interrupted history.
+
+Legacy RUNNING records created before owner tracking remain owner state
+`UNKNOWN` and are not included in the normal stale selector. PX provides
+`operation reconcile <id> --force-unknown` only as an explicit CLI escape hatch
+after external inspection confirms the legacy journal owner is gone.
+
 TERM EXP also exposes `Recover PX Operation` as a semantic remote action. The
 operator chooses the source operation from the same journal selector; PX
 preflight then freezes the operation id, recovery strategy, repository/base,
@@ -241,6 +260,11 @@ execute mutation
         |
         v
 PX operation FINISH (COMPLETE / FAILED)
+        |
+        +--> owner loss before FINISH
+                 |
+                 v
+          INTERRUPTED / outcome UNKNOWN
 ```
 
 ## Architecture
