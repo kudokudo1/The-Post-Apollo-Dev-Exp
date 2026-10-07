@@ -1221,6 +1221,7 @@ Usage:
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
   px delete-workflow <repo> <workflow-path> [ref]
   px hospital <init|status> [--json]
+  px agent <providers|session-create|turn> ...
 
 Workflow factory:
   trigger: manual | push | manual+push
@@ -1377,6 +1378,11 @@ case "$cmd" in
     hospital)
         need python3
         python3 "$ROOT/bin/px-hospital-store" "$@"
+        ;;
+
+    agent)
+        need python3
+        python3 "$ROOT/bin/px-agent" "$@"
         ;;
 
     delete-workflow)
