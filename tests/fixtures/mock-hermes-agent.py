@@ -48,6 +48,10 @@ events = [
         "patient_chart": "PATIENT CHART // ACTIVE" in prompt,
         "room_chart": "ROOM CHART // ACTIVE" in prompt,
         "recent_transcript": "RECENT CANONICAL TRANSCRIPT" in prompt,
+        "supplemental_context": "SUPPLEMENTAL TURN CONTEXT" in prompt,
+        "report_feedback_context": (
+            "REPORT FEEDBACK // ROOM REPORT" in prompt
+        ),
     },
     {
         "type": "text",
