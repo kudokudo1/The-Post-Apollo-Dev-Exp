@@ -10,6 +10,7 @@ on:
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
+      - tests/fixtures/mock-hermes-legacy.py
       - .github/workflows/px-agent-runtime.yml
   push:
     branches:
@@ -41,6 +42,7 @@ jobs:
           python3 -m py_compile bin/px-hospital-store
           python3 -m py_compile bin/px-agent
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
+          python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
       - name: Test supervised Hospital agent runtime
         run: bash ./tests/test-px-agent-runtime.sh
