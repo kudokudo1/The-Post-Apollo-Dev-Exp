@@ -4,6 +4,7 @@ pub enum Mode {
     Leader,
     Search,
     ActionPrompt,
+    ActionChoice,
     Output,
 }
 
@@ -13,6 +14,13 @@ pub enum SearchScope {
     Actions,
     Category(String),
     Tools,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActionChoiceItem {
+    pub value: String,
+    pub label: String,
+    pub detail: String,
 }
 
 pub struct App {
@@ -28,6 +36,9 @@ pub struct App {
     pub prompt_index: usize,
     pub prompt_values: Vec<String>,
     pub prompt_buffer: String,
+
+    pub choice_selected: usize,
+    pub choice_items: Vec<ActionChoiceItem>,
 
     pub output_title: String,
     pub output_text: String,
@@ -49,6 +60,9 @@ impl App {
             prompt_index: 0,
             prompt_values: Vec::new(),
             prompt_buffer: String::new(),
+
+            choice_selected: 0,
+            choice_items: Vec::new(),
 
             output_title: String::new(),
             output_text: String::new(),
@@ -95,14 +109,33 @@ impl App {
         self.prompt_index = 0;
         self.prompt_values.clear();
         self.prompt_buffer.clear();
+        self.choice_selected = 0;
+        self.choice_items.clear();
     }
 
     pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
-        self.mode = Mode::ActionPrompt;
         self.pending_action_id = Some(action_id);
         self.prompt_index = 0;
         self.prompt_values = vec![String::new(); argument_count];
         self.prompt_buffer.clear();
+        self.choice_selected = 0;
+        self.choice_items.clear();
+        self.status = None;
+    }
+
+    pub fn open_choice(&mut self, items: Vec<ActionChoiceItem>) {
+        self.mode = Mode::ActionChoice;
+        self.choice_selected = 0;
+        self.choice_items = items;
+        self.prompt_buffer.clear();
+        self.status = None;
+    }
+
+    pub fn open_prompt(&mut self) {
+        self.mode = Mode::ActionPrompt;
+        self.prompt_buffer.clear();
+        self.choice_selected = 0;
+        self.choice_items.clear();
         self.status = None;
     }
 
@@ -122,6 +155,8 @@ impl App {
         self.prompt_index = 0;
         self.prompt_values.clear();
         self.prompt_buffer.clear();
+        self.choice_selected = 0;
+        self.choice_items.clear();
         self.output_title.clear();
         self.output_text.clear();
         self.output_scroll = 0;
