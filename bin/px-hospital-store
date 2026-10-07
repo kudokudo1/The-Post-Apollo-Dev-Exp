@@ -494,6 +494,8 @@ def rooms_list(conn: sqlite3.Connection) -> list:
 
 
 def session_put(conn: sqlite3.Connection, args) -> dict:
+    ensure_doctor(conn, args.doctor_id)
+
     room_exists = conn.execute(
         "SELECT 1 FROM rooms WHERE room_id = ?",
         (args.room_id,),
