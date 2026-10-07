@@ -2334,11 +2334,43 @@ case "$cmd" in
 
     delete-workflow)
         need gh
-        repo="$(repo_for "${1:-}")"
-        workflow="${2:-}"
-        ref="${3:-}"
+        need jq
 
+        repo_key="${1:-}"
+        workflow="${2:-}"
+        shift 2 || true
+
+        ref=""
+        expected_sha=""
+        expected_ref_head=""
+
+        if [[ "$#" -gt 0 && "${1:-}" != --* ]]; then
+            ref="$1"
+            shift
+        fi
+
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                --expected-sha)
+                    [[ "$#" -ge 2 ]] || die "--expected-sha requires a value"
+                    expected_sha="$2"
+                    shift 2
+                    ;;
+                --expected-ref-head)
+                    [[ "$#" -ge 2 ]] || die "--expected-ref-head requires a value"
+                    expected_ref_head="$2"
+                    shift 2
+                    ;;
+                *)
+                    die "unknown delete-workflow option: $1"
+                    ;;
+            esac
+        done
+
+        [[ -n "$repo_key" ]] || die "repo identity required"
         [[ -n "$workflow" ]] || die "workflow path required"
+
+        repo="$(repo_for "$repo_key")"
         workflow="${workflow#./}"
 
         case "$workflow" in
@@ -2355,7 +2387,8 @@ case "$cmd" in
         [[ -n "$ref" ]] || ref="$(default_branch_for "$repo")"
         [[ -n "$ref" ]] || die "workflow delete target ref unavailable"
 
-        metadata="$(gh api "repos/$repo/contents/$workflow?ref=$ref")" \
+        encoded_ref="$(jq -rn --arg value "$ref" '$value | @uri')"
+        metadata="$(gh api "repos/$repo/contents/$workflow?ref=$encoded_ref")" \
             || die "workflow not found on $ref: $workflow"
 
         type="$(printf '%s' "$metadata" | jq -r '.type // empty')"
@@ -2366,12 +2399,42 @@ case "$cmd" in
         [[ -n "$sha" ]] \
             || die "workflow delete refused: content SHA missing"
 
-        gh api --method DELETE "repos/$repo/contents/$workflow" \
-            -f "message=Delete workflow $workflow" \
-            -f "sha=$sha" \
-            -f "branch=$ref" >/dev/null
+        if [[ -n "$expected_sha" && "$sha" != "$expected_sha" ]]; then
+            die "workflow delete refused: content SHA changed after confirmation"
+        fi
 
-        printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        if [[ -n "$expected_ref_head" ]]; then
+            [[ -n "$expected_sha" ]] \
+                || die "guarded workflow delete requires expected content SHA"
+
+            current_ref_head="$(github_branch_head_sha "$repo" "$ref")"
+            [[ "$current_ref_head" == "$expected_ref_head" ]] \
+                || die "workflow delete refused: branch HEAD changed after confirmation"
+
+            query='mutation($repository:String!,$branch:String!,$expected:GitObjectID!,$path:String!,$headline:String!){createCommitOnBranch(input:{branch:{repositoryNameWithOwner:$repository,branchName:$branch},message:{headline:$headline},fileChanges:{deletions:[{path:$path}]},expectedHeadOid:$expected}){commit{oid url}}}'
+            result="$(gh api graphql \
+                -f query="$query" \
+                -F repository="$repo" \
+                -F branch="$ref" \
+                -F expected="$expected_ref_head" \
+                -F path="$workflow" \
+                -F headline="Delete workflow $workflow")" \
+                || die "workflow delete refused: expected branch HEAD no longer matches"
+
+            new_head="$(jq -r '.data.createCommitOnBranch.commit.oid // ""' <<<"$result")"
+            [[ -n "$new_head" ]] \
+                || die "workflow delete failed: GitHub returned no commit"
+
+            printf 'deleted workflow: %s @ %s // commit %s\n' \
+                "$workflow" "$ref" "$new_head"
+        else
+            gh api --method DELETE "repos/$repo/contents/$workflow" \
+                -f "message=Delete workflow $workflow" \
+                -f "sha=$sha" \
+                -f "branch=$ref" >/dev/null
+
+            printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        fi
         ;;
 
     help|-h|--help)
