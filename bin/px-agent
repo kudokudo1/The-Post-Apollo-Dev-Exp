@@ -537,7 +537,7 @@ def run_turn(args) -> dict:
             *render_args(template, provider_session_id),
         ]
 
-    px_hospital(
+    operator_message = px_hospital(
         "message-append",
         "--room-id", str(session["roomId"]),
         "--session-id", args.session_id,
@@ -628,6 +628,8 @@ def run_turn(args) -> dict:
             "providerId": provider_id,
             "providerSessionId": provider_session_id,
             "assistant": "",
+            "operatorMessageId": str(operator_message.get("id") or ""),
+            "assistantMessageId": "",
             "eventCount": 0,
             "stderr": stderr_text.strip(),
             "cancelled": True,
@@ -722,7 +724,7 @@ def run_turn(args) -> dict:
         )
         raise RuntimeError(detail)
 
-    px_hospital(
+    doctor_message = px_hospital(
         "message-append",
         "--room-id", str(session["roomId"]),
         "--session-id", args.session_id,
@@ -766,6 +768,8 @@ def run_turn(args) -> dict:
         "providerId": provider_id,
         "providerSessionId": effective_id,
         "assistant": assistant,
+        "operatorMessageId": str(operator_message.get("id") or ""),
+        "assistantMessageId": str(doctor_message.get("id") or ""),
         "eventCount": len(normalized_events),
         "stderr": stderr_text.strip(),
     }
@@ -874,10 +878,51 @@ def run_quick(args) -> dict:
         timeout=args.timeout,
     )
 
-    return {
+    turn_result = run_turn(turn_args)
+    payload = {
         "command": command,
-        "result": run_turn(turn_args),
+        "result": turn_result,
     }
+
+    if command == "REPORT":
+        session = turn_result.get("session") or {}
+        assistant = str(turn_result.get("assistant") or "")
+        source_message_id = str(
+            turn_result.get("assistantMessageId") or ""
+        )
+
+        checkpoint_args = [
+            "checkpoint-append",
+            "--room-id", str(session.get("roomId") or ""),
+            "--session-id", args.session_id,
+            "--checkpoint-kind", "REQUESTED_REPORT",
+        ]
+        if source_message_id:
+            checkpoint_args.extend([
+                "--source-message-id",
+                source_message_id,
+            ])
+        checkpoint_args.append("--body-stdin")
+
+        checkpoint = px_hospital(
+            *checkpoint_args,
+            stdin_text=assistant,
+        )
+        payload["checkpoint"] = checkpoint
+
+        store_event(
+            args.session_id,
+            "checkpoint.created",
+            {
+                "checkpointId": checkpoint.get("id"),
+                "kind": checkpoint.get("kind"),
+                "sourceMessageId": checkpoint.get(
+                    "sourceMessageId"
+                ),
+            },
+        )
+
+    return payload
 
 
 def build_parser():
