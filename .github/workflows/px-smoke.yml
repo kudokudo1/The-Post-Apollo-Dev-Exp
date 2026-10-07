@@ -10,6 +10,7 @@ on:
       - docs/workflow-factory.md
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
+      - tests/test-px-delete-workflow.sh
       - .github/workflows/px-smoke.yml
   push:
     branches:
@@ -26,6 +27,7 @@ on:
       - docs/workflow-factory.md
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
+      - tests/test-px-delete-workflow.sh
       - .github/workflows/px-smoke.yml
 
 permissions:
@@ -45,6 +47,7 @@ jobs:
           bash -n bin/px
           bash -n tests/test-px-factory.sh
           bash -n tests/test-px-runs.sh
+          bash -n tests/test-px-delete-workflow.sh
 
       - name: Exercise local PX commands
         run: |
@@ -57,6 +60,9 @@ jobs:
 
       - name: Test exact-SHA run evidence
         run: bash ./tests/test-px-runs.sh
+
+      - name: Test guarded workflow deletion
+        run: bash ./tests/test-px-delete-workflow.sh
 
       - name: Report execution identity
         run: |
