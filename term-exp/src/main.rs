@@ -1096,6 +1096,7 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
         Mode::Leader => draw_leader(frame, rows[1], app, model),
         Mode::Search => draw_search(frame, rows[1], app, model),
         Mode::ActionPrompt => draw_action_prompt(frame, rows[1], app, model),
+        Mode::ActionChoice => draw_action_choice(frame, rows[1], app, model),
         Mode::Output => draw_output(frame, rows[1], app),
     }
 
@@ -1365,6 +1366,94 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let mut state = ListState::default();
     if !results.is_empty() {
         state.select(Some(app.search_selected.min(results.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, rows[1], &mut state);
+}
+
+fn draw_action_choice(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending action").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Action no longer exists").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        frame.render_widget(
+            Paragraph::new("No remaining arguments").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .split(area);
+
+    let heading = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                &action.title,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", action.id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Choose ", Style::default().fg(FG)),
+            Span::styled(
+                format!("{} [{}]", argument.name, argument.kind),
+                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ])
+    .block(panel(" KNOWN VALUE ", ORANGE));
+
+    frame.render_widget(heading, rows[0]);
+
+    let items: Vec<ListItem> = app
+        .choice_items
+        .iter()
+        .map(|choice| {
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    &choice.label,
+                    Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!("  {}", choice.detail),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" AVAILABLE ", MAGENTA))
+        .highlight_symbol("> ")
+        .highlight_style(
+            Style::default()
+                .fg(BG)
+                .bg(ORANGE)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let mut state = ListState::default();
+    if !app.choice_items.is_empty() {
+        state.select(Some(
+            app.choice_selected.min(app.choice_items.len().saturating_sub(1)),
+        ));
     }
 
     frame.render_stateful_widget(list, rows[1], &mut state);
