@@ -6,6 +6,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 export PX_HOSPITAL_DATA_DIR="$TMP/hospital-data"
+export PX_AGENT_LOCK_DIR="$TMP/agent-locks"
 BED="$TMP/t6-bed"
 mkdir -p "$BED"
 
@@ -65,6 +66,59 @@ historical_checkpoint_id="$(python3 -c 'import json,sys; print(json.loads(sys.ar
 historical_report_json="$(printf '%s' 'Earlier Application Audio extraction found a reusable stream ownership seam.' | "$ROOT/bin/px" hospital room-report-append --room-id T6 --session-id session-t6-agent --checkpoint-id "$historical_checkpoint_id" --report-kind DOCTOR_NOTE --title "Application Audio historical note" --git-evidence-status UNAVAILABLE --body-stdin --json)"
 historical_report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$historical_report_json")"
 context_json="$("$ROOT/bin/px" agent context session-t6-agent --json)"
+
+mkdir -p "$PX_AGENT_LOCK_DIR"
+lock_ready="$TMP/turn-lock-ready"
+python3 - "$PX_AGENT_LOCK_DIR/session-t6-agent.lock" "$lock_ready" <<'PY' &
+import fcntl
+import pathlib
+import sys
+import time
+
+lock_path = pathlib.Path(sys.argv[1])
+ready_path = pathlib.Path(sys.argv[2])
+lock_path.parent.mkdir(parents=True, exist_ok=True)
+with lock_path.open("a+") as handle:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    ready_path.write_text("ready")
+    time.sleep(30)
+PY
+lock_holder_pid=$!
+
+for _ in $(seq 1 100); do
+    [[ -f "$lock_ready" ]] && break
+    sleep 0.02
+done
+
+if [[ ! -f "$lock_ready" ]]; then
+    printf 'turn lock holder did not become ready\n' >&2
+    kill "$lock_holder_pid" 2>/dev/null || true
+    wait "$lock_holder_pid" 2>/dev/null || true
+    exit 1
+fi
+
+set +e
+locked_turn_output="$(printf '%s' 'LOCKED_TURN_MUST_BE_REFUSED' | \
+    "$ROOT/bin/px" agent turn session-t6-agent \
+        --prompt-stdin --timeout 30 --json 2>&1)"
+locked_turn_status=$?
+set -e
+
+kill "$lock_holder_pid" 2>/dev/null || true
+wait "$lock_holder_pid" 2>/dev/null || true
+
+if [[ "$locked_turn_status" -eq 0 ]]; then
+    printf 'expected per-session turn lock to refuse concurrent start\n' >&2
+    exit 1
+fi
+
+case "$locked_turn_output" in
+    *"already operating in this persistent session"*) ;;
+    *)
+        printf 'unexpected turn lock refusal: %s\n' "$locked_turn_output" >&2
+        exit 1
+        ;;
+esac
 
 turn_one_frame="$(python3 -c 'import json; print(json.dumps({"prompt": "first task\nwith detail"}))')"
 turn_one_json="$(printf '%s\n' "$turn_one_frame" | "$ROOT/bin/px" agent turn session-t6-agent --prompt-json-stdin --timeout 30 --json)"
