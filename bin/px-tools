@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""PX tool/environment discovery registry.
+
+This is deliberately discovery-only. It describes executable tools and the
+environment boundary needed to invoke them; execution/resolution belongs to a
+later PX layer.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+REGISTRY_VERSION = 1
+DEFAULT_TOOLBOX = "fedora-toolbox-44"
+DEFAULT_TOOLBOX_PATH = (
+    "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+)
+DISABLED_TOOLBOX_VALUES = {"", "off", "none", "disabled", "false", "0"}
+
+TOOLBOX_SCAN_SCRIPT = r"""
+for dir do
+    [ -d "$dir" ] || continue
+    for file in "$dir"/*; do
+        [ -f "$file" ] || continue
+        [ -x "$file" ] || continue
+        printf '%s\t%s\n' "$(basename "$file")" "$file"
+    done
+done
+"""
+
+
+def split_search_path(value: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for raw in value.split(os.pathsep):
+        directory = raw.strip()
+        if not directory:
+            continue
+        expanded = str(Path(directory).expanduser())
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        out.append(expanded)
+
+    return out
+
+
+def executable_file(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return False
+
+    return stat.S_ISREG(mode) and os.access(path, os.X_OK)
+
+
+def host_scope(path: Path) -> str:
+    home = Path.home()
+    try:
+        path.resolve().relative_to(home.resolve())
+        return "user"
+    except (OSError, ValueError):
+        return "system"
+
+
+def tool_record(
+    *,
+    name: str,
+    path: str,
+    backend: str,
+    environment: str,
+    scope: str,
+    invocation: list[str],
+) -> dict:
+    return {
+        "name": name,
+        "path": path,
+        "backend": backend,
+        "environment": environment,
+        "scope": scope,
+        "invocation": invocation,
+    }
+
+
+def discover_host() -> tuple[dict, list[dict]]:
+    search_path = split_search_path(
+        os.environ.get("PX_HOST_PATH", os.environ.get("PATH", ""))
+    )
+    seen: set[str] = set()
+    tools: list[dict] = []
+
+    for directory_text in search_path:
+        directory = Path(directory_text)
+
+        try:
+            entries = sorted(directory.iterdir(), key=lambda item: item.name)
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            continue
+        except OSError:
+            continue
+
+        for entry in entries:
+            name = entry.name
+            if name in seen or not executable_file(entry):
+                continue
+
+            seen.add(name)
+            tools.append(
+                tool_record(
+                    name=name,
+                    path=str(entry),
+                    backend="native",
+                    environment="host",
+                    scope=host_scope(entry),
+                    invocation=[str(entry)],
+                )
+            )
+
+    environment = {
+        "id": "host",
+        "kind": "native",
+        "status": "READY",
+        "searchPath": search_path,
+        "toolCount": len(tools),
+        "error": "",
+    }
+    return environment, tools
+
+
+def parse_toolbox_listing(
+    stdout: str,
+    toolbox_name: str,
+    toolbox_launcher: str,
+) -> list[dict]:
+    seen: set[str] = set()
+    tools: list[dict] = []
+    environment_id = f"toolbox:{toolbox_name}"
+
+    for raw in stdout.splitlines():
+        if "\t" not in raw:
+            continue
+
+        name, path = raw.split("\t", 1)
+        name = name.strip()
+        path = path.strip()
+
+        if not name or not path or name in seen:
+            continue
+
+        seen.add(name)
+        tools.append(
+            tool_record(
+                name=name,
+                path=path,
+                backend="toolbox",
+                environment=environment_id,
+                scope="system",
+                invocation=[
+                    toolbox_launcher,
+                    "run",
+                    "-c",
+                    toolbox_name,
+                    "--",
+                    path,
+                ],
+            )
+        )
+
+    return tools
+
+
+def discover_toolbox() -> tuple[dict, list[dict]]:
+    raw_name = os.environ.get("PX_TOOLBOX", DEFAULT_TOOLBOX).strip()
+    toolbox_name = raw_name
+    search_path = split_search_path(
+        os.environ.get("PX_TOOLBOX_SYSTEM_PATH", DEFAULT_TOOLBOX_PATH)
+    )
+
+    if raw_name.lower() in DISABLED_TOOLBOX_VALUES:
+        return (
+            {
+                "id": "toolbox",
+                "kind": "toolbox",
+                "name": raw_name,
+                "status": "DISABLED",
+                "searchPath": search_path,
+                "toolCount": 0,
+                "error": "",
+            },
+            [],
+        )
+
+    launcher = shutil.which("toolbox")
+    environment_id = f"toolbox:{toolbox_name}"
+
+    if not launcher:
+        return (
+            {
+                "id": environment_id,
+                "kind": "toolbox",
+                "name": toolbox_name,
+                "status": "UNAVAILABLE",
+                "searchPath": search_path,
+                "toolCount": 0,
+                "error": "toolbox command is unavailable",
+            },
+            [],
+        )
+
+    timeout = int(os.environ.get("PX_DISCOVERY_TIMEOUT", "20"))
+
+    try:
+        proc = subprocess.run(
+            [
+                launcher,
+                "run",
+                "-c",
+                toolbox_name,
+                "--",
+                "sh",
+                "-c",
+                TOOLBOX_SCAN_SCRIPT,
+                "px-toolbox-scan",
+                *search_path,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (
+            {
+                "id": environment_id,
+                "kind": "toolbox",
+                "name": toolbox_name,
+                "status": "ERROR",
+                "searchPath": search_path,
+                "toolCount": 0,
+                "error": str(exc),
+            },
+            [],
+        )
+
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return (
+            {
+                "id": environment_id,
+                "kind": "toolbox",
+                "name": toolbox_name,
+                "status": "ERROR",
+                "searchPath": search_path,
+                "toolCount": 0,
+                "error": detail or f"toolbox discovery exited {proc.returncode}",
+            },
+            [],
+        )
+
+    tools = parse_toolbox_listing(proc.stdout, toolbox_name, launcher)
+    return (
+        {
+            "id": environment_id,
+            "kind": "toolbox",
+            "name": toolbox_name,
+            "status": "READY",
+            "searchPath": search_path,
+            "toolCount": len(tools),
+            "error": "",
+        },
+        tools,
+    )
+
+
+def build_registry(query: str) -> dict:
+    host_environment, host_tools = discover_host()
+    toolbox_environment, toolbox_tools = discover_toolbox()
+
+    tools = host_tools + toolbox_tools
+    needle = query.strip().lower()
+
+    if needle:
+        tools = [
+            tool
+            for tool in tools
+            if needle
+            in " ".join(
+                [
+                    str(tool.get("name", "")),
+                    str(tool.get("path", "")),
+                    str(tool.get("backend", "")),
+                    str(tool.get("environment", "")),
+                    str(tool.get("scope", "")),
+                ]
+            ).lower()
+        ]
+
+    return {
+        "version": REGISTRY_VERSION,
+        "query": query,
+        "environments": [host_environment, toolbox_environment],
+        "counts": {
+            "host": len(host_tools),
+            "toolbox": len(toolbox_tools),
+            "total": len(host_tools) + len(toolbox_tools),
+            "matched": len(tools),
+        },
+        "tools": tools,
+    }
+
+
+def print_human(payload: dict, query: str) -> None:
+    if not query:
+        print("PX TOOL REGISTRY")
+        print()
+        print(f"{'ENVIRONMENT':<34} {'STATUS':<12} {'TOOLS':>7}")
+        for environment in payload["environments"]:
+            print(
+                f"{environment['id']:<34} "
+                f"{environment['status']:<12} "
+                f"{environment['toolCount']:>7}"
+            )
+            error = str(environment.get("error") or "")
+            if error:
+                print(f"  {error}")
+        print()
+        print(f"TOTAL {payload['counts']['total']}")
+        print("Search with: px tools <query>")
+        print("Machine registry: px tools --json")
+        return
+
+    print(f"{'BACKEND':<28} {'NAME':<30} PATH")
+    for tool in payload["tools"]:
+        print(
+            f"{tool['environment']:<28} "
+            f"{tool['name']:<30} "
+            f"{tool['path']}"
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="px tools",
+        description="Discover host and Toolbox executables for PX TERM EXP",
+    )
+    parser.add_argument("query", nargs="?", default="")
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    payload = build_registry(args.query)
+
+    if args.json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print_human(payload, args.query)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

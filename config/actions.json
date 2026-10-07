@@ -41,6 +41,37 @@
       ]
     },
     {
+      "id": "px.tools.list",
+      "title": "Discover Tools",
+      "category": "PX",
+      "summary": "Discover executable tools across the host and configured Toolbox without inheriting shared-home wrappers into the Toolbox scan.",
+      "command": [
+        "tools",
+        "{query?}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "query",
+          "required": false,
+          "kind": "text"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "tools",
+        "commands",
+        "path",
+        "toolbox",
+        "terminal",
+        "discovery",
+        "environment"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",
@@ -990,6 +1021,242 @@
         "codex",
         "hermes",
         "hospital"
+      ]
+    },
+    {
+      "id": "ai.session.status",
+      "title": "Doctor Session Status",
+      "category": "AI",
+      "summary": "Read live supervision state for a Hospital Doctor session.",
+      "command": [
+        "agent",
+        "status",
+        "{session_id}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "agent",
+        "doctor",
+        "session",
+        "status",
+        "operating",
+        "hospital"
+      ]
+    },
+    {
+      "id": "ai.session.cancel",
+      "title": "Cancel Doctor Turn",
+      "category": "AI",
+      "summary": "Cancel an actively operating Hospital Doctor turn and preserve the paused session state.",
+      "command": [
+        "agent",
+        "cancel",
+        "{session_id}",
+        "--reason",
+        "{reason?}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "kind": "text"
+        }
+      ],
+      "mutation": "local",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "agent",
+        "doctor",
+        "cancel",
+        "stop",
+        "pause",
+        "hospital"
+      ]
+    },
+    {
+      "id": "ai.quick.continue",
+      "title": "Doctor Quick Continue",
+      "category": "AI",
+      "summary": "Tell the current Hospital Doctor to continue the active Room assignment from present state.",
+      "command": [
+        "agent",
+        "quick",
+        "{session_id}",
+        "CONTINUE",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "external",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "doctor",
+        "quick",
+        "continue",
+        "go",
+        "hospital",
+        "room"
+      ]
+    },
+    {
+      "id": "ai.quick.report",
+      "title": "Doctor Quick Report",
+      "category": "AI",
+      "summary": "Request a concise checkpoint report from the current Hospital Doctor.",
+      "command": [
+        "agent",
+        "quick",
+        "{session_id}",
+        "REPORT",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "external",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "doctor",
+        "quick",
+        "report",
+        "checkpoint",
+        "hospital",
+        "room"
+      ]
+    },
+    {
+      "id": "ai.quick.checklist",
+      "title": "Doctor Quick Checklist",
+      "category": "AI",
+      "summary": "Request the current assignment checklist from the Hospital Doctor.",
+      "command": [
+        "agent",
+        "quick",
+        "{session_id}",
+        "CHECKLIST",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "external",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "doctor",
+        "quick",
+        "checklist",
+        "tasks",
+        "hospital",
+        "room"
+      ]
+    },
+    {
+      "id": "ai.quick.next",
+      "title": "Doctor Quick Next",
+      "category": "AI",
+      "summary": "Ask the Hospital Doctor for the next concrete action and perform it when safe in scope.",
+      "command": [
+        "agent",
+        "quick",
+        "{session_id}",
+        "NEXT",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "external",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "doctor",
+        "quick",
+        "next",
+        "action",
+        "hospital",
+        "room"
+      ]
+    },
+    {
+      "id": "ai.quick.pause",
+      "title": "Doctor Quick Pause",
+      "category": "AI",
+      "summary": "Pause the current Hospital Doctor session, cancelling an active turn when necessary.",
+      "command": [
+        "agent",
+        "quick",
+        "{session_id}",
+        "PAUSE",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        }
+      ],
+      "mutation": "local",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "doctor",
+        "quick",
+        "pause",
+        "cancel",
+        "hospital",
+        "room"
       ]
     }
   ]

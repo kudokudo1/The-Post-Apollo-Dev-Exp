@@ -31,6 +31,9 @@ jq -e '
   and any(.actions[]; .id == "hospital.store.status")
   and any(.actions[]; .id == "ai.providers.list")
   and any(.actions[]; .id == "ai.turn")
+  and any(.actions[]; .id == "ai.session.status")
+  and any(.actions[]; .id == "ai.session.cancel")
+  and any(.actions[]; .id == "ai.quick.pause")
 ' <<<"$registry" >/dev/null
 
 hospital="$("$ROOT/bin/px" actions hospital --json)"
