@@ -212,6 +212,48 @@ assert status["elapsedSeconds"] == 0, status
 assert any(row["type"] == "turn.cancelled" for row in events), events
 PY
 
+quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
+quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
+quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
+quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
+
+python3 - \
+    "$quick_status_json" \
+    "$quick_report_json" \
+    "$quick_pause_json" \
+    "$quick_continue_json" <<'PY'
+import json
+import sys
+
+status = json.loads(sys.argv[1])
+report = json.loads(sys.argv[2])
+pause = json.loads(sys.argv[3])
+continue_result = json.loads(sys.argv[4])
+
+assert status["command"] == "STATUS", status
+assert status["status"]["status"] == "WAITING", status
+
+assert report["command"] == "REPORT", report
+assert report["result"]["assistant"].startswith(
+    "MOCK: QUICK // REPORT"
+), report
+assert report["result"]["providerSessionId"] == "mock-provider-session", report
+
+assert pause["command"] == "PAUSE", pause
+assert pause["result"]["paused"] is True, pause
+assert pause["result"]["session"]["status"] == "PAUSED", pause
+
+assert continue_result["command"] == "CONTINUE", continue_result
+assert continue_result["result"]["assistant"].startswith(
+    "MOCK: QUICK // CONTINUE"
+), continue_result
+assert (
+    continue_result["result"]["providerSessionId"]
+    == "mock-provider-session"
+), continue_result
+assert continue_result["result"]["session"]["status"] == "WAITING", continue_result
+PY
+
 set +e
 mismatch_output="$(printf '%s' 'FORCE_SESSION_MISMATCH' |     "$ROOT/bin/px" agent turn session-t6-agent         --prompt-stdin         --timeout 30         --json 2>&1)"
 mismatch_status=$?

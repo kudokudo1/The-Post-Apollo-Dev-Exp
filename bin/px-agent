@@ -771,6 +771,115 @@ def run_turn(args) -> dict:
     }
 
 
+QUICK_PROMPTS = {
+    "CONTINUE": (
+        "QUICK // CONTINUE\n"
+        "Continue the current Room assignment from the present state. "
+        "Preserve existing constraints and decisions. Surface the next "
+        "meaningful checkpoint or any blocker."
+    ),
+    "REPORT": (
+        "QUICK // REPORT\n"
+        "Provide a concise Room checkpoint report covering what changed, "
+        "current status, risks or blockers, verification, and the next action. "
+        "Do not start unrelated work."
+    ),
+    "CHECKLIST": (
+        "QUICK // CHECKLIST\n"
+        "Return the current assignment checklist with done, in-progress, "
+        "blocked, and remaining items. Do not start unrelated work."
+    ),
+    "NEXT": (
+        "QUICK // NEXT\n"
+        "State the next concrete action for this Room and, if it is safe "
+        "within the current assignment, perform that next action. Surface "
+        "any blocker instead of expanding scope."
+    ),
+}
+
+
+def pause_session(session_id: str) -> dict:
+    status = status_payload(session_id)
+
+    if status["operating"]:
+        result = cancel_session(
+            argparse.Namespace(
+                session_id=session_id,
+                reason="PAUSE",
+            )
+        )
+        result["paused"] = True
+        return result
+
+    session = px_hospital(
+        "session-runtime",
+        session_id,
+        "--status", "PAUSED",
+        "--clear-active-pid",
+        "--clear-turn-started",
+        "--clear-error",
+    )
+    store_event(
+        session_id,
+        "session.paused",
+        {"reason": "OPERATOR"},
+    )
+    return {
+        "paused": True,
+        "cancelled": False,
+        "session": session,
+    }
+
+
+def run_quick(args) -> dict:
+    command = str(args.quick_command or "").strip().upper()
+
+    if command == "GO":
+        command = "CONTINUE"
+
+    if command == "STATUS":
+        return {
+            "command": command,
+            "status": status_payload(args.session_id),
+        }
+
+    if command == "PAUSE":
+        return {
+            "command": command,
+            "result": pause_session(args.session_id),
+        }
+
+    prompt = QUICK_PROMPTS.get(command)
+    if not prompt:
+        allowed = [
+            "GO", "CONTINUE", "STATUS", "REPORT",
+            "CHECKLIST", "NEXT", "PAUSE",
+        ]
+        raise RuntimeError(
+            "unknown quick command: "
+            + command
+            + " (expected "
+            + ", ".join(allowed)
+            + ")"
+        )
+
+    turn_args = argparse.Namespace(
+        session_id=args.session_id,
+        prompt=prompt,
+        prompt_stdin=False,
+        prompt_json_stdin=False,
+        working_directory="",
+        author_id=args.author_id,
+        message_type="quick",
+        timeout=args.timeout,
+    )
+
+    return {
+        "command": command,
+        "result": run_turn(turn_args),
+    }
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="px agent",
@@ -810,6 +919,13 @@ def build_parser():
     cancel.add_argument("--reason", default="OPERATOR")
     cancel.add_argument("--json", action="store_true")
 
+    quick = sub.add_parser("quick")
+    quick.add_argument("session_id")
+    quick.add_argument("quick_command")
+    quick.add_argument("--author-id", default="operator")
+    quick.add_argument("--timeout", type=int, default=1800)
+    quick.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -833,6 +949,8 @@ def main() -> int:
             emit(status_payload(args.session_id), args.json)
         elif args.command == "cancel":
             emit(cancel_session(args), args.json)
+        elif args.command == "quick":
+            emit(run_quick(args), args.json)
         else:
             raise RuntimeError(f"unsupported agent command: {args.command}")
     except (OSError, RuntimeError) as exc:
