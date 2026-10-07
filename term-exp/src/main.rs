@@ -1297,7 +1297,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let default = match &app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
-        Mode::Search => "type to search   Up/Down move   Enter select   Esc back",
+        Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
+        Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
+        Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
     let message_color = if app.status.is_some() { ORANGE } else { FG };
@@ -1312,7 +1314,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         ),
         Span::styled(
             format!(
-                " a{} t{} ",
+                " a{} c{} ",
                 model.actions.actions.len(),
                 model.tools.counts.total
             ),
