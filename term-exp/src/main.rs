@@ -921,6 +921,8 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
         Mode::Home => draw_body(frame, rows[1], model),
         Mode::Leader => draw_leader(frame, rows[1], app, model),
         Mode::Search => draw_search(frame, rows[1], app, model),
+        Mode::ActionPrompt => draw_action_prompt(frame, rows[1], app, model),
+        Mode::Output => draw_output(frame, rows[1], app),
     }
 
     draw_footer(frame, rows[2], app, model);
