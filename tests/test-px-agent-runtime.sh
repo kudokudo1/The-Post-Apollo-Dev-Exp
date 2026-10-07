@@ -396,7 +396,9 @@ python3 - \
     "$quick_room_reports_json" \
     "$quick_events_json" \
     "$quick_suggest_json" \
-    "$quick_suggestions_json" <<'PY'
+    "$quick_suggestions_json" \
+    "$historical_checkpoint_id" \
+    "$historical_report_id" <<'PY'
 import json
 import sys
 
@@ -412,6 +414,8 @@ room_reports = json.loads(sys.argv[9])
 events = json.loads(sys.argv[10])
 suggest = json.loads(sys.argv[11])
 suggestions = json.loads(sys.argv[12])
+historical_checkpoint_id = sys.argv[13]
+historical_report_id = sys.argv[14]
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
