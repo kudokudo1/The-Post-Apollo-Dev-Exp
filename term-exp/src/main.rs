@@ -919,4 +919,22 @@ mod tests {
 
         assert_eq!(ids, vec!["first-git", "first-ai"]);
     }
+
+
+    #[test]
+    fn fuzzy_match_accepts_subsequence() {
+        assert!(fuzzy_score("hosp", "hospital room status").is_some());
+        assert!(fuzzy_score("zzz", "hospital room status").is_none());
+    }
+
+    #[test]
+    fn search_selector_does_not_move_leader_selector() {
+        let mut app = App::new();
+        app.leader_selected = 3;
+        app.open_search(SearchScope::All);
+        App::next(&mut app.search_selected, 5);
+
+        assert_eq!(app.leader_selected, 3);
+        assert_eq!(app.search_selected, 1);
+    }
 }
