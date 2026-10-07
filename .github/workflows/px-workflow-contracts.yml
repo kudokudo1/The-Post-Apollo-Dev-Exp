@@ -7,11 +7,14 @@ on:
       - bin/px
       - bin/px-tools
       - bin/px-resolve
+      - bin/px-term
+      - term-exp/**
       - config/actions.json
       - config/repos.tsv
       - docs/workflow-factory.md
       - docs/tool-registry.md
       - docs/tool-resolver.md
+      - docs/term-exp.md
       - tests/test-px-actions.sh
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
@@ -26,11 +29,14 @@ on:
       - bin/px
       - bin/px-tools
       - bin/px-resolve
+      - bin/px-term
+      - term-exp/**
       - config/actions.json
       - config/repos.tsv
       - docs/workflow-factory.md
       - docs/tool-registry.md
       - docs/tool-resolver.md
+      - docs/term-exp.md
       - tests/test-px-actions.sh
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
@@ -54,6 +60,7 @@ jobs:
       - name: Validate contract script syntax
         run: |
           bash -n bin/px
+          bash -n bin/px-term
           python3 -m py_compile bin/px-tools bin/px-resolve
           bash -n tests/test-px-actions.sh
           bash -n tests/test-px-tools.sh
@@ -61,6 +68,9 @@ jobs:
           bash -n tests/test-px-factory.sh
           bash -n tests/test-px-runs.sh
           bash -n tests/test-px-delete-workflow.sh
+
+      - name: Build and test PX TERM EXP
+        run: cargo test --manifest-path term-exp/Cargo.toml
 
       - name: Test PX action registry
         run: bash ./tests/test-px-actions.sh

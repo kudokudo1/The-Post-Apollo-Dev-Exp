@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="$ROOT/term-exp/Cargo.toml"
+
+if command -v px-term-exp >/dev/null 2>&1; then
+    exec px-term-exp "$@"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    printf 'px term: cargo is required until px-term-exp is installed\n' >&2
+    exit 127
+fi
+
+export PX_RUNTIME_ROOT="$ROOT"
+exec cargo run --quiet --manifest-path "$MANIFEST" -- "$@"
