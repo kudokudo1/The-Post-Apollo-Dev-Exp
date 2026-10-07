@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -97,6 +97,20 @@ CREATE INDEX IF NOT EXISTS idx_session_events_session
     ON session_events(session_id, event_id DESC);
 """
 
+SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS doctors (
+    doctor_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'DOCTOR',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_doctors_status
+    ON doctors(status, updated_at DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -171,12 +185,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 2
 
+    if version < 3:
+        conn.executescript(SCHEMA_V3)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("3",),
+        )
+        conn.commit()
+        version = 3
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "sessions", "messages", "session_events"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -202,6 +225,7 @@ def emit(payload: dict, as_json: bool) -> None:
         "records: "
         f"patients={counts['patients']} "
         f"rooms={counts['rooms']} "
+        f"doctors={counts['doctors']} "
         f"sessions={counts['sessions']} "
         f"messages={counts['messages']} "
         f"events={counts['session_events']}"
@@ -213,6 +237,84 @@ def emit_data(payload, as_json: bool) -> None:
         print(json.dumps(payload, sort_keys=True))
     else:
         print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def normalize_doctor(row: sqlite3.Row) -> dict:
+    return {
+        "id": str(row["doctor_id"]),
+        "name": str(row["name"] or row["doctor_id"]),
+        "role": str(row["role"] or "DOCTOR"),
+        "status": str(row["status"] or "ACTIVE"),
+        "createdAt": str(row["created_at"] or ""),
+        "updatedAt": str(row["updated_at"] or ""),
+    }
+
+
+def ensure_doctor(conn: sqlite3.Connection, doctor_id: str) -> None:
+    doctor_id = str(doctor_id or "").strip()
+    if not doctor_id:
+        return
+
+    conn.execute(
+        """
+        INSERT INTO doctors(doctor_id, name)
+        VALUES(?, ?)
+        ON CONFLICT(doctor_id) DO NOTHING
+        """,
+        (doctor_id, doctor_id),
+    )
+
+
+def doctor_put(conn: sqlite3.Connection, args) -> dict:
+    conn.execute(
+        """
+        INSERT INTO doctors(doctor_id, name, role, status)
+        VALUES(?, ?, ?, ?)
+        ON CONFLICT(doctor_id) DO UPDATE SET
+            name = excluded.name,
+            role = excluded.role,
+            status = excluded.status,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            args.doctor_id,
+            args.name or args.doctor_id,
+            args.role or "DOCTOR",
+            args.status,
+        ),
+    )
+    conn.commit()
+    return doctor_record(conn, args.doctor_id)
+
+
+def doctor_record(conn: sqlite3.Connection, doctor_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM doctors WHERE doctor_id = ?",
+        (doctor_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"unknown Hospital doctor: {doctor_id}")
+    return normalize_doctor(row)
+
+
+def doctors_list(conn: sqlite3.Connection, status: str | None) -> list:
+    if status:
+        rows = conn.execute(
+            """
+            SELECT * FROM doctors
+            WHERE status = ?
+            ORDER BY updated_at DESC, doctor_id ASC
+            """,
+            (status,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM doctors
+            ORDER BY updated_at DESC, doctor_id ASC
+            """
+        ).fetchall()
+    return [normalize_doctor(row) for row in rows]
 
 
 def patient_put(conn: sqlite3.Connection, args) -> dict:
@@ -256,6 +358,8 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
         ),
     )
 
+    ensure_doctor(conn, args.doctor_id)
+
     conn.execute(
         """
         INSERT INTO rooms(
@@ -288,6 +392,8 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
 
 
 def room_put(conn: sqlite3.Connection, args) -> dict:
+    ensure_doctor(conn, args.doctor_id)
+
     conn.execute(
         """
         INSERT INTO rooms(
@@ -388,6 +494,8 @@ def rooms_list(conn: sqlite3.Connection) -> list:
 
 
 def session_put(conn: sqlite3.Connection, args) -> dict:
+    ensure_doctor(conn, args.doctor_id)
+
     room_exists = conn.execute(
         "SELECT 1 FROM rooms WHERE room_id = ?",
         (args.room_id,),
@@ -735,6 +843,25 @@ def build_parser() -> argparse.ArgumentParser:
         command = sub.add_parser(name)
         command.add_argument("--json", action="store_true")
 
+    doctor = sub.add_parser("doctor-put")
+    doctor.add_argument("doctor_id")
+    doctor.add_argument("--name", default="")
+    doctor.add_argument("--role", default="DOCTOR")
+    doctor.add_argument(
+        "--status",
+        default="ACTIVE",
+        choices=("ACTIVE", "INACTIVE", "RELEASED"),
+    )
+    doctor.add_argument("--json", action="store_true")
+
+    doctor_get = sub.add_parser("doctor")
+    doctor_get.add_argument("doctor_id")
+    doctor_get.add_argument("--json", action="store_true")
+
+    doctors = sub.add_parser("doctors")
+    doctors.add_argument("--status", default="")
+    doctors.add_argument("--json", action="store_true")
+
     patient = sub.add_parser("patient-put")
     patient.add_argument("patient_id")
     patient.add_argument("repository")
@@ -851,6 +978,15 @@ def main() -> int:
 
             if args.command in ("init", "status"):
                 emit(database_status(conn), args.json)
+            elif args.command == "doctor-put":
+                emit_data(doctor_put(conn, args), args.json)
+            elif args.command == "doctor":
+                emit_data(doctor_record(conn, args.doctor_id), args.json)
+            elif args.command == "doctors":
+                emit_data(
+                    doctors_list(conn, args.status or None),
+                    args.json,
+                )
             elif args.command == "patient-put":
                 emit_data(patient_put(conn, args), args.json)
             elif args.command == "room-bind":
