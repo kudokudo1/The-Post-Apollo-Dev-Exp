@@ -216,12 +216,14 @@ quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
 quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
+quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
 
 python3 - \
     "$quick_status_json" \
     "$quick_report_json" \
     "$quick_pause_json" \
-    "$quick_continue_json" <<'PY'
+    "$quick_continue_json" \
+    "$quick_checkpoints_json" <<'PY'
 import json
 import sys
 
@@ -229,6 +231,7 @@ status = json.loads(sys.argv[1])
 report = json.loads(sys.argv[2])
 pause = json.loads(sys.argv[3])
 continue_result = json.loads(sys.argv[4])
+checkpoints = json.loads(sys.argv[5])
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
@@ -238,6 +241,18 @@ assert report["result"]["assistant"].startswith(
     "MOCK: QUICK // REPORT"
 ), report
 assert report["result"]["providerSessionId"] == "mock-provider-session", report
+assert report["result"]["assistantMessageId"], report
+assert report["checkpoint"]["kind"] == "REQUESTED_REPORT", report
+assert (
+    report["checkpoint"]["sourceMessageId"]
+    == report["result"]["assistantMessageId"]
+), report
+assert report["checkpoint"]["body"] == report["result"]["assistant"], report
+
+assert len(checkpoints) == 1, checkpoints
+assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
+assert checkpoints[0]["sessionId"] == "session-t6-agent", checkpoints
+assert checkpoints[0]["providerId"] == "mock", checkpoints
 
 assert pause["command"] == "PAUSE", pause
 assert pause["result"]["paused"] is True, pause
