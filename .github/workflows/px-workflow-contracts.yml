@@ -1,0 +1,52 @@
+name: PX / WORKFLOW CONTRACTS
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - bin/px
+      - config/repos.tsv
+      - docs/workflow-factory.md
+      - tests/test-px-factory.sh
+      - tests/test-px-runs.sh
+      - tests/test-px-delete-workflow.sh
+      - .github/workflows/px-workflow-contracts.yml
+  push:
+    branches:
+      - main
+    paths:
+      - bin/px
+      - config/repos.tsv
+      - docs/workflow-factory.md
+      - tests/test-px-factory.sh
+      - tests/test-px-runs.sh
+      - tests/test-px-delete-workflow.sh
+      - .github/workflows/px-workflow-contracts.yml
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Workflow control contracts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate contract script syntax
+        run: |
+          bash -n bin/px
+          bash -n tests/test-px-factory.sh
+          bash -n tests/test-px-runs.sh
+          bash -n tests/test-px-delete-workflow.sh
+
+      - name: Test workflow factory
+        run: ./tests/test-px-factory.sh
+
+      - name: Test exact-SHA run evidence
+        run: bash ./tests/test-px-runs.sh
+
+      - name: Test guarded workflow deletion
+        run: bash ./tests/test-px-delete-workflow.sh
