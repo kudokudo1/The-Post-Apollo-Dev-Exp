@@ -7,7 +7,7 @@ import sys
 import uuid
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MUTATIONS = {"local", "remote", "external"}
 RECOVERY_CLASSES = {
     "NONE",
@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS operations (
     result_summary TEXT NOT NULL DEFAULT '',
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
+    owner_pid INTEGER,
+    owner_boot_id TEXT NOT NULL DEFAULT '',
+    owner_start_ticks TEXT NOT NULL DEFAULT '',
+    interrupted_at TEXT,
     CHECK(mutation IN ('local', 'remote', 'external')),
     CHECK(recovery IN ('NONE', 'EVIDENCE_ONLY', 'REF_RECOVERABLE', 'CONTENT_RECOVERABLE')),
     CHECK(status IN ('RUNNING', 'COMPLETE', 'FAILED')),
@@ -78,6 +82,30 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.executescript(SCHEMA)
+
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(operations)").fetchall()
+    }
+    migrations = (
+        ("owner_pid", "ALTER TABLE operations ADD COLUMN owner_pid INTEGER"),
+        (
+            "owner_boot_id",
+            "ALTER TABLE operations ADD COLUMN owner_boot_id TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "owner_start_ticks",
+            "ALTER TABLE operations ADD COLUMN owner_start_ticks TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "interrupted_at",
+            "ALTER TABLE operations ADD COLUMN interrupted_at TEXT",
+        ),
+    )
+    for column, statement in migrations:
+        if column not in columns:
+            conn.execute(statement)
+
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -85,6 +113,71 @@ def connect() -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def current_boot_id() -> str:
+    path = Path("/proc/sys/kernel/random/boot_id")
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def process_start_ticks(pid: int) -> str:
+    if pid <= 0:
+        return ""
+
+    path = Path(f"/proc/{pid}/stat")
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+    close_paren = text.rfind(")")
+    if close_paren < 0:
+        return ""
+
+    fields = text[close_paren + 2 :].split()
+    if len(fields) <= 19:
+        return ""
+
+    return fields[19]
+
+
+def owner_identity(pid: int) -> tuple[str, str]:
+    boot_id = current_boot_id()
+    start_ticks = process_start_ticks(pid)
+    if not boot_id or not start_ticks:
+        raise RuntimeError(
+            f"could not capture operation owner identity for pid {pid}"
+        )
+    return boot_id, start_ticks
+
+
+def owner_state(row: sqlite3.Row) -> tuple[str, str]:
+    owner_pid = int(row["owner_pid"] or 0)
+    owner_boot_id = str(row["owner_boot_id"] or "")
+    owner_start_ticks = str(row["owner_start_ticks"] or "")
+
+    if owner_pid <= 0 or not owner_boot_id or not owner_start_ticks:
+        return (
+            "UNKNOWN",
+            "operation predates owner tracking or was started without an owner pid",
+        )
+
+    boot_id = current_boot_id()
+    if not boot_id:
+        return ("UNKNOWN", "current Linux boot identity is unavailable")
+    if boot_id != owner_boot_id:
+        return ("STALE", "operation owner belongs to an earlier Linux boot")
+
+    current_start_ticks = process_start_ticks(owner_pid)
+    if not current_start_ticks:
+        return ("STALE", "operation owner process no longer exists")
+    if current_start_ticks != owner_start_ticks:
+        return ("STALE", "operation owner pid was reused by a different process")
+
+    return ("LIVE", "operation owner process identity is still live")
 
 
 def parse_json_text(value: str, label: str, expected=None):
@@ -109,13 +202,26 @@ def normalize_record(row: sqlite3.Row) -> dict:
         except json.JSONDecodeError:
             return {}
 
+    interrupted_at = str(row["interrupted_at"] or "")
+    stored_status = str(row["status"])
+    effective_status = "INTERRUPTED" if interrupted_at else stored_status
+
+    if interrupted_at or stored_status == "RUNNING":
+        owner_status, owner_reason = owner_state(row)
+    else:
+        owner_status = "CLOSED"
+        owner_reason = (
+            "operation journal is terminal; owner liveness no longer determines lifecycle"
+        )
+
     return {
         "id": str(row["operation_id"]),
         "actionId": str(row["action_id"]),
         "title": str(row["title"] or ""),
         "mutation": str(row["mutation"]),
         "recovery": str(row["recovery"]),
-        "status": str(row["status"]),
+        "status": effective_status,
+        "journalStatus": stored_status,
         "command": decoded("command_json"),
         "arguments": decoded("arguments_json"),
         "before": decoded("before_json"),
@@ -126,6 +232,17 @@ def normalize_record(row: sqlite3.Row) -> dict:
         "resultSummary": str(row["result_summary"] or ""),
         "startedAt": str(row["started_at"] or ""),
         "completedAt": str(row["completed_at"] or ""),
+        "interruptedAt": interrupted_at,
+        "interrupted": bool(interrupted_at),
+        "executionOutcome": "UNKNOWN" if interrupted_at else "",
+        "owner": {
+            "pid": int(row["owner_pid"] or 0) or None,
+            "bootId": str(row["owner_boot_id"] or ""),
+            "startTicks": str(row["owner_start_ticks"] or ""),
+            "state": owner_status,
+            "reason": owner_reason,
+        },
+        "ownerState": owner_status,
     }
 
 
@@ -142,6 +259,14 @@ def get_record(conn: sqlite3.Connection, operation_id: str) -> dict:
 def start_operation(conn: sqlite3.Connection, args) -> dict:
     mutation = str(args.mutation or "").strip().lower()
     recovery = str(args.recovery or "").strip().upper()
+    owner_pid = int(args.owner_pid or 0)
+    owner_boot_id = ""
+    owner_start_ticks = ""
+
+    if owner_pid < 0:
+        raise RuntimeError("operation owner pid must be positive")
+    if owner_pid:
+        owner_boot_id, owner_start_ticks = owner_identity(owner_pid)
 
     if mutation not in MUTATIONS:
         raise RuntimeError(f"invalid mutation class: {mutation}")
@@ -160,9 +285,10 @@ def start_operation(conn: sqlite3.Connection, args) -> dict:
         """
         INSERT INTO operations(
             operation_id, action_id, title, mutation, recovery,
-            command_json, arguments_json, before_json
+            command_json, arguments_json, before_json,
+            owner_pid, owner_boot_id, owner_start_ticks
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             operation_id,
@@ -173,6 +299,9 @@ def start_operation(conn: sqlite3.Connection, args) -> dict:
             json.dumps(command, separators=(",", ":")),
             json.dumps(arguments, separators=(",", ":"), sort_keys=True),
             json.dumps(before, separators=(",", ":"), sort_keys=True),
+            owner_pid or None,
+            owner_boot_id,
+            owner_start_ticks,
         ),
     )
     conn.commit()
@@ -230,10 +359,31 @@ def list_operations(conn: sqlite3.Connection, args) -> list:
         raise RuntimeError("operation limit must be between 1 and 1000")
 
     status = str(args.status or "").strip().upper()
-    if status and status not in {"RUNNING", "COMPLETE", "FAILED"}:
+    if status and status not in {"RUNNING", "COMPLETE", "FAILED", "INTERRUPTED"}:
         raise RuntimeError(f"invalid operation status filter: {status}")
 
-    if status:
+    if status == "INTERRUPTED":
+        rows = conn.execute(
+            """
+            SELECT * FROM operations
+            WHERE interrupted_at IS NOT NULL
+            ORDER BY started_at DESC, operation_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    elif status == "FAILED":
+        rows = conn.execute(
+            """
+            SELECT * FROM operations
+            WHERE status = 'FAILED'
+              AND interrupted_at IS NULL
+            ORDER BY started_at DESC, operation_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    elif status:
         rows = conn.execute(
             """
             SELECT * FROM operations
@@ -254,6 +404,116 @@ def list_operations(conn: sqlite3.Connection, args) -> list:
         ).fetchall()
 
     return [normalize_record(row) for row in rows]
+
+
+def stale_operations(conn: sqlite3.Connection, args) -> list:
+    limit = int(args.limit)
+    if limit < 1 or limit > 1000:
+        raise RuntimeError("operation limit must be between 1 and 1000")
+
+    rows = conn.execute(
+        """
+        SELECT * FROM operations
+        WHERE status = 'RUNNING'
+          AND interrupted_at IS NULL
+        ORDER BY started_at DESC, operation_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return [
+        normalize_record(row)
+        for row in rows
+        if owner_state(row)[0] == "STALE"
+    ]
+
+
+def reconcile_operation(conn: sqlite3.Connection, args) -> dict:
+    operation_id = str(args.operation_id or "").strip()
+    if not operation_id:
+        raise RuntimeError("operation id required for interruption reconciliation")
+
+    row = conn.execute(
+        "SELECT * FROM operations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"unknown PX operation: {operation_id}")
+
+    if str(row["status"]) != "RUNNING" or row["interrupted_at"]:
+        current = normalize_record(row)
+        raise RuntimeError(
+            f"PX operation {operation_id} is already {current['status']}"
+        )
+
+    state, state_reason = owner_state(row)
+    force_unknown = bool(args.force_unknown)
+    if state == "LIVE":
+        raise RuntimeError(
+            "interruption reconciliation refused: operation owner is still live"
+        )
+    if state == "UNKNOWN" and not force_unknown:
+        raise RuntimeError(
+            "interruption reconciliation refused: owner state is UNKNOWN; "
+            "use --force-unknown only after external inspection confirms "
+            "the journal owner is gone"
+        )
+
+    reason = str(args.reason or "").strip()
+    if not reason:
+        if state == "STALE":
+            reason = state_reason
+        else:
+            reason = "operator explicitly reconciled an unowned legacy RUNNING journal"
+
+    interruption = {
+        "interrupted": True,
+        "outcome": "UNKNOWN",
+        "ownerState": state,
+        "ownerReason": state_reason,
+        "reason": reason,
+        "reconciledBy": "PX_OPERATION_RECONCILE",
+        "next": (
+            "inspect domain state before retrying, recovering, or assuming "
+            "the mutation did or did not happen"
+        ),
+    }
+    after = {"interruption": interruption}
+    verification = {
+        "status": "INTERRUPTED",
+        "outcome": "UNKNOWN",
+        "reason": reason,
+        "ownerState": state,
+    }
+
+    cursor = conn.execute(
+        """
+        UPDATE operations
+        SET status = 'FAILED',
+            after_json = ?,
+            verification_status = 'UNAVAILABLE',
+            verification_json = ?,
+            result_summary = ?,
+            interrupted_at = CURRENT_TIMESTAMP,
+            completed_at = CURRENT_TIMESTAMP
+        WHERE operation_id = ?
+          AND status = 'RUNNING'
+          AND interrupted_at IS NULL
+        """,
+        (
+            json.dumps(after, separators=(",", ":"), sort_keys=True),
+            json.dumps(verification, separators=(",", ":"), sort_keys=True),
+            "operation journal interrupted; execution outcome is UNKNOWN",
+            operation_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(
+            "interruption reconciliation lost a race with another journal update"
+        )
+    conn.commit()
+    return get_record(conn, operation_id)
 
 
 def workflow_create_recovery_plan(record: dict) -> dict | None:
@@ -402,6 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--command-json", required=True)
     start.add_argument("--arguments-json", default="{}")
     start.add_argument("--before-json", default="{}")
+    start.add_argument("--owner-pid", type=int, default=0)
     start.add_argument("--json", action="store_true")
 
     finish = sub.add_parser("finish")
@@ -427,6 +688,16 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--status", default="")
     listing.add_argument("--json", action="store_true")
 
+    stale = sub.add_parser("stale")
+    stale.add_argument("--limit", type=int, default=100)
+    stale.add_argument("--json", action="store_true")
+
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("operation_id")
+    reconcile.add_argument("--reason", default="")
+    reconcile.add_argument("--force-unknown", action="store_true")
+    reconcile.add_argument("--json", action="store_true")
+
     recovery = sub.add_parser("recovery")
     recovery.add_argument("operation_id")
     recovery.add_argument("--json", action="store_true")
@@ -448,6 +719,10 @@ def main() -> int:
                 payload = get_record(conn, args.operation_id)
             elif args.command == "list":
                 payload = list_operations(conn, args)
+            elif args.command == "stale":
+                payload = stale_operations(conn, args)
+            elif args.command == "reconcile":
+                payload = reconcile_operation(conn, args)
             elif args.command == "recovery":
                 payload = recovery_payload(get_record(conn, args.operation_id))
             else:

@@ -422,6 +422,7 @@ execute_operation_recovery() {
 
     recovery_record="$(python3 "$ROOT/bin/px-operation-store" start \
         --action-id "px.operation.recover.workflow.create" \
+        --owner-pid "$BASHPID" \
         --title "Recover Workflow Creation" \
         --mutation remote \
         --recovery EVIDENCE_ONLY \
@@ -3136,7 +3137,7 @@ Usage:
   px term
   px tui
   px operations [--limit N] [--status RUNNING|COMPLETE|FAILED] [--json]
-  px operation <start|finish|get|list|recovery|recover> ...
+  px operation <start|finish|get|list|stale|reconcile|recovery|recover> ...
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
             [--script=PATH] [--expect-base=BRANCH] [--expect-base-sha=SHA]

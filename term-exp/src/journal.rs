@@ -75,6 +75,8 @@ pub(crate) fn start(
         Value::Object(argument_map).to_string(),
         "--before-json".to_owned(),
         before.to_string(),
+        "--owner-pid".to_owned(),
+        std::process::id().to_string(),
         "--json".to_owned(),
     ];
 
