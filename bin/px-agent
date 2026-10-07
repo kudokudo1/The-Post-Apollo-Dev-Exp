@@ -198,7 +198,7 @@ def parse_hermes_text(
     stderr: str,
 ) -> tuple[str, str, list[dict]]:
     session_pattern = re.compile(
-        r"(?im)\\bsession[_ -]?id\\s*[:=]\\s*([^\\s]+)"
+        r"(?im)\bsession[_ -]?id\s*[:=]\s*([^\s]+)"
     )
     combined = "\n".join([stderr or "", stdout or ""])
     match = session_pattern.search(combined)
