@@ -248,7 +248,19 @@ def run_turn(args) -> dict:
     if not cwd.is_dir():
         raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
 
-    prompt = sys.stdin.read() if args.prompt_stdin else (args.prompt or "")
+    if args.prompt_json_stdin:
+        raw = sys.stdin.readline()
+        try:
+            frame = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid agent prompt frame: {exc}")
+        if not isinstance(frame, dict):
+            raise RuntimeError("agent prompt frame must be a JSON object")
+        prompt = str(frame.get("prompt") or "")
+    elif args.prompt_stdin:
+        prompt = sys.stdin.read()
+    else:
+        prompt = args.prompt or ""
     if not prompt.strip():
         raise RuntimeError("agent turn prompt is empty")
 
@@ -476,6 +488,7 @@ def build_parser():
     prompt = turn.add_mutually_exclusive_group(required=True)
     prompt.add_argument("--prompt")
     prompt.add_argument("--prompt-stdin", action="store_true")
+    prompt.add_argument("--prompt-json-stdin", action="store_true")
     turn.add_argument("--working-directory", default="")
     turn.add_argument("--author-id", default="operator")
     turn.add_argument("--message-type", default="chat")
