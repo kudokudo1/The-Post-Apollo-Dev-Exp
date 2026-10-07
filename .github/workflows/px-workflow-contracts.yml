@@ -9,7 +9,6 @@ on:
       - config/repos.tsv
       - docs/workflow-factory.md
       - tests/test-px-actions.sh
-      - tests/test-px-actions.sh
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
@@ -22,6 +21,7 @@ on:
       - config/actions.json
       - config/repos.tsv
       - docs/workflow-factory.md
+      - tests/test-px-actions.sh
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
