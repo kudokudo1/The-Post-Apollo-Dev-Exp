@@ -1350,7 +1350,7 @@ usage() {
 Post-Apollo PX control bus
 
 Usage:
-  px repos
+  px repos [--json]
   px doctor
   px workflows <repo>
   px runs <repo> [limit] [sha]
@@ -1415,11 +1415,31 @@ shift || true
 
 case "$cmd" in
     repos)
-        printf '%-12s %s\n' ALIAS REPOSITORY
-        while IFS=$'\t' read -r alias repo; do
-            [[ -z "$alias" || "$alias" == \#* ]] && continue
-            printf '%-12s %s\n' "$alias" "$repo"
-        done < "$REGISTRY"
+        if [[ "${1:-}" == "--json" ]]; then
+            need jq
+            jq -Rn --rawfile registry "$REGISTRY" '
+                {
+                    version: 1,
+                    repositories: (
+                        $registry
+                        | split("\n")
+                        | map(
+                            select(length > 0)
+                            | select(startswith("#") | not)
+                            | split("\t")
+                            | select(length >= 2)
+                            | { alias: .[0], repository: .[1] }
+                        )
+                    )
+                }
+            '
+        else
+            printf '%-12s %s\n' ALIAS REPOSITORY
+            while IFS="$(printf '\\t')" read -r alias repo; do
+                [[ -z "$alias" || "$alias" == \#* ]] && continue
+                printf '%-12s %s\n' "$alias" "$repo"
+            done < "$REGISTRY"
+        fi
         ;;
 
     doctor)

@@ -1,6 +1,6 @@
 mod app;
 
-use app::{App, Mode, SearchScope};
+use app::{ActionChoiceItem, App, Mode, SearchScope};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -61,6 +61,32 @@ struct ActionArgument {
 }
 
 #[derive(Debug, Deserialize)]
+struct RepositoryRegistry {
+    #[serde(default)]
+    repositories: Vec<RepositoryRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryRecord {
+    alias: String,
+    repository: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunRecord {
+    #[serde(rename = "databaseId")]
+    database_id: u64,
+    #[serde(rename = "workflowName")]
+    workflow_name: Option<String>,
+    status: String,
+    conclusion: Option<String>,
+    #[serde(rename = "headBranch")]
+    head_branch: Option<String>,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolRegistry {
     version: u64,
     counts: ToolCounts,
@@ -100,6 +126,7 @@ struct Tool {
 struct Model {
     actions: ActionRegistry,
     tools: ToolRegistry,
+    repositories: Vec<RepositoryRecord>,
     px_path: PathBuf,
 }
 
@@ -201,10 +228,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let px_path = resolve_px_path();
     let actions: ActionRegistry = load_json(&px_path, &["actions", "--json"])?;
     let tools: ToolRegistry = load_json(&px_path, &["tools", "--json"])?;
+    let repositories: RepositoryRegistry = load_json(&px_path, &["repos", "--json"])?;
 
     let model = Model {
         actions,
         tools,
+        repositories: repositories.repositories,
         px_path,
     };
 
@@ -354,18 +383,7 @@ fn handle_key(
                             return Ok(());
                         }
 
-                        if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
-                            *slot = value;
-                        }
-
-                        if app.prompt_index + 1 < action.arguments.len() {
-                            app.prompt_index += 1;
-                            app.prompt_buffer.clear();
-                            app.status = None;
-                        } else {
-                            let values = app.prompt_values.clone();
-                            run_read_action(app, model, action, &values);
-                        }
+                        commit_argument_value(app, model, action, value);
                     }
                 }
                 KeyCode::Char(character)
@@ -374,6 +392,35 @@ fn handle_key(
                 {
                     app.prompt_buffer.push(character);
                     app.status = None;
+                }
+                _ => {}
+            }
+        }
+
+        Mode::ActionChoice => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.back_to_search();
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                return Ok(());
+            };
+
+            match key.code {
+                KeyCode::Esc => app.back_to_search(),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    App::next(&mut app.choice_selected, app.choice_items.len())
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    App::previous(&mut app.choice_selected, app.choice_items.len())
+                }
+                KeyCode::Enter => {
+                    if let Some(choice) = app.choice_items.get(app.choice_selected) {
+                        let value = choice.value.clone();
+                        commit_argument_value(app, model, action, value);
+                    }
                 }
                 _ => {}
             }
@@ -594,6 +641,134 @@ fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[Stri
     app.open_output(action.title.clone(), text);
 }
 
+fn repository_choices(model: &Model) -> Vec<ActionChoiceItem> {
+    model
+        .repositories
+        .iter()
+        .map(|repository| ActionChoiceItem {
+            value: repository.alias.clone(),
+            label: repository.alias.clone(),
+            detail: repository.repository.clone(),
+        })
+        .collect()
+}
+
+fn selected_repository<'a>(action: &Action, values: &'a [String]) -> Option<&'a str> {
+    action
+        .arguments
+        .iter()
+        .position(|argument| argument.kind == "repository")
+        .and_then(|index| values.get(index))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn run_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let output = Command::new(&model.px_path)
+        .args(["runs", repository, "20"])
+        .output()
+        .map_err(|error| format!("could not list workflow runs: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("px runs {repository} failed")
+        } else {
+            stderr
+        });
+    }
+
+    let runs: Vec<RunRecord> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("workflow run list returned invalid JSON: {error}"))?;
+
+    Ok(runs
+        .into_iter()
+        .map(|run| {
+            let workflow = run
+                .workflow_name
+                .unwrap_or_else(|| format!("Run {}", run.database_id));
+            let conclusion = run.conclusion.unwrap_or_else(|| "-".to_owned());
+            let branch = run.head_branch.unwrap_or_else(|| "-".to_owned());
+
+            ActionChoiceItem {
+                value: run.database_id.to_string(),
+                label: workflow,
+                detail: format!(
+                    "#{}  {} / {}  {}  {}",
+                    run.database_id, run.status, conclusion, branch, run.created_at
+                ),
+            }
+        })
+        .collect())
+}
+
+fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        return;
+    };
+
+    match argument.kind.as_str() {
+        "repository" => {
+            let choices = repository_choices(model);
+            if choices.is_empty() {
+                app.open_prompt();
+                app.status = Some("No repositories are registered; type one manually".to_owned());
+            } else {
+                app.open_choice(choices);
+            }
+        }
+        "run" => {
+            let Some(repository) =
+                selected_repository(action, &app.prompt_values).map(str::to_owned)
+            else {
+                app.open_prompt();
+                app.status = Some(
+                    "No repository is selected, so the run ID must be typed manually".to_owned(),
+                );
+                return;
+            };
+
+            match run_choices(model, &repository) {
+                Ok(choices) if !choices.is_empty() => app.open_choice(choices),
+                Ok(_) => {
+                    app.open_prompt();
+                    app.status = Some(format!(
+                        "No recent runs found for {repository}; type a run ID manually"
+                    ));
+                }
+                Err(error) => {
+                    app.open_prompt();
+                    app.status = Some(format!(
+                        "Could not load runs automatically ({error}); type a run ID manually"
+                    ));
+                }
+            }
+        }
+        _ => app.open_prompt(),
+    }
+}
+
+fn commit_argument_value(
+    app: &mut App,
+    model: &Model,
+    action: &Action,
+    value: String,
+) {
+    if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
+        *slot = value;
+    }
+
+    if app.prompt_index + 1 < action.arguments.len() {
+        app.prompt_index += 1;
+        app.prompt_buffer.clear();
+        app.status = None;
+        prepare_current_argument(app, model, action);
+    } else {
+        let values = app.prompt_values.clone();
+        run_read_action(app, model, action, &values);
+    }
+}
+
 fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
     let Some(action) = action_by_id(model, action_id) else {
         app.status = Some(format!("Action disappeared: {action_id}"));
@@ -612,6 +787,7 @@ fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
         run_read_action(app, model, action, &[]);
     } else {
         app.begin_action_prompt(action.id.clone(), action.arguments.len());
+        prepare_current_argument(app, model, action);
     }
 }
 
@@ -922,6 +1098,7 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
         Mode::Leader => draw_leader(frame, rows[1], app, model),
         Mode::Search => draw_search(frame, rows[1], app, model),
         Mode::ActionPrompt => draw_action_prompt(frame, rows[1], app, model),
+        Mode::ActionChoice => draw_action_choice(frame, rows[1], app, model),
         Mode::Output => draw_output(frame, rows[1], app),
     }
 
@@ -1196,6 +1373,94 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
+fn draw_action_choice(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending action").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Action no longer exists").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        frame.render_widget(
+            Paragraph::new("No remaining arguments").block(panel(" SELECT VALUE ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .split(area);
+
+    let heading = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                &action.title,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", action.id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Choose ", Style::default().fg(FG)),
+            Span::styled(
+                format!("{} [{}]", argument.name, argument.kind),
+                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ])
+    .block(panel(" KNOWN VALUE ", ORANGE));
+
+    frame.render_widget(heading, rows[0]);
+
+    let items: Vec<ListItem> = app
+        .choice_items
+        .iter()
+        .map(|choice| {
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    &choice.label,
+                    Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!("  {}", choice.detail),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" AVAILABLE ", MAGENTA))
+        .highlight_symbol("> ")
+        .highlight_style(
+            Style::default()
+                .fg(BG)
+                .bg(ORANGE)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let mut state = ListState::default();
+    if !app.choice_items.is_empty() {
+        state.select(Some(
+            app.choice_selected.min(app.choice_items.len().saturating_sub(1)),
+        ));
+    }
+
+    frame.render_stateful_widget(list, rows[1], &mut state);
+}
+
 fn draw_action_prompt(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let Some(action_id) = app.pending_action_id.as_deref() else {
         frame.render_widget(
@@ -1299,6 +1564,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
         Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
         Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
+        Mode::ActionChoice => "j/k move   Enter choose   Esc cancel",
         Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
@@ -1460,6 +1726,38 @@ mod tests {
             expand_action_command(&action, &values).unwrap(),
             vec!["inspect", "dev", "1234"]
         );
+    }
+
+    #[test]
+    fn selected_repository_comes_from_structured_argument_value() {
+        let action = Action {
+            id: "inspect".to_owned(),
+            title: "Inspect".to_owned(),
+            category: "GitHub".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "inspect".to_owned(),
+                "{repository}".to_owned(),
+                "{run_id}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                },
+                ActionArgument {
+                    name: "run_id".to_owned(),
+                    required: true,
+                    kind: "run".to_owned(),
+                },
+            ],
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
+        };
+
+        let values = vec!["taskbars".to_owned(), String::new()];
+        assert_eq!(selected_repository(&action, &values), Some("taskbars"));
     }
 
     #[test]

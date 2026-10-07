@@ -76,6 +76,32 @@ repository and run ID before calling PX.
 Mutation actions remain locked until explicit mutation/confirmation policy is
 implemented.
 
+## Known-value arguments
+
+TERM EXP should not make the operator memorize identifiers that PX already
+knows.
+
+Structured action arguments therefore prefer selectors over free typing:
+
+- `repository` reads the live PX repository registry and presents aliases plus
+  full GitHub repository names;
+- `run` uses the selected repository to load recent workflow runs and presents
+  workflow name, run ID, status, conclusion, branch, and creation time.
+
+Free typing remains only as a fallback when PX cannot discover a known value or
+for genuinely open-ended argument kinds.
+
+For example, Inspect Workflow Run now follows:
+
+```text
+Inspect Workflow Run
+  -> choose repository
+  -> choose recent run
+  -> inspect
+```
+
+instead of requiring the operator to remember either identifier.
+
 ## Architecture
 
 ```text

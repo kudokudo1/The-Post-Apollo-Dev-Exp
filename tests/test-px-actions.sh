@@ -38,6 +38,26 @@ jq -e '
   and any(.actions[]; .id == "px.term.open")
 ' <<<"$registry" >/dev/null
 
+repos="$("$ROOT/bin/px" repos --json)"
+jq -e '
+  .version == 1
+  and (.repositories | length > 0)
+  and (
+    [.repositories[].alias] as $aliases
+    | ($aliases | length) == ($aliases | unique | length)
+  )
+  and all(
+    .repositories[];
+    (.alias | type == "string" and length > 0)
+    and (.repository | type == "string" and contains("/"))
+  )
+  and any(
+    .repositories[];
+    .alias == "dev"
+    and .repository == "kudokudo1/The-Post-Apollo-Dev-Exp"
+  )
+' <<<"$repos" >/dev/null
+
 hospital="$("$ROOT/bin/px" actions hospital --json)"
 jq -e '
   (.actions | length > 0)
