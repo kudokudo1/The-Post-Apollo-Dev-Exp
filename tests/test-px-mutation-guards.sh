@@ -33,13 +33,38 @@ if [[ "${1:-} ${2:-} ${3:-}" == "api --method DELETE" ]]; then
     exit 0
 fi
 
+if [[ "${1:-} ${2:-} ${3:-}" == "api --method PUT" ]]; then
+    endpoint="${4:-}"
+    case "$endpoint" in
+        repos/owner/repo/contents/.github/workflows/new-workflow.yml|repos/owner/repo/contents/.github/workflows/hospital-store.yml)
+            printf 'cccccccccccccccccccccccccccccccccccccccc\n'
+            exit 0
+            ;;
+        *)
+            printf 'unexpected create endpoint: %s\n' "$endpoint" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 if [[ "${1:-}" == "api" ]]; then
     case "${2:-}" in
         repos/owner/repo/commits/main)
-            case "${GH_DELETE_STATE:-baseline}" in
-                deleted) printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
-                *) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
-            esac
+            if [[ -n "${GH_CREATE_STATE:-}" ]]; then
+                case "${GH_CREATE_STATE}" in
+                    base_moved|created|wrong_content)
+                        printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+                        ;;
+                    *)
+                        printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+                        ;;
+                esac
+            else
+                case "${GH_DELETE_STATE:-baseline}" in
+                    deleted) printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
+                    *) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+                esac
+            fi
             exit 0
             ;;
         repos/owner/repo/contents/.github/workflows/deploy.yml?ref=main)
@@ -65,6 +90,30 @@ if [[ "${1:-}" == "api" ]]; then
 
             printf '{"type":"file","sha":"%s"}\n' "$blob"
             exit 0
+            ;;
+        repos/owner/repo/contents/.github/workflows/new-workflow.yml?ref=main|repos/owner/repo/contents/.github/workflows/hospital-store.yml?ref=main)
+            case "${GH_CREATE_STATE:-baseline}" in
+                existing)
+                    printf '%s\n' '{"type":"file","sha":"blob-existing","encoding":"base64","content":"ZXhpc3RpbmcK"}'
+                    exit 0
+                    ;;
+                created)
+                    printf '{"type":"file","sha":"blob-created","encoding":"base64","content":"%s"}\n' "${GH_CREATED_CONTENT_B64:-}"
+                    exit 0
+                    ;;
+                wrong_content)
+                    printf '%s\n' '{"type":"file","sha":"blob-created","encoding":"base64","content":"d3JvbmcK"}'
+                    exit 0
+                    ;;
+                baseline|base_moved)
+                    printf 'gh: Not Found (HTTP 404)\n' >&2
+                    exit 1
+                    ;;
+                *)
+                    printf 'unknown GH_CREATE_STATE: %s\n' "${GH_CREATE_STATE:-}" >&2
+                    exit 2
+                    ;;
+            esac
             ;;
     esac
 fi
@@ -126,6 +175,15 @@ printf '\n' >&2
 exit 2
 GH
 chmod +x "$tmp/gh"
+
+cat > "$tmp/actionlint" <<'ACTIONLINT'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -n "${1:-}" ]] || exit 2
+[[ -f "${1:-}" ]] || exit 2
+exit 0
+ACTIONLINT
+chmod +x "$tmp/actionlint"
 
 export PATH="$tmp:/usr/bin:/bin"
 export PX_REPO_REGISTRY="$tmp/repos.tsv"
@@ -298,9 +356,89 @@ jq -e '
   and (.summary | contains("DELETE VERIFIED"))
 ' <<<"$delete_verified" >/dev/null
 
-if "$ROOT/bin/px" mutation-preflight workflow.create '{"repository":"dev"}' >/dev/null 2>&1; then
-    printf 'uncertified workflow creation unexpectedly received a mutation preflight policy\n' >&2
+create_arguments='{"repository":"dev","template":"smoke","slug":"new-workflow","trigger":"manual","script_path":""}'
+
+unset GH_DELETE_STATE
+export GH_CREATE_STATE=baseline
+create_preflight="$("$ROOT/bin/px" mutation-preflight workflow.create "$create_arguments")"
+create_token="$(jq -r '.token' <<<"$create_preflight")"
+create_yaml_sha="$(jq -r '.token | fromjson | .yamlSha' <<<"$create_preflight")"
+create_yaml_b64="$(jq -r '.token | fromjson | .yamlBase64' <<<"$create_preflight")"
+
+jq -e '
+  .allowed == true
+  and .target.workflowPath == ".github/workflows/new-workflow.yml"
+  and .target.validation.status == "pass"
+  and (.token | fromjson | .base) == "main"
+  and (.token | fromjson | .baseSha) == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  and (.token | fromjson | .yamlSha | length) == 64
+  and .frozenCommand[0:5] == ["create","owner/repo","smoke","new-workflow","manual"]
+  and (.frozenCommand | index("--install")) != null
+  and (.frozenCommand | index("--json")) != null
+  and (.frozenCommand | index("--expect-base=main")) != null
+  and (.frozenCommand | index("--expect-base-sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) != null
+  and (.summary | contains("CREATE WORKFLOW"))
+' <<<"$create_preflight" >/dev/null
+
+export GH_CREATE_STATE=existing
+create_existing="$("$ROOT/bin/px" mutation-preflight workflow.create "$create_arguments")"
+jq -e '
+  .allowed == false
+  and (.reason | contains("TARGET ALREADY EXISTS"))
+' <<<"$create_existing" >/dev/null
+
+export GH_CREATE_STATE=base_moved
+create_moved="$("$ROOT/bin/px" mutation-preflight workflow.create "$create_arguments")"
+[[ "$(jq -r '.token' <<<"$create_moved")" != "$create_token" ]]
+
+if "$ROOT/bin/px" create owner/repo smoke new-workflow manual \
+    --install --json \
+    --expect-base=main \
+    --expect-base-sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --expect-yaml-sha="$create_yaml_sha" >/dev/null 2>&1; then
+    printf 'workflow create unexpectedly accepted a moved base SHA\n' >&2
     exit 1
 fi
+
+export GH_CREATE_STATE=baseline
+create_install="$("$ROOT/bin/px" create owner/repo smoke new-workflow manual \
+    --install --json \
+    --expect-base=main \
+    --expect-base-sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --expect-yaml-sha="$create_yaml_sha")"
+jq -e '
+  .install.requested == true
+  and .install.installed == true
+  and .install.branch == "main"
+  and .install.commit == "cccccccccccccccccccccccccccccccccccccccc"
+' <<<"$create_install" >/dev/null
+
+export GH_CREATED_CONTENT_B64="$create_yaml_b64"
+export GH_CREATE_STATE=created
+create_verified="$("$ROOT/bin/px" mutation-verify workflow.create "$create_arguments" "$create_token")"
+jq -e '
+  .passed == true
+  and .target.workflowPath == ".github/workflows/new-workflow.yml"
+  and .target.previousBaseSha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  and .target.currentBaseSha == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  and .target.remoteYamlSha == .target.expectedYamlSha
+  and (.summary | contains("CREATE VERIFIED"))
+' <<<"$create_verified" >/dev/null
+
+export GH_CREATE_STATE=wrong_content
+create_wrong="$("$ROOT/bin/px" mutation-verify workflow.create "$create_arguments" "$create_token")"
+jq -e '
+  .passed == false
+  and (.reason | contains("CONTENT DOES NOT MATCH FROZEN YAML"))
+' <<<"$create_wrong" >/dev/null
+
+script_arguments='{"repository":"dev","template":"script-test","slug":"hospital-store","trigger":"manual","script_path":"tests/test-px-hospital-store.sh"}'
+export GH_CREATE_STATE=baseline
+script_preflight="$("$ROOT/bin/px" mutation-preflight workflow.create "$script_arguments")"
+jq -e '
+  .allowed == true
+  and (.frozenCommand | index("--script=tests/test-px-hospital-store.sh")) != null
+  and (.token | fromjson | .scriptPath) == "tests/test-px-hospital-store.sh"
+' <<<"$script_preflight" >/dev/null
 
 printf 'PX guarded mutation self-test: PASS\n'
