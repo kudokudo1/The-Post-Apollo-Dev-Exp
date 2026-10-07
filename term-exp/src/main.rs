@@ -105,6 +105,20 @@ struct SearchItem {
     score: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct ResolveResult {
+    status: String,
+    selected: Option<ResolvedTool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolvedTool {
+    name: String,
+    backend: String,
+    environment: String,
+    invocation: Vec<String>,
+}
+
 struct TerminalGuard {
     terminal: PxTerminal,
 }
@@ -132,6 +146,21 @@ impl TerminalGuard {
         terminal.hide_cursor()?;
 
         Ok(Self { terminal })
+    }
+
+    fn suspend(&mut self) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        self.terminal.show_cursor()?;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> io::Result<()> {
+        enable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        self.terminal.hide_cursor()?;
+        self.terminal.clear()?;
+        Ok(())
     }
 }
 
@@ -189,13 +218,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        handle_key(&mut app, key, &model);
+        handle_key(&mut guard, &mut app, key, &model)?;
     }
 
     Ok(())
 }
 
-fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
+fn handle_key(
+    guard: &mut TerminalGuard,
+    app: &mut App,
+    key: KeyEvent,
+    model: &Model,
+) -> io::Result<()> {
     match &app.mode {
         Mode::Home => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -256,16 +290,17 @@ fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
                 KeyCode::Up => App::previous(&mut app.search_selected, results.len()),
                 KeyCode::Enter => {
                     if let Some(item) = results.get(app.search_selected) {
-                        app.status = Some(match item.kind {
-                            SearchKind::Action => format!(
-                                "Selected action {} — execution is the next lane",
-                                item.key
-                            ),
-                            SearchKind::Tool => format!(
-                                "Selected tool {} — delegation is the next lane",
-                                item.key
-                            ),
-                        });
+                        match item.kind {
+                            SearchKind::Action => {
+                                app.status = Some(format!(
+                                    "Selected action {} — action execution is the next lane",
+                                    item.key
+                                ));
+                            }
+                            SearchKind::Tool => {
+                                launch_specialist(guard, app, model, &item.key)?;
+                            }
+                        }
                     }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -283,6 +318,92 @@ fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
             }
         }
     }
+
+    Ok(())
+}
+
+fn is_specialist_tool(name: &str) -> bool {
+    matches!(name, "lazygit" | "nvim" | "btop" | "zellij" | "fzf")
+}
+
+fn resolve_tool(model: &Model, name: &str) -> Result<ResolvedTool, String> {
+    let output = Command::new(&model.px_path)
+        .args(["which", name, "--json"])
+        .output()
+        .map_err(|error| format!("resolver launch failed: {error}"))?;
+
+    let result: ResolveResult = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("resolver returned invalid JSON: {error}"))?;
+
+    if !output.status.success() || result.status != "FOUND" {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("PX could not resolve {name}")
+        } else {
+            detail
+        });
+    }
+
+    result
+        .selected
+        .ok_or_else(|| format!("PX resolved {name} without an execution target"))
+}
+
+fn launch_specialist(
+    guard: &mut TerminalGuard,
+    app: &mut App,
+    model: &Model,
+    name: &str,
+) -> io::Result<()> {
+    if !is_specialist_tool(name) {
+        app.status = Some(format!(
+            "{name} is visible in Find Anything, but direct delegation is not enabled yet"
+        ));
+        return Ok(());
+    }
+
+    let resolved = match resolve_tool(model, name) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            app.status = Some(format!("{name}: {error}"));
+            return Ok(());
+        }
+    };
+
+    let Some((program, args)) = resolved.invocation.split_first() else {
+        app.status = Some(format!("{name}: resolver returned an empty invocation"));
+        return Ok(());
+    };
+
+    guard.suspend()?;
+    let launch_result = Command::new(program).args(args).status();
+    let resume_result = guard.resume();
+
+    if let Err(error) = resume_result {
+        return Err(error);
+    }
+
+    app.status = Some(match launch_result {
+        Ok(status) if status.success() => format!(
+            "{} returned from {}",
+            resolved.name, resolved.environment
+        ),
+        Ok(status) => format!(
+            "{} exited with {} through {}",
+            resolved.name,
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_owned()),
+            resolved.backend
+        ),
+        Err(error) => format!(
+            "{} failed through {}: {}",
+            resolved.name, resolved.backend, error
+        ),
+    });
+
+    Ok(())
 }
 
 fn resolve_px_path() -> PathBuf {
@@ -936,5 +1057,43 @@ mod tests {
 
         assert_eq!(app.leader_selected, 3);
         assert_eq!(app.search_selected, 1);
+    }
+
+
+    #[test]
+    fn specialist_allowlist_is_explicit() {
+        for name in ["lazygit", "nvim", "btop", "zellij", "fzf"] {
+            assert!(is_specialist_tool(name), "{name}");
+        }
+
+        assert!(!is_specialist_tool("git"));
+        assert!(!is_specialist_tool("rm"));
+    }
+
+    #[test]
+    fn resolver_payload_keeps_exact_invocation() {
+        let payload = r#"{
+            "status":"FOUND",
+            "selected":{
+                "name":"lazygit",
+                "backend":"toolbox",
+                "environment":"toolbox:fedora-toolbox-44",
+                "invocation":[
+                    "/usr/bin/toolbox",
+                    "run",
+                    "-c",
+                    "fedora-toolbox-44",
+                    "--",
+                    "/usr/bin/lazygit"
+                ]
+            }
+        }"#;
+
+        let result: ResolveResult = serde_json::from_str(payload).unwrap();
+        let selected = result.selected.unwrap();
+
+        assert_eq!(selected.name, "lazygit");
+        assert_eq!(selected.backend, "toolbox");
+        assert_eq!(selected.invocation.last().unwrap(), "/usr/bin/lazygit");
     }
 }
