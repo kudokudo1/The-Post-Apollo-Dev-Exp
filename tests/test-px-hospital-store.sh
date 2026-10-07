@@ -63,7 +63,7 @@ older = json.loads(sys.argv[15])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 4, payload
+    assert payload["schema_version"] == 5, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -134,7 +134,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("4",), version
+    assert version == ("5",), version
 
     tables = {
         row[0]
@@ -160,6 +160,8 @@ try:
         "working_directory",
         "last_exit_code",
         "last_error",
+        "active_pid",
+        "turn_started_at",
     ):
         assert column in session_columns, (column, session_columns)
 
