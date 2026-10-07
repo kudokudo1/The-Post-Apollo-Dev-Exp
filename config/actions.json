@@ -17,7 +17,8 @@
         "repositories",
         "registry",
         "projects"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "px.doctor",
@@ -38,7 +39,8 @@
         "health",
         "diagnostics",
         "github"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "px.tools.list",
@@ -69,7 +71,8 @@
         "terminal",
         "discovery",
         "environment"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "px.tool.resolve",
@@ -101,7 +104,8 @@
         "toolbox",
         "terminal",
         "command"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "px.term.open",
@@ -124,7 +128,8 @@
         "control",
         "surface",
         "ratatui"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.workflows.list",
@@ -151,7 +156,8 @@
         "actions",
         "workflows",
         "ci"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "repository.branches.list",
@@ -179,7 +185,8 @@
         "branches",
         "ref",
         "heads"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "repository.commits.list",
@@ -214,7 +221,8 @@
         "history",
         "sha",
         "ref"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.runs.list",
@@ -254,7 +262,8 @@
         "runs",
         "ci",
         "sha"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.run.inspect",
@@ -288,7 +297,8 @@
         "inspect",
         "jobs",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.run.logs",
@@ -321,7 +331,8 @@
         "actions",
         "logs",
         "ci"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.workflow.run",
@@ -361,7 +372,8 @@
         "run",
         "dispatch",
         "workflow"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "github.run.watch",
@@ -395,7 +407,8 @@
         "watch",
         "run",
         "ci"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "github.run.rerun",
@@ -428,7 +441,8 @@
         "actions",
         "rerun",
         "retry"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "github.run.cancel",
@@ -461,7 +475,8 @@
         "actions",
         "cancel",
         "stop"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "repository.audit",
@@ -490,7 +505,8 @@
         "repository",
         "rooms",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.status",
@@ -526,7 +542,8 @@
         "status",
         "branch",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.diff",
@@ -562,7 +579,8 @@
         "diff",
         "files",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.log",
@@ -597,7 +615,8 @@
         "room",
         "log",
         "commits"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.prepare",
@@ -633,7 +652,8 @@
         "prepare",
         "certification",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.integration.rehearse",
@@ -699,7 +719,8 @@
         "integration",
         "merge",
         "certification"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.integration.integrate",
@@ -765,7 +786,8 @@
         "merge",
         "certification",
         "main"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "hospital.integration.verify",
@@ -818,7 +840,8 @@
         "integration",
         "post-op",
         "evidence"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "workflow.templates.list",
@@ -837,7 +860,8 @@
         "factory",
         "github",
         "actions"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "workflow.create",
@@ -890,7 +914,8 @@
         "preview",
         "github",
         "actions"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "workflow.delete",
@@ -931,7 +956,8 @@
         "remove",
         "github",
         "actions"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "hospital.room.checkpoints.list",
@@ -962,7 +988,8 @@
         "room",
         "checkpoint",
         "progress"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.reports.list",
@@ -993,7 +1020,8 @@
         "room",
         "report",
         "doctor note"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.report.view",
@@ -1028,7 +1056,8 @@
         "report",
         "doctor note",
         "inspect"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.chart.list",
@@ -1064,7 +1093,8 @@
         "room",
         "chart",
         "memory"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.room.chart.view",
@@ -1100,7 +1130,8 @@
         "memory",
         "entry",
         "inspect"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.store.status",
@@ -1123,7 +1154,8 @@
         "database",
         "state",
         "status"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.doctors.list",
@@ -1145,7 +1177,8 @@
         "doctor",
         "staff",
         "registry"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.rooms.list",
@@ -1168,7 +1201,8 @@
         "beds",
         "patients",
         "staffing"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "hospital.sessions.list",
@@ -1197,7 +1231,8 @@
         "doctor",
         "provider",
         "conversation"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "ai.providers.list",
@@ -1220,7 +1255,8 @@
         "providers",
         "codex",
         "hermes"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "ai.session.create",
@@ -1273,7 +1309,8 @@
         "session",
         "provider",
         "hospital"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.turn",
@@ -1313,7 +1350,8 @@
         "codex",
         "hermes",
         "hospital"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.session.status",
@@ -1345,7 +1383,8 @@
         "status",
         "operating",
         "hospital"
-      ]
+      ],
+      "recovery": "NONE"
     },
     {
       "id": "ai.session.cancel",
@@ -1384,7 +1423,8 @@
         "stop",
         "pause",
         "hospital"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.quick.continue",
@@ -1417,7 +1457,8 @@
         "go",
         "hospital",
         "room"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.quick.report",
@@ -1450,7 +1491,8 @@
         "checkpoint",
         "hospital",
         "room"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.quick.checklist",
@@ -1483,7 +1525,8 @@
         "tasks",
         "hospital",
         "room"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.quick.next",
@@ -1516,7 +1559,8 @@
         "action",
         "hospital",
         "room"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     },
     {
       "id": "ai.quick.pause",
@@ -1549,7 +1593,8 @@
         "cancel",
         "hospital",
         "room"
-      ]
+      ],
+      "recovery": "EVIDENCE_ONLY"
     }
   ]
 }
