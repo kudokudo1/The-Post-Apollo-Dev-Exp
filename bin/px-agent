@@ -1185,7 +1185,82 @@ QUICK_PROMPTS = {
         "within the current assignment, perform that next action. Surface "
         "any blocker instead of expanding scope."
     ),
+    "SUGGEST": (
+        "QUICK // SUGGEST MEMORY\n"
+        "Review the current Room, active Patient/Room Chart, recent transcript, "
+        "and current assignment. Propose at most one durable memory that would "
+        "be genuinely useful on a future Doctor turn. Do not write the Chart. "
+        "If nothing deserves durable memory, reply exactly NONE. Otherwise "
+        "reply using this exact format:\n"
+        "MEMORY_SUGGESTION\n"
+        "SCOPE: ROOM or PATIENT\n"
+        "KIND: NOTE, DECISION, CONSTRAINT, INVARIANT, or QUESTION\n"
+        "TITLE: concise title\n"
+        "PRIORITY: integer 0-100\n"
+        "BODY:\n"
+        "durable memory text\n"
+        "Prefer ROOM for assignment/task-specific knowledge and PATIENT for "
+        "repository-wide institutional knowledge. Never claim that a proposal "
+        "has already been promoted into durable memory."
+    ),
 }
+
+
+def parse_memory_suggestion(text: str) -> dict | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    if raw.upper() == "NONE":
+        return None
+
+    lines = raw.splitlines()
+    fields = {}
+    body_lines = []
+    reading_body = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.upper() == "MEMORY_SUGGESTION":
+            continue
+        if reading_body:
+            body_lines.append(line)
+            continue
+        if stripped.upper() == "BODY:":
+            reading_body = True
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip().upper()] = value.strip()
+
+    body = "\n".join(body_lines).strip()
+    if not body:
+        body = raw
+
+    scope = str(fields.get("SCOPE") or "ROOM").upper()
+    if scope not in ("ROOM", "PATIENT"):
+        scope = "ROOM"
+
+    kind = str(fields.get("KIND") or "NOTE").upper()
+    if kind not in (
+        "NOTE", "DECISION", "CONSTRAINT", "INVARIANT", "QUESTION"
+    ):
+        kind = "NOTE"
+
+    try:
+        priority = int(fields.get("PRIORITY") or 50)
+    except (TypeError, ValueError):
+        priority = 50
+    priority = max(0, min(100, priority))
+
+    return {
+        "scope": scope,
+        "kind": kind,
+        "title": str(fields.get("TITLE") or "Doctor memory suggestion"),
+        "priority": priority,
+        "body": body,
+    }
 
 
 def pause_session(session_id: str) -> dict:
@@ -1243,7 +1318,7 @@ def run_quick(args) -> dict:
     if not prompt:
         allowed = [
             "GO", "CONTINUE", "STATUS", "REPORT",
-            "CHECKLIST", "NEXT", "PAUSE",
+            "CHECKLIST", "NEXT", "SUGGEST", "PAUSE",
         ]
         raise RuntimeError(
             "unknown quick command: "
@@ -1360,6 +1435,81 @@ def run_quick(args) -> dict:
                 ),
             },
         )
+
+    if command == "SUGGEST":
+        proposal = parse_memory_suggestion(
+            str(turn_result.get("assistant") or "")
+        )
+        payload["memorySuggestion"] = None
+
+        if proposal:
+            session = turn_result.get("session") or {}
+            room_id = str(session.get("roomId") or "")
+            room = px_hospital("room", room_id)
+            patient_id = str(room.get("patientId") or "")
+            source_message_id = str(
+                turn_result.get("assistantMessageId") or ""
+            )
+
+            suggestion_args = [
+                "chart-suggestion-add",
+                "--scope", str(proposal["scope"]),
+                "--entry-kind", str(proposal["kind"]),
+                "--title", str(proposal["title"]),
+                "--priority", str(proposal["priority"]),
+                "--doctor-id", str(session.get("doctorId") or ""),
+                "--provider-id", str(session.get("providerId") or ""),
+                "--source-room-id", room_id,
+                "--source-session-id", args.session_id,
+            ]
+
+            if proposal["scope"] == "PATIENT":
+                if not patient_id:
+                    raise RuntimeError(
+                        "Doctor proposed Patient memory but Room has no Patient"
+                    )
+                suggestion_args.extend([
+                    "--patient-id",
+                    patient_id,
+                ])
+            else:
+                suggestion_args.extend([
+                    "--room-id",
+                    room_id,
+                ])
+
+            if source_message_id:
+                suggestion_args.extend([
+                    "--source-message-id",
+                    source_message_id,
+                ])
+
+            suggestion_args.append("--body-stdin")
+            suggestion = px_hospital(
+                *suggestion_args,
+                stdin_text=str(proposal["body"]),
+            )
+            payload["memorySuggestion"] = suggestion
+
+            store_event(
+                args.session_id,
+                "chart_suggestion.created",
+                {
+                    "suggestionId": suggestion.get("id"),
+                    "scope": suggestion.get("scope"),
+                    "kind": suggestion.get("kind"),
+                    "priority": suggestion.get("priority"),
+                    "sourceMessageId": suggestion.get(
+                        "sourceMessageId"
+                    ),
+                },
+            )
+        else:
+            store_event(
+                args.session_id,
+                "chart_suggestion.none",
+                {"command": "SUGGEST"},
+            )
 
     return payload
 

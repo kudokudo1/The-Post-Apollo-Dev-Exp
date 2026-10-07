@@ -269,6 +269,8 @@ quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
 printf 'change\n' >>"$BED/tracked.txt"
 quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
 quick_report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["roomReport"]["id"])' "$quick_report_json")"
+quick_suggest_json="$("$ROOT/bin/px" agent quick session-t6-agent SUGGEST --timeout 30 --json)"
+quick_suggestions_json="$("$ROOT/bin/px" hospital chart-suggestions --scope ROOM --room-id T6 --status PENDING --json)"
 feedback_json="$(printf '%s' 'The VERIFY section missed the regression test. Fix that and re-check the Room.' | "$ROOT/bin/px" agent report-feedback session-t6-agent "$quick_report_id" --feedback-stdin --timeout 30 --json)"
 feedback_messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 feedback_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 400 --json)"
@@ -357,7 +359,9 @@ python3 - \
     "$quick_continue_json" \
     "$quick_checkpoints_json" \
     "$quick_room_reports_json" \
-    "$quick_events_json" <<'PY'
+    "$quick_events_json" \
+    "$quick_suggest_json" \
+    "$quick_suggestions_json" <<'PY'
 import json
 import sys
 
@@ -371,6 +375,8 @@ continue_result = json.loads(sys.argv[7])
 checkpoints = json.loads(sys.argv[8])
 room_reports = json.loads(sys.argv[9])
 events = json.loads(sys.argv[10])
+suggest = json.loads(sys.argv[11])
+suggestions = json.loads(sys.argv[12])
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
@@ -468,6 +474,20 @@ assert room_reports[0]["id"] == room_report["id"], room_reports
 
 types = [row["type"] for row in events]
 assert "room_report.created" in types, types
+assert "chart_suggestion.created" in types, types
+
+assert suggest["command"] == "SUGGEST", suggest
+memory = suggest["memorySuggestion"]
+assert memory["status"] == "PENDING", memory
+assert memory["scope"] == "ROOM", memory
+assert memory["kind"] == "DECISION", memory
+assert memory["priority"] == 82, memory
+assert memory["doctorId"] == "doctor-t6", memory
+assert memory["providerId"] == "mock", memory
+assert memory["sourceSessionId"] == "session-t6-agent", memory
+assert memory["sourceMessageId"] == suggest["result"]["assistantMessageId"], memory
+assert len(suggestions) == 1, suggestions
+assert suggestions[0]["id"] == memory["id"], suggestions
 
 assert pause["command"] == "PAUSE", pause
 assert pause["result"]["paused"] is True, pause

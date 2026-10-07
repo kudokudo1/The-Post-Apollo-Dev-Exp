@@ -34,7 +34,19 @@ if "FORCE_SESSION_MISMATCH" in operator_prompt:
 if "SLOW_TURN" in operator_prompt:
     time.sleep(30)
 
-reply = "MOCK: " + operator_prompt
+if operator_prompt.startswith("QUICK // SUGGEST MEMORY"):
+    reply = (
+        "MEMORY_SUGGESTION\n"
+        "SCOPE: ROOM\n"
+        "KIND: DECISION\n"
+        "TITLE: Keep the Room authority boundary\n"
+        "PRIORITY: 82\n"
+        "BODY:\n"
+        "Doctors may propose durable memory, but only the operator promotes "
+        "a suggestion into the Chart."
+    )
+else:
+    reply = "MOCK: " + operator_prompt
 
 events = [
     {

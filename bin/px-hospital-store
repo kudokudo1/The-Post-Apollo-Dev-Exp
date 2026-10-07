@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -238,6 +238,59 @@ CREATE INDEX IF NOT EXISTS idx_chart_entries_source_session
     ON chart_entries(source_session_id, entry_id DESC);
 """
 
+
+SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS chart_suggestions (
+    suggestion_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL,
+    patient_id TEXT,
+    room_id TEXT,
+    entry_kind TEXT NOT NULL DEFAULT 'NOTE',
+    title TEXT NOT NULL DEFAULT '',
+    body_md TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 50,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    doctor_id TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    source_room_id TEXT,
+    source_session_id TEXT,
+    source_message_id INTEGER,
+    source_checkpoint_id INTEGER,
+    source_report_id INTEGER,
+    promoted_entry_id INTEGER,
+    operator_id TEXT NOT NULL DEFAULT '',
+    decision_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_at TEXT,
+    CHECK(scope_type IN ('PATIENT', 'ROOM')),
+    CHECK(priority BETWEEN 0 AND 100),
+    CHECK(status IN ('PENDING', 'PROMOTED', 'REJECTED')),
+    CHECK(
+        (scope_type = 'PATIENT' AND patient_id IS NOT NULL AND room_id IS NULL)
+        OR
+        (scope_type = 'ROOM' AND room_id IS NOT NULL AND patient_id IS NULL)
+    ),
+    FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_room_id) REFERENCES rooms(room_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES messages(message_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_checkpoint_id) REFERENCES room_checkpoints(checkpoint_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_report_id) REFERENCES room_reports(report_id) ON DELETE SET NULL,
+    FOREIGN KEY (promoted_entry_id) REFERENCES chart_entries(entry_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chart_suggestions_patient
+    ON chart_suggestions(patient_id, status, priority DESC, suggestion_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chart_suggestions_room
+    ON chart_suggestions(room_id, status, priority DESC, suggestion_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chart_suggestions_source_session
+    ON chart_suggestions(source_session_id, suggestion_id DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -366,12 +419,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 8
 
+    if version < 9:
+        conn.executescript(SCHEMA_V9)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("9",),
+        )
+        conn.commit()
+        version = 9
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -1861,6 +1923,293 @@ def messages_list(
     return [normalize_message(row) for row in rows]
 
 
+
+def normalize_chart_suggestion(row: sqlite3.Row) -> dict:
+    return {
+        "id": str(row["suggestion_id"]),
+        "scope": str(row["scope_type"]),
+        "patientId": str(row["patient_id"] or ""),
+        "roomId": str(row["room_id"] or ""),
+        "kind": str(row["entry_kind"] or "NOTE"),
+        "title": str(row["title"] or ""),
+        "body": str(row["body_md"] or ""),
+        "priority": int(row["priority"] or 0),
+        "status": str(row["status"] or "PENDING"),
+        "doctorId": str(row["doctor_id"] or ""),
+        "providerId": str(row["provider_id"] or ""),
+        "sourceRoomId": str(row["source_room_id"] or ""),
+        "sourceSessionId": str(row["source_session_id"] or ""),
+        "sourceMessageId": (
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else ""
+        ),
+        "sourceCheckpointId": (
+            str(row["source_checkpoint_id"])
+            if row["source_checkpoint_id"] is not None
+            else ""
+        ),
+        "sourceReportId": (
+            str(row["source_report_id"])
+            if row["source_report_id"] is not None
+            else ""
+        ),
+        "promotedEntryId": (
+            str(row["promoted_entry_id"])
+            if row["promoted_entry_id"] is not None
+            else ""
+        ),
+        "operatorId": str(row["operator_id"] or ""),
+        "decisionNote": str(row["decision_note"] or ""),
+        "createdAt": str(row["created_at"] or ""),
+        "updatedAt": str(row["updated_at"] or ""),
+        "decidedAt": str(row["decided_at"] or ""),
+    }
+
+
+def chart_suggestion_record(
+    conn: sqlite3.Connection,
+    suggestion_id: int,
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM chart_suggestions WHERE suggestion_id = ?",
+        (suggestion_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Chart suggestion: {suggestion_id}"
+        )
+    return normalize_chart_suggestion(row)
+
+
+def chart_suggestion_add(conn: sqlite3.Connection, args) -> dict:
+    scope = str(args.scope or "").strip().upper()
+    patient_id, room_id = chart_scope_target(conn, args)
+    validate_chart_provenance(conn, args)
+
+    if args.body_stdin:
+        body = sys.stdin.read()
+    else:
+        body = args.body or ""
+
+    if not body.strip():
+        raise RuntimeError("Hospital Chart suggestion body is empty")
+
+    priority = int(args.priority)
+    if priority < 0 or priority > 100:
+        raise RuntimeError(
+            "Hospital Chart suggestion priority must be between 0 and 100"
+        )
+
+    source_room_id = str(args.source_room_id or "").strip()
+    source_session_id = str(args.source_session_id or "").strip()
+    doctor_id = str(args.doctor_id or "").strip()
+    provider_id = str(args.provider_id or "").strip()
+
+    if source_session_id:
+        session = conn.execute(
+            """
+            SELECT room_id, doctor_id, provider_id
+            FROM sessions
+            WHERE session_id = ?
+            """,
+            (source_session_id,),
+        ).fetchone()
+        if session is None:
+            raise RuntimeError(
+                f"unknown Hospital source session: {source_session_id}"
+            )
+        if not source_room_id:
+            source_room_id = str(session["room_id"] or "")
+        if not doctor_id:
+            doctor_id = str(session["doctor_id"] or "")
+        if not provider_id:
+            provider_id = str(session["provider_id"] or "")
+
+    cur = conn.execute(
+        """
+        INSERT INTO chart_suggestions(
+            scope_type, patient_id, room_id, entry_kind, title, body_md,
+            priority, status, doctor_id, provider_id,
+            source_room_id, source_session_id, source_message_id,
+            source_checkpoint_id, source_report_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            scope,
+            patient_id or None,
+            room_id or None,
+            str(args.entry_kind or "NOTE").strip().upper() or "NOTE",
+            str(args.title or "").strip(),
+            body,
+            priority,
+            doctor_id,
+            provider_id,
+            source_room_id or None,
+            source_session_id or None,
+            args.source_message_id,
+            args.source_checkpoint_id,
+            args.source_report_id,
+        ),
+    )
+    suggestion_id = int(cur.lastrowid)
+    conn.commit()
+    return chart_suggestion_record(conn, suggestion_id)
+
+
+def chart_suggestions_list(conn: sqlite3.Connection, args) -> list:
+    scope = str(args.scope or "").strip().upper()
+    patient_id, room_id = chart_scope_target(conn, args)
+    status = str(args.status or "PENDING").strip().upper()
+
+    if args.limit < 1 or args.limit > 500:
+        raise RuntimeError(
+            "Hospital Chart suggestion limit must be between 1 and 500"
+        )
+
+    where = ["scope_type = ?"]
+    values = [scope]
+    if patient_id:
+        where.append("patient_id = ?")
+        values.append(patient_id)
+    else:
+        where.append("room_id = ?")
+        values.append(room_id)
+
+    if status != "ALL":
+        where.append("status = ?")
+        values.append(status)
+
+    values.append(args.limit)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM chart_suggestions
+        WHERE {' AND '.join(where)}
+        ORDER BY
+            CASE status
+                WHEN 'PENDING' THEN 0
+                WHEN 'PROMOTED' THEN 1
+                ELSE 2
+            END,
+            priority DESC,
+            suggestion_id DESC
+        LIMIT ?
+        """,
+        tuple(values),
+    ).fetchall()
+    return [normalize_chart_suggestion(row) for row in rows]
+
+
+def chart_suggestion_reject(conn: sqlite3.Connection, args) -> dict:
+    row = conn.execute(
+        "SELECT * FROM chart_suggestions WHERE suggestion_id = ?",
+        (args.suggestion_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Chart suggestion: {args.suggestion_id}"
+        )
+    if str(row["status"] or "") != "PENDING":
+        raise RuntimeError(
+            "Hospital Chart suggestion decision requires PENDING status"
+        )
+
+    conn.execute(
+        """
+        UPDATE chart_suggestions
+        SET
+            status = 'REJECTED',
+            operator_id = ?,
+            decision_note = ?,
+            updated_at = CURRENT_TIMESTAMP,
+            decided_at = CURRENT_TIMESTAMP
+        WHERE suggestion_id = ?
+        """,
+        (
+            str(args.operator_id or "operator").strip() or "operator",
+            str(args.note or "").strip(),
+            args.suggestion_id,
+        ),
+    )
+    conn.commit()
+    return chart_suggestion_record(conn, args.suggestion_id)
+
+
+def chart_suggestion_promote(conn: sqlite3.Connection, args) -> dict:
+    row = conn.execute(
+        "SELECT * FROM chart_suggestions WHERE suggestion_id = ?",
+        (args.suggestion_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Chart suggestion: {args.suggestion_id}"
+        )
+    if str(row["status"] or "") != "PENDING":
+        raise RuntimeError(
+            "Hospital Chart suggestion promotion requires PENDING status"
+        )
+
+    operator_id = str(args.operator_id or "operator").strip() or "operator"
+    cur = conn.execute(
+        """
+        INSERT INTO chart_entries(
+            scope_type, patient_id, room_id, entry_kind, title, body_md,
+            priority, status, author_role, author_id, source_type,
+            source_ref, source_room_id, source_session_id,
+            source_message_id, source_checkpoint_id, source_report_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'operator', ?, 'DOCTOR_SUGGESTION', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(row["scope_type"]),
+            row["patient_id"],
+            row["room_id"],
+            str(row["entry_kind"] or "NOTE"),
+            str(row["title"] or ""),
+            str(row["body_md"] or ""),
+            int(row["priority"] or 0),
+            operator_id,
+            str(row["suggestion_id"]),
+            row["source_room_id"],
+            row["source_session_id"],
+            row["source_message_id"],
+            row["source_checkpoint_id"],
+            row["source_report_id"],
+        ),
+    )
+    entry_id = int(cur.lastrowid)
+
+    conn.execute(
+        """
+        UPDATE chart_suggestions
+        SET
+            status = 'PROMOTED',
+            promoted_entry_id = ?,
+            operator_id = ?,
+            decision_note = ?,
+            updated_at = CURRENT_TIMESTAMP,
+            decided_at = CURRENT_TIMESTAMP
+        WHERE suggestion_id = ?
+        """,
+        (
+            entry_id,
+            operator_id,
+            str(args.note or "").strip(),
+            args.suggestion_id,
+        ),
+    )
+    conn.commit()
+
+    return {
+        "suggestion": chart_suggestion_record(
+            conn,
+            args.suggestion_id,
+        ),
+        "entry": chart_entry_record(conn, entry_id),
+    }
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="px hospital",
@@ -2045,6 +2394,67 @@ def build_parser() -> argparse.ArgumentParser:
     chart_list.add_argument("--limit", type=int, default=100)
     chart_list.add_argument("--json", action="store_true")
 
+
+    suggestion_add = sub.add_parser("chart-suggestion-add")
+    suggestion_add.add_argument(
+        "--scope",
+        required=True,
+        choices=("PATIENT", "ROOM", "patient", "room"),
+    )
+    suggestion_add.add_argument("--patient-id", default="")
+    suggestion_add.add_argument("--room-id", default="")
+    suggestion_add.add_argument("--entry-kind", default="NOTE")
+    suggestion_add.add_argument("--title", default="")
+    suggestion_add.add_argument("--priority", type=int, default=50)
+    suggestion_add.add_argument("--doctor-id", default="")
+    suggestion_add.add_argument("--provider-id", default="")
+    suggestion_add.add_argument("--source-room-id", default="")
+    suggestion_add.add_argument("--source-session-id", default="")
+    suggestion_add.add_argument("--source-message-id", type=int)
+    suggestion_add.add_argument("--source-checkpoint-id", type=int)
+    suggestion_add.add_argument("--source-report-id", type=int)
+    suggestion_body = suggestion_add.add_mutually_exclusive_group(
+        required=True
+    )
+    suggestion_body.add_argument("--body")
+    suggestion_body.add_argument("--body-stdin", action="store_true")
+    suggestion_add.add_argument("--json", action="store_true")
+
+    suggestion_get = sub.add_parser("chart-suggestion")
+    suggestion_get.add_argument("suggestion_id", type=int)
+    suggestion_get.add_argument("--json", action="store_true")
+
+    suggestion_list = sub.add_parser("chart-suggestions")
+    suggestion_list.add_argument(
+        "--scope",
+        required=True,
+        choices=("PATIENT", "ROOM", "patient", "room"),
+    )
+    suggestion_list.add_argument("--patient-id", default="")
+    suggestion_list.add_argument("--room-id", default="")
+    suggestion_list.add_argument(
+        "--status",
+        default="PENDING",
+        choices=(
+            "PENDING", "PROMOTED", "REJECTED", "ALL",
+            "pending", "promoted", "rejected", "all",
+        ),
+    )
+    suggestion_list.add_argument("--limit", type=int, default=100)
+    suggestion_list.add_argument("--json", action="store_true")
+
+    suggestion_promote = sub.add_parser("chart-suggestion-promote")
+    suggestion_promote.add_argument("suggestion_id", type=int)
+    suggestion_promote.add_argument("--operator-id", default="operator")
+    suggestion_promote.add_argument("--note", default="")
+    suggestion_promote.add_argument("--json", action="store_true")
+
+    suggestion_reject = sub.add_parser("chart-suggestion-reject")
+    suggestion_reject.add_argument("suggestion_id", type=int)
+    suggestion_reject.add_argument("--operator-id", default="operator")
+    suggestion_reject.add_argument("--note", default="")
+    suggestion_reject.add_argument("--json", action="store_true")
+
     room_report = sub.add_parser("room-report-append")
     room_report.add_argument("--room-id", required=True)
     room_report.add_argument("--session-id", default="")
@@ -2199,6 +2609,19 @@ def main() -> int:
                 emit_data(chart_entry_status(conn, args), args.json)
             elif args.command == "chart-entries":
                 emit_data(chart_entries_list(conn, args), args.json)
+            elif args.command == "chart-suggestion-add":
+                emit_data(chart_suggestion_add(conn, args), args.json)
+            elif args.command == "chart-suggestion":
+                emit_data(
+                    chart_suggestion_record(conn, args.suggestion_id),
+                    args.json,
+                )
+            elif args.command == "chart-suggestions":
+                emit_data(chart_suggestions_list(conn, args), args.json)
+            elif args.command == "chart-suggestion-promote":
+                emit_data(chart_suggestion_promote(conn, args), args.json)
+            elif args.command == "chart-suggestion-reject":
+                emit_data(chart_suggestion_reject(conn, args), args.json)
             elif args.command == "room-report-append":
                 emit_data(room_report_append(conn, args), args.json)
             elif args.command == "room-report":

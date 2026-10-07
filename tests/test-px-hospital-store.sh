@@ -114,7 +114,7 @@ older = json.loads(sys.argv[29])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 8, payload
+    assert payload["schema_version"] == 9, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -125,6 +125,7 @@ for payload in (init, status):
         "room_checkpoints": 0,
         "room_reports": 0,
         "chart_entries": 0,
+        "chart_suggestions": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -256,7 +257,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("8",), version
+    assert version == ("9",), version
 
     tables = {
         row[0]
@@ -264,7 +265,7 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries", "chart_suggestions"):
         assert table in tables, (table, tables)
 
     room_columns = {
@@ -291,6 +292,46 @@ try:
     assert str(journal_mode).lower() == "wal", journal_mode
 finally:
     conn.close()
+PY
+
+suggestion_json="$(printf '%s' 'Keep operator authority over durable memory promotion.' | "$ROOT/bin/px" hospital chart-suggestion-add --scope ROOM --room-id T6 --entry-kind DECISION --title "Chart authority" --priority 88 --doctor-id doctor-t6 --provider-id codex --source-room-id T6 --source-session-id session-t6-1 --source-message-id "$incoming_id" --body-stdin --json)"
+suggestion_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$suggestion_json")"
+pending_suggestions_json="$("$ROOT/bin/px" hospital chart-suggestions --scope ROOM --room-id T6 --status PENDING --json)"
+promoted_json="$("$ROOT/bin/px" hospital chart-suggestion-promote "$suggestion_id" --operator-id operator --note "accepted in store test" --json)"
+promoted_entry_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["entry"]["id"])' "$promoted_json")"
+promoted_entry_json="$("$ROOT/bin/px" hospital chart-entry "$promoted_entry_id" --json)"
+
+reject_json="$(printf '%s' 'This proposal should remain history but never enter the Chart.' | "$ROOT/bin/px" hospital chart-suggestion-add --scope ROOM --room-id T6 --entry-kind NOTE --title "Reject me" --priority 10 --doctor-id doctor-t6 --provider-id codex --source-room-id T6 --source-session-id session-t6-1 --body-stdin --json)"
+reject_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$reject_json")"
+rejected_json="$("$ROOT/bin/px" hospital chart-suggestion-reject "$reject_id" --operator-id operator --note "not durable" --json)"
+
+python3 - "$suggestion_json" "$pending_suggestions_json" "$promoted_json" "$promoted_entry_json" "$rejected_json" <<'PY'
+import json
+import sys
+
+suggestion = json.loads(sys.argv[1])
+pending = json.loads(sys.argv[2])
+promoted = json.loads(sys.argv[3])
+entry = json.loads(sys.argv[4])
+rejected = json.loads(sys.argv[5])
+
+assert suggestion["status"] == "PENDING", suggestion
+assert suggestion["doctorId"] == "doctor-t6", suggestion
+assert suggestion["providerId"] == "codex", suggestion
+assert suggestion["sourceSessionId"] == "session-t6-1", suggestion
+assert [row["id"] for row in pending] == [suggestion["id"]], pending
+
+assert promoted["suggestion"]["status"] == "PROMOTED", promoted
+assert promoted["suggestion"]["operatorId"] == "operator", promoted
+assert promoted["suggestion"]["promotedEntryId"] == promoted["entry"]["id"], promoted
+assert promoted["entry"]["authorRole"] == "operator", promoted
+assert promoted["entry"]["sourceType"] == "DOCTOR_SUGGESTION", promoted
+assert promoted["entry"]["sourceRef"] == suggestion["id"], promoted
+assert entry == promoted["entry"], (entry, promoted)
+
+assert rejected["status"] == "REJECTED", rejected
+assert rejected["operatorId"] == "operator", rejected
+assert rejected["promotedEntryId"] == "", rejected
 PY
 
 printf 'hospital state store: PASS\n'
