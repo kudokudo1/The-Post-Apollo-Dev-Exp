@@ -499,13 +499,15 @@ assert any(
     for row in feedback_provider_system
 ), feedback_provider_system
 
-assert len(checkpoints) == 1, checkpoints
-assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
-assert checkpoints[0]["sessionId"] == "session-t6-agent", checkpoints
-assert checkpoints[0]["providerId"] == "mock", checkpoints
+checkpoint_by_id = {row["id"]: row for row in checkpoints}
+assert report["checkpoint"]["id"] in checkpoint_by_id, checkpoints
+assert historical_checkpoint_id in checkpoint_by_id, checkpoints
+assert checkpoint_by_id[report["checkpoint"]["id"]]["sessionId"] == "session-t6-agent", checkpoints
+assert checkpoint_by_id[report["checkpoint"]["id"]]["providerId"] == "mock", checkpoints
 
-assert len(room_reports) == 1, room_reports
-assert room_reports[0]["id"] == room_report["id"], room_reports
+room_report_by_id = {row["id"]: row for row in room_reports}
+assert room_report["id"] in room_report_by_id, room_reports
+assert historical_report_id in room_report_by_id, room_reports
 
 types = [row["type"] for row in events]
 assert "room_report.created" in types, types
