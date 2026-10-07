@@ -563,20 +563,34 @@ fn handle_key(
                 app.status = Some(format!("Action disappeared: {action_id}"));
                 return Ok(());
             };
+            let visible = filtered_choice_indices(app);
 
             match key.code {
                 KeyCode::Esc => app.back_to_search(),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    App::next(&mut app.choice_selected, app.choice_items.len())
+                KeyCode::Backspace => {
+                    app.choice_query.pop();
+                    app.choice_selected = 0;
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    App::previous(&mut app.choice_selected, app.choice_items.len())
-                }
+                KeyCode::Down => App::next(&mut app.choice_selected, visible.len()),
+                KeyCode::Up => App::previous(&mut app.choice_selected, visible.len()),
                 KeyCode::Enter => {
-                    if let Some(choice) = app.choice_items.get(app.choice_selected) {
-                        let value = choice.value.clone();
-                        commit_argument_value(app, model, action, value);
+                    if let Some(index) = visible.get(app.choice_selected) {
+                        if let Some(choice) = app.choice_items.get(*index) {
+                            let value = choice.value.clone();
+                            commit_argument_value(app, model, action, value);
+                        }
                     }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.choice_query.clear();
+                    app.choice_selected = 0;
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.choice_query.push(character);
+                    app.choice_selected = 0;
                 }
                 _ => {}
             }
@@ -1617,6 +1631,40 @@ fn tool_rank(tool: &Tool) -> u8 {
     }
 }
 
+fn filtered_choice_indices(app: &App) -> Vec<usize> {
+    let query = app.choice_query.trim();
+
+    if query.is_empty() {
+        return (0..app.choice_items.len()).collect();
+    }
+
+    let mut matches: Vec<(usize, i64)> = app
+        .choice_items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, choice)| {
+            [
+                choice.label.as_str(),
+                choice.value.as_str(),
+                choice.detail.as_str(),
+            ]
+            .into_iter()
+            .filter_map(|field| search_field_score(query, field))
+            .max()
+            .map(|score| (index, score))
+        })
+        .collect();
+
+    matches.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| app.choice_items[left.0].label.cmp(&app.choice_items[right.0].label))
+    });
+
+    matches.into_iter().map(|(index, _)| index).collect()
+}
+
 fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<SearchItem> {
     let mut items = Vec::new();
 
@@ -2100,8 +2148,14 @@ fn draw_action_choice(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
         .split(area);
+
+    let filter_text = if app.choice_query.is_empty() {
+        "(type to filter)".to_owned()
+    } else {
+        app.choice_query.clone()
+    };
 
     let heading = Paragraph::new(vec![
         Line::from(vec![
@@ -2121,14 +2175,19 @@ fn draw_action_choice(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
                 Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(filter_text, Style::default().fg(CYAN)),
+        ]),
     ])
     .block(panel(" KNOWN VALUE ", ORANGE));
 
     frame.render_widget(heading, rows[0]);
 
-    let items: Vec<ListItem> = app
-        .choice_items
+    let visible = filtered_choice_indices(app);
+    let items: Vec<ListItem> = visible
         .iter()
+        .filter_map(|index| app.choice_items.get(*index))
         .map(|choice| {
             ListItem::new(vec![
                 Line::from(Span::styled(
@@ -2154,9 +2213,9 @@ fn draw_action_choice(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         );
 
     let mut state = ListState::default();
-    if !app.choice_items.is_empty() {
+    if !visible.is_empty() {
         state.select(Some(
-            app.choice_selected.min(app.choice_items.len().saturating_sub(1)),
+            app.choice_selected.min(visible.len().saturating_sub(1)),
         ));
     }
 
@@ -2266,7 +2325,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
         Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
         Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
-        Mode::ActionChoice => "j/k move   Enter choose   Esc cancel",
+        Mode::ActionChoice => "type filter   Up/Down move   Enter choose   Backspace edit   Esc cancel",
         Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
