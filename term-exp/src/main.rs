@@ -2,7 +2,7 @@ mod app;
 
 use app::{App, Mode, SearchScope};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -11,12 +11,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     env,
     io::{self, Stdout},
     path::{Path, PathBuf},
@@ -554,7 +554,7 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
 
     draw_header(frame, rows[0], model);
 
-    match app.mode {
+    match &app.mode {
         Mode::Home => draw_body(frame, rows[1], model),
         Mode::Leader => draw_leader(frame, rows[1], app, model),
         Mode::Search => draw_search(frame, rows[1], app, model),
@@ -781,7 +781,7 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
-    let default = match app.mode {
+    let default = match &app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
         Mode::Search => "type to search   Up/Down move   Enter select   Esc back",
