@@ -315,6 +315,8 @@ def recovery_payload(record: dict) -> dict:
         "status": record["status"],
         "recovery": recovery,
         "automaticRecoveryAvailable": False,
+        "executorAvailable": False,
+        "requiresLiveValidation": False,
         "planAvailable": False,
     }
 
@@ -338,10 +340,19 @@ def recovery_payload(record: dict) -> dict:
                 **base,
                 "strategy": "DELETE_CREATED_WORKFLOW",
                 "planAvailable": True,
+                "executorAvailable": True,
+                "requiresLiveValidation": True,
+                "executionCommand": [
+                    "operation",
+                    "recover",
+                    record["id"],
+                    "--json",
+                ],
                 "plan": plan,
                 "reason": (
                     "exact created-workflow content and verified remote identity "
-                    "are durable; the PX recovery executor is not registered yet"
+                    "are durable; execution requires live history and content "
+                    "validation before deletion"
                 ),
             }
 
