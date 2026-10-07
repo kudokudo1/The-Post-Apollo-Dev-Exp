@@ -591,6 +591,24 @@ fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn draw_body(frame: &mut Frame, area: Rect, model: &Model) {
+    if area.width < 88 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(9),
+                Constraint::Length(6),
+                Constraint::Length(9),
+                Constraint::Min(8),
+            ])
+            .split(area);
+
+        draw_control_plane(frame, rows[0], model);
+        draw_environments(frame, rows[1], model);
+        draw_categories(frame, rows[2], model);
+        draw_representative_actions(frame, rows[3], model);
+        return;
+    }
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
