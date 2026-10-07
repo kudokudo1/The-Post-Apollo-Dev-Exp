@@ -229,6 +229,20 @@ github_dispatch_runs_for() {
         --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,url
 }
 
+hospital_session_guard_record() {
+    local session_id="$1"
+
+    need python3
+    python3 "$ROOT/bin/px-hospital-store" session "$session_id" --json
+}
+
+hospital_session_guard_events() {
+    local session_id="$1"
+
+    need python3
+    python3 "$ROOT/bin/px-hospital-store" events "$session_id" --limit 1000 --json
+}
+
 mutation_preflight() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
@@ -239,6 +253,127 @@ mutation_preflight() {
     need jq
 
     case "$action_id" in
+        ai.turn|ai.quick.continue|ai.quick.report|ai.quick.checklist|ai.quick.next)
+            local session_id session_json events_json baseline_event_id
+            local status active_pid room_id doctor_id provider_id provider_session_id
+            local working_directory updated_at prompt quick_command action_label
+            local allowed="true" reason="" summary="" token frozen_command
+
+            session_id="$(jq -r '.session_id // ""' <<<"$arguments_json")"
+            [[ -n "$session_id" ]] || die "$action_id preflight requires session_id"
+
+            session_json="$(hospital_session_guard_record "$session_id")"
+            events_json="$(hospital_session_guard_events "$session_id")"
+            baseline_event_id="$(jq -r '[.[] | ((.id // 0) | tonumber? // 0)] | max // 0' <<<"$events_json")"
+
+            status="$(jq -r '.status // "IDLE"' <<<"$session_json")"
+            active_pid="$(jq -r '.activePid // 0' <<<"$session_json")"
+            room_id="$(jq -r '.roomId // ""' <<<"$session_json")"
+            doctor_id="$(jq -r '.doctorId // ""' <<<"$session_json")"
+            provider_id="$(jq -r '.providerId // ""' <<<"$session_json")"
+            provider_session_id="$(jq -r '.providerSessionId // ""' <<<"$session_json")"
+            working_directory="$(jq -r '.workingDirectory // ""' <<<"$session_json")"
+            updated_at="$(jq -r '.updatedAt // ""' <<<"$session_json")"
+
+            if [[ "${status^^}" == "OPERATING" || "$active_pid" -gt 0 ]]; then
+                allowed="false"
+                reason="DOCTOR ALREADY OPERATING"
+            elif [[ -z "$room_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO ROOM"
+            elif [[ -z "$doctor_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO DOCTOR"
+            elif [[ -z "$provider_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO PROVIDER"
+            elif [[ -z "$working_directory" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO WORKING DIRECTORY"
+            fi
+
+            case "$action_id" in
+                ai.turn)
+                    prompt="$(jq -r '.prompt // ""' <<<"$arguments_json")"
+                    [[ -n "${prompt//[[:space:]]/}" ]] || die "ai.turn preflight requires prompt"
+                    action_label="MESSAGE DOCTOR"
+                    frozen_command="$(jq -nc \
+                        --arg session "$session_id" \
+                        --arg prompt "$prompt" \
+                        '["agent","turn",$session,"--prompt",$prompt,"--json"]')"
+                    ;;
+                ai.quick.continue)
+                    quick_command="CONTINUE"
+                    action_label="QUICK CONTINUE"
+                    ;;
+                ai.quick.report)
+                    quick_command="REPORT"
+                    action_label="QUICK REPORT"
+                    ;;
+                ai.quick.checklist)
+                    quick_command="CHECKLIST"
+                    action_label="QUICK CHECKLIST"
+                    ;;
+                ai.quick.next)
+                    quick_command="NEXT"
+                    action_label="QUICK NEXT"
+                    ;;
+            esac
+
+            if [[ "$action_id" != "ai.turn" ]]; then
+                frozen_command="$(jq -nc \
+                    --arg session "$session_id" \
+                    --arg command "$quick_command" \
+                    '["agent","quick",$session,$command,"--json"]')"
+            fi
+
+            token="$(jq -nc \
+                --arg actionId "$action_id" \
+                --arg sessionId "$session_id" \
+                --arg roomId "$room_id" \
+                --arg doctorId "$doctor_id" \
+                --arg providerId "$provider_id" \
+                --arg providerSessionId "$provider_session_id" \
+                --arg workingDirectory "$working_directory" \
+                --arg status "$status" \
+                --arg updatedAt "$updated_at" \
+                --argjson activePid "$active_pid" \
+                --argjson baselineEventId "$baseline_event_id" \
+                '{
+                    actionId:$actionId,
+                    sessionId:$sessionId,
+                    roomId:$roomId,
+                    doctorId:$doctorId,
+                    providerId:$providerId,
+                    providerSessionId:$providerSessionId,
+                    workingDirectory:$workingDirectory,
+                    status:$status,
+                    activePid:$activePid,
+                    updatedAt:$updatedAt,
+                    baselineEventId:$baselineEventId
+                }')"
+
+            summary="$action_label // ROOM $room_id // DOCTOR $doctor_id // PROVIDER $provider_id // SESSION $session_id"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$session_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
         github.run.cancel)
             need gh
 
@@ -713,6 +848,106 @@ mutation_verify() {
     need jq
 
     case "$action_id" in
+        ai.turn|ai.quick.continue|ai.quick.report|ai.quick.checklist|ai.quick.next)
+            local session_id token_session current_session events_json baseline_event_id after_events
+            local expected_room expected_doctor expected_provider expected_workdir
+            local status active_pid started_count completed_count failed_count cancelled_count
+            local checkpoint_count report_count event_summary
+            local passed="false" summary="" reason="" action_label
+
+            session_id="$(jq -r '.session_id // ""' <<<"$arguments_json")"
+            [[ -n "$session_id" ]] || die "$action_id verification requires session_id"
+            [[ -n "$preflight_token" ]] || die "$action_id verification requires preflight token"
+
+            token_session="$(jq -r '.sessionId // ""' <<<"$preflight_token")"
+            [[ "$token_session" == "$session_id" ]] || die "Doctor verification session changed"
+
+            baseline_event_id="$(jq -r '.baselineEventId // 0' <<<"$preflight_token")"
+            expected_room="$(jq -r '.roomId // ""' <<<"$preflight_token")"
+            expected_doctor="$(jq -r '.doctorId // ""' <<<"$preflight_token")"
+            expected_provider="$(jq -r '.providerId // ""' <<<"$preflight_token")"
+            expected_workdir="$(jq -r '.workingDirectory // ""' <<<"$preflight_token")"
+
+            current_session="$(hospital_session_guard_record "$session_id")"
+            events_json="$(hospital_session_guard_events "$session_id")"
+            after_events="$(jq -c --argjson baseline "$baseline_event_id" '
+                [.[] | select(((.id // 0) | tonumber? // 0) > $baseline)]
+            ' <<<"$events_json")"
+
+            status="$(jq -r '.status // ""' <<<"$current_session")"
+            active_pid="$(jq -r '.activePid // 0' <<<"$current_session")"
+            started_count="$(jq '[.[] | select(.type == "turn.started")] | length' <<<"$after_events")"
+            completed_count="$(jq '[.[] | select(.type == "turn.completed")] | length' <<<"$after_events")"
+            failed_count="$(jq '[.[] | select(.type == "turn.failed")] | length' <<<"$after_events")"
+            cancelled_count="$(jq '[.[] | select(.type == "turn.cancelled")] | length' <<<"$after_events")"
+            checkpoint_count="$(jq '[.[] | select(.type == "checkpoint.created")] | length' <<<"$after_events")"
+            report_count="$(jq '[.[] | select(.type == "room_report.created")] | length' <<<"$after_events")"
+            event_summary="$(jq -c '[.[] | {id,type,createdAt}]' <<<"$after_events")"
+
+            case "$action_id" in
+                ai.turn) action_label="MESSAGE DOCTOR" ;;
+                ai.quick.continue) action_label="QUICK CONTINUE" ;;
+                ai.quick.report) action_label="QUICK REPORT" ;;
+                ai.quick.checklist) action_label="QUICK CHECKLIST" ;;
+                ai.quick.next) action_label="QUICK NEXT" ;;
+            esac
+
+            if [[ "$(jq -r '.roomId // ""' <<<"$current_session")" != "$expected_room"
+                    || "$(jq -r '.doctorId // ""' <<<"$current_session")" != "$expected_doctor"
+                    || "$(jq -r '.providerId // ""' <<<"$current_session")" != "$expected_provider"
+                    || "$(jq -r '.workingDirectory // ""' <<<"$current_session")" != "$expected_workdir" ]]; then
+                reason="SESSION IDENTITY CHANGED DURING DOCTOR TURN"
+            elif [[ "${status^^}" != "WAITING" || "$active_pid" -gt 0 ]]; then
+                reason="DOCTOR DID NOT RETURN TO WAITING // STATUS ${status^^} // PID $active_pid"
+            elif [[ "$failed_count" -gt 0 || "$cancelled_count" -gt 0 ]]; then
+                reason="DOCTOR TURN FAILED OR WAS CANCELLED"
+            elif [[ "$started_count" -ne 1 || "$completed_count" -ne 1 ]]; then
+                reason="DOCTOR TURN ACTIVITY IS AMBIGUOUS // STARTED $started_count // COMPLETED $completed_count"
+            elif [[ "$action_id" == "ai.quick.report"
+                    && ( "$checkpoint_count" -ne 1 || "$report_count" -ne 1 ) ]]; then
+                reason="QUICK REPORT DID NOT PRODUCE EXACTLY ONE CHECKPOINT AND ROOM REPORT"
+            else
+                passed="true"
+                summary="$action_label VERIFIED // ROOM $expected_room // DOCTOR $expected_doctor // SESSION $session_id"
+            fi
+
+            if [[ "$passed" != "true" && -z "$summary" ]]; then
+                summary="$action_label VERIFY FAILED // SESSION $session_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson session "$current_session" \
+                --argjson events "$event_summary" \
+                --argjson started "$started_count" \
+                --argjson completed "$completed_count" \
+                --argjson failed "$failed_count" \
+                --argjson cancelled "$cancelled_count" \
+                --argjson checkpoints "$checkpoint_count" \
+                --argjson reports "$report_count" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:{
+                        session:$session,
+                        events:$events,
+                        counts:{
+                            started:$started,
+                            completed:$completed,
+                            failed:$failed,
+                            cancelled:$cancelled,
+                            checkpoints:$checkpoints,
+                            reports:$reports
+                        }
+                    }
+                }'
+            ;;
         github.run.cancel)
             need gh
 

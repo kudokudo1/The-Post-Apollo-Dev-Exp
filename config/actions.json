@@ -1546,7 +1546,8 @@
         "hermes",
         "hospital"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "ai.session.status",
@@ -1653,7 +1654,8 @@
         "hospital",
         "room"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "ai.quick.report",
@@ -1687,7 +1689,8 @@
         "hospital",
         "room"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "ai.quick.checklist",
@@ -1721,7 +1724,8 @@
         "hospital",
         "room"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "ai.quick.next",
@@ -1755,7 +1759,8 @@
         "hospital",
         "room"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "ai.quick.pause",

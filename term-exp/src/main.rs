@@ -1212,7 +1212,10 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
 
     if mutation_requires_arm(action) && !app.mutation_armed {
         app.mode = Mode::MutationPreview;
-        app.status = Some("REMOTE EXECUTION REFUSED // action is not armed".to_owned());
+        app.status = Some(format!(
+            "{} EXECUTION REFUSED // action is not armed",
+            action.mutation.to_uppercase()
+        ));
         return;
     }
 
@@ -1222,7 +1225,10 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             app.mutation_armed = false;
             app.mutation_preflight.clear();
             app.mutation_preflight_token.clear();
-            app.status = Some(format!("REMOTE EXECUTION REFUSED // {error}"));
+            app.status = Some(format!(
+                "{} EXECUTION REFUSED // {error}",
+                action.mutation.to_uppercase()
+            ));
             return;
         }
     }
@@ -1324,7 +1330,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1349,7 +1359,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1381,7 +1395,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
             );
             app.open_output(
-                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                 text,
             );
             return;
@@ -1401,7 +1419,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
         );
         app.open_output(
-            format!("{} // REMOTE // VERIFIED", action.title),
+            format!(
+                "{} // {} // VERIFIED",
+                action.title,
+                action.mutation.to_uppercase()
+            ),
             text,
         );
         return;
@@ -1431,7 +1453,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nUNAVAILABLE // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1473,7 +1499,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
             );
             app.open_output(
-                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                 text,
             );
             return;
@@ -1493,7 +1523,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
         );
         app.open_output(
-            format!("{} // REMOTE // VERIFIED", action.title),
+            format!(
+                "{} // {} // VERIFIED",
+                action.title,
+                action.mutation.to_uppercase()
+            ),
             text,
         );
         return;
@@ -2926,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn mutation_execution_policy_only_unlocks_certified_remote_actions() {
+    fn mutation_execution_policy_only_unlocks_certified_guarded_actions() {
         let mut local = action("local", "AI");
         local.mutation = "local".to_owned();
         local.recovery = "EVIDENCE_ONLY".to_owned();
@@ -2941,21 +2975,29 @@ mod tests {
         cancel.mutation = "remote".to_owned();
         cancel.recovery = "EVIDENCE_ONLY".to_owned();
         cancel.execution_policy = "px-guarded".to_owned();
+        let mut doctor_turn = action("ai.turn", "AI");
+        doctor_turn.mutation = "external".to_owned();
+        doctor_turn.recovery = "EVIDENCE_ONLY".to_owned();
+        doctor_turn.execution_policy = "px-guarded".to_owned();
 
         assert!(mutation_execution_enabled(&local));
         assert!(!mutation_execution_enabled(&remote));
         assert!(!mutation_execution_enabled(&external));
         assert!(mutation_execution_enabled(&integration));
         assert!(mutation_execution_enabled(&cancel));
+        assert!(mutation_execution_enabled(&doctor_turn));
         assert!(mutation_requires_arm(&integration));
         assert!(mutation_requires_arm(&cancel));
+        assert!(mutation_requires_arm(&doctor_turn));
         assert!(mutation_requires_hospital_arm(&integration));
         assert!(!mutation_requires_hospital_arm(&cancel));
         assert!(mutation_uses_px_guard(&cancel));
+        assert!(mutation_uses_px_guard(&doctor_turn));
         assert!(!mutation_requires_arm(&remote));
         assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
         assert_eq!(mutation_confirmation_phrase(&integration), "REMOTE");
         assert_eq!(mutation_confirmation_phrase(&external), "EXTERNAL");
+        assert_eq!(mutation_confirmation_phrase(&doctor_turn), "EXTERNAL");
     }
 
     #[test]
