@@ -767,6 +767,7 @@ fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
         run_read_action(app, model, action, &[]);
     } else {
         app.begin_action_prompt(action.id.clone(), action.arguments.len());
+        prepare_current_argument(app, model, action);
     }
 }
 
