@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -185,6 +185,59 @@ CREATE INDEX IF NOT EXISTS idx_room_reports_session
     ON room_reports(session_id, report_id DESC);
 """
 
+SCHEMA_V8 = """
+CREATE TABLE IF NOT EXISTS chart_entries (
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL,
+    patient_id TEXT,
+    room_id TEXT,
+    entry_kind TEXT NOT NULL DEFAULT 'NOTE',
+    title TEXT NOT NULL DEFAULT '',
+    body_md TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 50,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    author_role TEXT NOT NULL DEFAULT '',
+    author_id TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT 'MANUAL',
+    source_ref TEXT NOT NULL DEFAULT '',
+    source_room_id TEXT,
+    source_session_id TEXT,
+    source_message_id INTEGER,
+    source_checkpoint_id INTEGER,
+    source_report_id INTEGER,
+    supersedes_entry_id INTEGER,
+    superseded_by_entry_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(scope_type IN ('PATIENT', 'ROOM')),
+    CHECK(priority BETWEEN 0 AND 100),
+    CHECK(status IN ('ACTIVE', 'SUPERSEDED', 'RESOLVED', 'ARCHIVED')),
+    CHECK(
+        (scope_type = 'PATIENT' AND patient_id IS NOT NULL AND room_id IS NULL)
+        OR
+        (scope_type = 'ROOM' AND room_id IS NOT NULL AND patient_id IS NULL)
+    ),
+    FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_room_id) REFERENCES rooms(room_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES messages(message_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_checkpoint_id) REFERENCES room_checkpoints(checkpoint_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_report_id) REFERENCES room_reports(report_id) ON DELETE SET NULL,
+    FOREIGN KEY (supersedes_entry_id) REFERENCES chart_entries(entry_id) ON DELETE SET NULL,
+    FOREIGN KEY (superseded_by_entry_id) REFERENCES chart_entries(entry_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chart_entries_patient
+    ON chart_entries(patient_id, status, priority DESC, entry_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chart_entries_room
+    ON chart_entries(room_id, status, priority DESC, entry_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chart_entries_source_session
+    ON chart_entries(source_session_id, entry_id DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -304,12 +357,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 7
 
+    if version < 8:
+        conn.executescript(SCHEMA_V8)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("8",),
+        )
+        conn.commit()
+        version = 8
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -1304,6 +1366,365 @@ def room_reports_list(
     return [normalize_room_report(row) for row in rows]
 
 
+def normalize_chart_entry(row: sqlite3.Row) -> dict:
+    return {
+        "id": str(row["entry_id"]),
+        "scope": str(row["scope_type"]),
+        "patientId": str(row["patient_id"] or ""),
+        "roomId": str(row["room_id"] or ""),
+        "kind": str(row["entry_kind"] or "NOTE"),
+        "title": str(row["title"] or ""),
+        "body": str(row["body_md"] or ""),
+        "priority": int(row["priority"] or 0),
+        "status": str(row["status"] or "ACTIVE"),
+        "authorRole": str(row["author_role"] or ""),
+        "authorId": str(row["author_id"] or ""),
+        "sourceType": str(row["source_type"] or "MANUAL"),
+        "sourceRef": str(row["source_ref"] or ""),
+        "sourceRoomId": str(row["source_room_id"] or ""),
+        "sourceSessionId": str(row["source_session_id"] or ""),
+        "sourceMessageId": (
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else ""
+        ),
+        "sourceCheckpointId": (
+            str(row["source_checkpoint_id"])
+            if row["source_checkpoint_id"] is not None
+            else ""
+        ),
+        "sourceReportId": (
+            str(row["source_report_id"])
+            if row["source_report_id"] is not None
+            else ""
+        ),
+        "supersedesId": (
+            str(row["supersedes_entry_id"])
+            if row["supersedes_entry_id"] is not None
+            else ""
+        ),
+        "supersededById": (
+            str(row["superseded_by_entry_id"])
+            if row["superseded_by_entry_id"] is not None
+            else ""
+        ),
+        "createdAt": str(row["created_at"] or ""),
+        "updatedAt": str(row["updated_at"] or ""),
+    }
+
+
+def chart_scope_target(conn: sqlite3.Connection, args) -> tuple[str, str]:
+    scope = str(args.scope or "").strip().upper()
+
+    if scope == "PATIENT":
+        patient_id = str(args.patient_id or "").strip()
+        if not patient_id:
+            raise RuntimeError(
+                "Patient Chart entry requires --patient-id"
+            )
+        exists = conn.execute(
+            "SELECT 1 FROM patients WHERE patient_id = ?",
+            (patient_id,),
+        ).fetchone()
+        if exists is None:
+            raise RuntimeError(
+                f"unknown Hospital patient: {patient_id}"
+            )
+        return patient_id, ""
+
+    if scope == "ROOM":
+        room_id = str(args.room_id or "").strip()
+        if not room_id:
+            raise RuntimeError(
+                "Room Chart entry requires --room-id"
+            )
+        exists = conn.execute(
+            "SELECT 1 FROM rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if exists is None:
+            raise RuntimeError(
+                f"unknown Hospital room: {room_id}"
+            )
+        return "", room_id
+
+    raise RuntimeError(
+        "Hospital Chart scope must be PATIENT or ROOM"
+    )
+
+
+def validate_chart_provenance(conn: sqlite3.Connection, args) -> None:
+    source_room_id = str(args.source_room_id or "").strip()
+    source_session_id = str(args.source_session_id or "").strip()
+
+    if source_room_id:
+        row = conn.execute(
+            "SELECT 1 FROM rooms WHERE room_id = ?",
+            (source_room_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"unknown Hospital source Room: {source_room_id}"
+            )
+
+    if source_session_id:
+        row = conn.execute(
+            "SELECT room_id FROM sessions WHERE session_id = ?",
+            (source_session_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"unknown Hospital source session: {source_session_id}"
+            )
+        if source_room_id and str(row["room_id"]) != source_room_id:
+            raise RuntimeError(
+                "Hospital Chart source session belongs to another Room"
+            )
+
+    for value, table, key, label in (
+        (
+            args.source_message_id,
+            "messages",
+            "message_id",
+            "message",
+        ),
+        (
+            args.source_checkpoint_id,
+            "room_checkpoints",
+            "checkpoint_id",
+            "checkpoint",
+        ),
+        (
+            args.source_report_id,
+            "room_reports",
+            "report_id",
+            "Room Report",
+        ),
+    ):
+        if value is None:
+            continue
+        row = conn.execute(
+            f"SELECT room_id, session_id FROM {table} WHERE {key} = ?",
+            (value,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"unknown Hospital source {label}: {value}"
+            )
+        if source_room_id and str(row["room_id"] or "") != source_room_id:
+            raise RuntimeError(
+                f"Hospital Chart source {label} belongs to another Room"
+            )
+        if (
+            source_session_id
+            and str(row["session_id"] or "") != source_session_id
+        ):
+            raise RuntimeError(
+                f"Hospital Chart source {label} belongs to another session"
+            )
+
+
+def chart_entry_record(
+    conn: sqlite3.Connection,
+    entry_id: int,
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM chart_entries WHERE entry_id = ?",
+        (entry_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Chart entry: {entry_id}"
+        )
+    return normalize_chart_entry(row)
+
+
+def chart_entry_add(conn: sqlite3.Connection, args) -> dict:
+    scope = str(args.scope or "").strip().upper()
+    patient_id, room_id = chart_scope_target(conn, args)
+    validate_chart_provenance(conn, args)
+
+    if args.body_stdin:
+        body = sys.stdin.read()
+    else:
+        body = args.body or ""
+
+    if not body.strip():
+        raise RuntimeError("Hospital Chart entry body is empty")
+
+    priority = int(args.priority)
+    if priority < 0 or priority > 100:
+        raise RuntimeError(
+            "Hospital Chart priority must be between 0 and 100"
+        )
+
+    supersedes_id = args.supersedes_id
+    if supersedes_id is not None:
+        previous = conn.execute(
+            "SELECT * FROM chart_entries WHERE entry_id = ?",
+            (supersedes_id,),
+        ).fetchone()
+        if previous is None:
+            raise RuntimeError(
+                f"unknown Hospital Chart entry: {supersedes_id}"
+            )
+        if str(previous["status"]) != "ACTIVE":
+            raise RuntimeError(
+                "Hospital Chart can only supersede an ACTIVE entry"
+            )
+        if str(previous["scope_type"]) != scope:
+            raise RuntimeError(
+                "Hospital Chart supersession must stay in the same scope"
+            )
+        if (
+            scope == "PATIENT"
+            and str(previous["patient_id"] or "") != patient_id
+        ):
+            raise RuntimeError(
+                "Hospital Patient Chart supersession targets another patient"
+            )
+        if (
+            scope == "ROOM"
+            and str(previous["room_id"] or "") != room_id
+        ):
+            raise RuntimeError(
+                "Hospital Room Chart supersession targets another Room"
+            )
+
+    cur = conn.execute(
+        """
+        INSERT INTO chart_entries(
+            scope_type, patient_id, room_id, entry_kind, title, body_md,
+            priority, status, author_role, author_id, source_type,
+            source_ref, source_room_id, source_session_id,
+            source_message_id, source_checkpoint_id, source_report_id,
+            supersedes_entry_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            scope,
+            patient_id or None,
+            room_id or None,
+            str(args.entry_kind or "NOTE").strip().upper() or "NOTE",
+            args.title or "",
+            body,
+            priority,
+            args.author_role or "",
+            args.author_id or "",
+            str(args.source_type or "MANUAL").strip().upper() or "MANUAL",
+            args.source_ref or "",
+            args.source_room_id or None,
+            args.source_session_id or None,
+            args.source_message_id,
+            args.source_checkpoint_id,
+            args.source_report_id,
+            supersedes_id,
+        ),
+    )
+    new_id = int(cur.lastrowid)
+
+    if supersedes_id is not None:
+        conn.execute(
+            """
+            UPDATE chart_entries
+            SET
+                status = 'SUPERSEDED',
+                superseded_by_entry_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE entry_id = ?
+            """,
+            (new_id, supersedes_id),
+        )
+
+    if patient_id:
+        conn.execute(
+            "UPDATE patients SET updated_at = CURRENT_TIMESTAMP WHERE patient_id = ?",
+            (patient_id,),
+        )
+    if room_id:
+        conn.execute(
+            "UPDATE rooms SET updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
+            (room_id,),
+        )
+
+    conn.commit()
+    return chart_entry_record(conn, new_id)
+
+
+def chart_entry_status(conn: sqlite3.Connection, args) -> dict:
+    row = conn.execute(
+        "SELECT * FROM chart_entries WHERE entry_id = ?",
+        (args.entry_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Chart entry: {args.entry_id}"
+        )
+
+    requested = str(args.status or "").strip().upper()
+    current = str(row["status"] or "ACTIVE")
+
+    if current == "SUPERSEDED":
+        raise RuntimeError(
+            "Hospital Chart superseded history is immutable"
+        )
+    if requested == "SUPERSEDED":
+        raise RuntimeError(
+            "Hospital Chart SUPERSEDED status requires --supersedes-id"
+        )
+
+    conn.execute(
+        """
+        UPDATE chart_entries
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE entry_id = ?
+        """,
+        (requested, args.entry_id),
+    )
+    conn.commit()
+    return chart_entry_record(conn, args.entry_id)
+
+
+def chart_entries_list(conn: sqlite3.Connection, args) -> list:
+    scope = str(args.scope or "").strip().upper()
+    patient_id, room_id = chart_scope_target(conn, args)
+    status = str(args.status or "ACTIVE").strip().upper()
+
+    if args.limit < 1 or args.limit > 500:
+        raise RuntimeError(
+            "Hospital Chart entry limit must be between 1 and 500"
+        )
+
+    clauses = ["scope_type = ?"]
+    values: list = [scope]
+
+    if scope == "PATIENT":
+        clauses.append("patient_id = ?")
+        values.append(patient_id)
+    else:
+        clauses.append("room_id = ?")
+        values.append(room_id)
+
+    if status != "ALL":
+        clauses.append("status = ?")
+        values.append(status)
+
+    if args.entry_kind:
+        clauses.append("entry_kind = ?")
+        values.append(str(args.entry_kind).strip().upper())
+
+    query = (
+        "SELECT * FROM chart_entries WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY priority DESC, entry_id DESC LIMIT ?"
+    )
+    values.append(args.limit)
+
+    rows = conn.execute(query, tuple(values)).fetchall()
+    return [normalize_chart_entry(row) for row in rows]
+
+
 def sessions_list(conn: sqlite3.Connection, room_id: str | None) -> list:
     if room_id:
         rows = conn.execute(
@@ -1559,6 +1980,67 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--before-id", type=int)
     events.add_argument("--json", action="store_true")
 
+    chart_add = sub.add_parser("chart-entry-add")
+    chart_add.add_argument(
+        "--scope",
+        required=True,
+        choices=("PATIENT", "ROOM", "patient", "room"),
+    )
+    chart_add.add_argument("--patient-id", default="")
+    chart_add.add_argument("--room-id", default="")
+    chart_add.add_argument("--entry-kind", default="NOTE")
+    chart_add.add_argument("--title", default="")
+    chart_add.add_argument("--priority", type=int, default=50)
+    chart_add.add_argument("--author-role", default="")
+    chart_add.add_argument("--author-id", default="")
+    chart_add.add_argument("--source-type", default="MANUAL")
+    chart_add.add_argument("--source-ref", default="")
+    chart_add.add_argument("--source-room-id", default="")
+    chart_add.add_argument("--source-session-id", default="")
+    chart_add.add_argument("--source-message-id", type=int)
+    chart_add.add_argument("--source-checkpoint-id", type=int)
+    chart_add.add_argument("--source-report-id", type=int)
+    chart_add.add_argument("--supersedes-id", type=int)
+    chart_body = chart_add.add_mutually_exclusive_group(required=True)
+    chart_body.add_argument("--body")
+    chart_body.add_argument("--body-stdin", action="store_true")
+    chart_add.add_argument("--json", action="store_true")
+
+    chart_get = sub.add_parser("chart-entry")
+    chart_get.add_argument("entry_id", type=int)
+    chart_get.add_argument("--json", action="store_true")
+
+    chart_status = sub.add_parser("chart-entry-status")
+    chart_status.add_argument("entry_id", type=int)
+    chart_status.add_argument(
+        "status",
+        choices=(
+            "ACTIVE", "RESOLVED", "ARCHIVED",
+            "active", "resolved", "archived",
+        ),
+    )
+    chart_status.add_argument("--json", action="store_true")
+
+    chart_list = sub.add_parser("chart-entries")
+    chart_list.add_argument(
+        "--scope",
+        required=True,
+        choices=("PATIENT", "ROOM", "patient", "room"),
+    )
+    chart_list.add_argument("--patient-id", default="")
+    chart_list.add_argument("--room-id", default="")
+    chart_list.add_argument("--entry-kind", default="")
+    chart_list.add_argument(
+        "--status",
+        default="ACTIVE",
+        choices=(
+            "ACTIVE", "SUPERSEDED", "RESOLVED", "ARCHIVED", "ALL",
+            "active", "superseded", "resolved", "archived", "all",
+        ),
+    )
+    chart_list.add_argument("--limit", type=int, default=100)
+    chart_list.add_argument("--json", action="store_true")
+
     room_report = sub.add_parser("room-report-append")
     room_report.add_argument("--room-id", required=True)
     room_report.add_argument("--session-id", default="")
@@ -1700,6 +2182,17 @@ def main() -> int:
                     ),
                     args.json,
                 )
+            elif args.command == "chart-entry-add":
+                emit_data(chart_entry_add(conn, args), args.json)
+            elif args.command == "chart-entry":
+                emit_data(
+                    chart_entry_record(conn, args.entry_id),
+                    args.json,
+                )
+            elif args.command == "chart-entry-status":
+                emit_data(chart_entry_status(conn, args), args.json)
+            elif args.command == "chart-entries":
+                emit_data(chart_entries_list(conn, args), args.json)
             elif args.command == "room-report-append":
                 emit_data(room_report_append(conn, args), args.json)
             elif args.command == "room-report":
