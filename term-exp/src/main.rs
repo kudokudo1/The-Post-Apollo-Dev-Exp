@@ -228,10 +228,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let px_path = resolve_px_path();
     let actions: ActionRegistry = load_json(&px_path, &["actions", "--json"])?;
     let tools: ToolRegistry = load_json(&px_path, &["tools", "--json"])?;
+    let repositories: RepositoryRegistry = load_json(&px_path, &["repos", "--json"])?;
 
     let model = Model {
         actions,
         tools,
+        repositories: repositories.repositories,
         px_path,
     };
 
