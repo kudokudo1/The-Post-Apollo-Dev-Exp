@@ -305,10 +305,7 @@ fn handle_key(
                     if let Some(item) = results.get(app.search_selected) {
                         match item.kind {
                             SearchKind::Action => {
-                                app.status = Some(format!(
-                                    "Selected action {} — action execution is the next lane",
-                                    item.key
-                                ));
+                                begin_or_run_action(app, model, &item.key);
                             }
                             SearchKind::Tool => {
                                 launch_specialist(guard, app, model, &item.key)?;
@@ -330,6 +327,75 @@ fn handle_key(
                 _ => {}
             }
         }
+
+        Mode::ActionPrompt => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                app.back_to_search();
+                return Ok(());
+            };
+
+            match key.code {
+                KeyCode::Esc => app.back_to_search(),
+                KeyCode::Backspace => {
+                    app.prompt_buffer.pop();
+                    app.status = None;
+                }
+                KeyCode::Enter => {
+                    if let Some(argument) = action.arguments.get(app.prompt_index) {
+                        let value = app.prompt_buffer.trim().to_owned();
+
+                        if argument.required && value.is_empty() {
+                            app.status = Some(format!("{} is required", argument.name));
+                            return Ok(());
+                        }
+
+                        if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
+                            *slot = value;
+                        }
+
+                        if app.prompt_index + 1 < action.arguments.len() {
+                            app.prompt_index += 1;
+                            app.prompt_buffer.clear();
+                            app.status = None;
+                        } else {
+                            let values = app.prompt_values.clone();
+                            run_read_action(app, model, action, &values);
+                        }
+                    }
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.prompt_buffer.push(character);
+                    app.status = None;
+                }
+                _ => {}
+            }
+        }
+
+        Mode::Output => match key.code {
+            KeyCode::Esc => app.back_to_search(),
+            KeyCode::Char('q') => app.home(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.output_scroll = app.output_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.output_scroll = app.output_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                app.output_scroll = app.output_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                app.output_scroll = app.output_scroll.saturating_sub(10)
+            }
+            _ => {}
+        },
     }
 
     Ok(())
