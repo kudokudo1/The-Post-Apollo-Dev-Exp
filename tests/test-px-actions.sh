@@ -28,7 +28,7 @@ jq -e '
       and ((.choices // []) | type == "array")
     )
     and (.mutation | IN("read", "local", "remote", "external"))
-    and ((.executionPolicy // "") | IN("", "px-guarded"))
+    and ((.executionPolicy // "") | IN("", "px-guarded", "px-self-journaled"))
     and (.recovery | IN("NONE", "EVIDENCE_ONLY", "REF_RECOVERABLE", "CONTENT_RECOVERABLE"))
     and (.requires | type == "array")
     and (.keywords | type == "array")
@@ -52,6 +52,7 @@ jq -e '
   and any(.actions[]; .id == "px.operations.list")
   and any(.actions[]; .id == "px.operation.view")
   and any(.actions[]; .id == "px.operation.recovery")
+  and any(.actions[]; .id == "px.operation.recover.execute")
 ' <<<"$registry" >/dev/null
 
 
@@ -106,6 +107,26 @@ guarded_mutation_contract="$(jq -c '
   }
 ' <<<"$registry")"
 [[ "$guarded_mutation_contract" == '{"ids":["ai.quick.checklist","ai.quick.continue","ai.quick.next","ai.quick.report","ai.turn","github.run.cancel","github.run.rerun","github.workflow.run","workflow.create","workflow.delete"],"invalid":[]}' ]]
+
+self_journaled_contract="$(jq -c '
+  {
+    ids: (
+      [
+        .actions[]
+        | select((.executionPolicy // "") == "px-self-journaled")
+        | .id
+      ]
+      | sort
+    ),
+    invalid: [
+      .actions[]
+      | select((.executionPolicy // "") == "px-self-journaled")
+      | select(.mutation != "remote" or .recovery != "EVIDENCE_ONLY")
+      | .id
+    ]
+  }
+' <<<"$registry")"
+[[ "$self_journaled_contract" == '{"ids":["px.operation.recover.execute"],"invalid":[]}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
