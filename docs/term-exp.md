@@ -119,7 +119,14 @@ Selectors are searchable. Optional known values include a deliberate
 `(default / none)` entry so converting a field into a selector never makes an
 optional argument mandatory.
 
-Dependencies remain contextual. Examples include:
+Dependencies remain contextual, but TERM EXP no longer infers them from argument kinds.
+Each argument can declare a `dependsOn` role map in the PX action registry. The
+map points semantic resolver roles such as `repository`, `room`, and
+`reference` at earlier argument names. This keeps dependency order and identity
+in PX metadata instead of Rust UI code, and lets two commit arguments depend on
+different branch arguments without ambiguity.
+
+Examples include:
 
 ```text
 repository -> workflow
