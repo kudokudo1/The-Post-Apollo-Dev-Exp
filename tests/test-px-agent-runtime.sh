@@ -521,6 +521,74 @@ assert (
 assert continue_result["result"]["session"]["status"] == "WAITING", continue_result
 PY
 
+
+stream_turn_out="$TMP/stream-turn.json"
+stream_turn_err="$TMP/stream-turn.err"
+(
+    printf '%s' 'STREAM_TURN' | \
+        "$ROOT/bin/px" agent turn session-t6-agent \
+            --prompt-stdin \
+            --timeout 30 \
+            --json
+) >"$stream_turn_out" 2>"$stream_turn_err" &
+stream_turn_pid=$!
+
+stream_seen=false
+for _ in $(seq 1 120); do
+    stream_status_json="$("$ROOT/bin/px" agent status session-t6-agent --json)"
+    if python3 - "$stream_status_json" <<'PY'
+import json
+import sys
+
+status = json.loads(sys.argv[1])
+activity = status.get("lastActivity") or {}
+raise SystemExit(
+    0
+    if (
+        status.get("operating") is True
+        and "MOCK: STREAM_TURN" in str(activity.get("text") or "")
+    )
+    else 1
+)
+PY
+    then
+        stream_seen=true
+        break
+    fi
+    sleep 0.05
+done
+
+if [[ "$stream_seen" != true ]]; then
+    printf 'provider stream activity never became visible before completion\n' >&2
+    kill "$stream_turn_pid" 2>/dev/null || true
+    wait "$stream_turn_pid" 2>/dev/null || true
+    exit 1
+fi
+
+wait "$stream_turn_pid"
+stream_result_json="$(cat "$stream_turn_out")"
+stream_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 500 --json)"
+
+python3 - "$stream_result_json" "$stream_events_json" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+events = json.loads(sys.argv[2])
+
+assert result["assistant"] == "MOCK: STREAM_TURN", result
+stream_events = [
+    row for row in events
+    if row["type"] == "provider.stream"
+]
+assert stream_events, events
+assert any(
+    "MOCK: STREAM_TURN"
+    in str((row.get("payload") or {}).get("text") or "")
+    for row in stream_events
+), stream_events
+PY
+
 set +e
 mismatch_output="$(printf '%s' 'FORCE_SESSION_MISMATCH' |     "$ROOT/bin/px" agent turn session-t6-agent         --prompt-stdin         --timeout 30         --json 2>&1)"
 mismatch_status=$?

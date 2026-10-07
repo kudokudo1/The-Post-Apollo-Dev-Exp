@@ -84,4 +84,6 @@ events = [
 ]
 
 for event in events:
-    print(json.dumps(event, sort_keys=True))
+    print(json.dumps(event, sort_keys=True), flush=True)
+    if "STREAM_TURN" in operator_prompt and event["type"] == "text":
+        time.sleep(1.5)

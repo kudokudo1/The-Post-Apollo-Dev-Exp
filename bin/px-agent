@@ -5,6 +5,7 @@ import os
 import signal
 import time
 import re
+import selectors
 import shutil
 import subprocess
 import sys
@@ -365,6 +366,181 @@ def store_event(session_id: str, event_type: str, payload: dict) -> None:
     )
 
 
+
+def stream_activity_preview(value: str, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    candidate = lines[-1] if lines else text
+
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        payload = None
+
+    if isinstance(payload, dict):
+        for key in ("text", "message", "content", "status", "name"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                candidate = value.strip()
+                break
+        else:
+            event_type = str(payload.get("type") or "").strip()
+            subtype = str(payload.get("subtype") or "").strip()
+            candidate = " // ".join(
+                part for part in (event_type, subtype) if part
+            ) or candidate
+
+    if len(candidate) > limit:
+        candidate = candidate[-limit:]
+    return candidate
+
+
+def latest_provider_activity(session_id: str) -> dict:
+    events = px_hospital(
+        "events",
+        session_id,
+        "--limit",
+        "80",
+    )
+
+    for row in reversed(events):
+        event_type = str(row.get("type") or "")
+        payload = row.get("payload") or {}
+
+        if event_type == "provider.stream":
+            text = stream_activity_preview(payload.get("text") or "")
+            if text:
+                return {
+                    "eventId": str(row.get("id") or ""),
+                    "type": event_type,
+                    "stream": str(payload.get("stream") or ""),
+                    "text": text,
+                    "createdAt": str(row.get("createdAt") or ""),
+                    "sequence": int(payload.get("sequence") or 0),
+                }
+
+        if event_type in (
+            "turn.started",
+            "turn.failed",
+            "turn.cancelled",
+            "turn.completed",
+        ):
+            label = event_type.replace("turn.", "").upper()
+            return {
+                "eventId": str(row.get("id") or ""),
+                "type": event_type,
+                "stream": "",
+                "text": label,
+                "createdAt": str(row.get("createdAt") or ""),
+                "sequence": 0,
+            }
+
+    return {}
+
+
+def communicate_with_activity(
+    proc: subprocess.Popen,
+    provider_input: str,
+    timeout: int,
+    session_id: str,
+) -> tuple[str, str]:
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+    buffers = {
+        "stdout": stdout_buffer,
+        "stderr": stderr_buffer,
+    }
+
+    try:
+        if proc.stdin is not None:
+            proc.stdin.write(provider_input)
+            proc.stdin.flush()
+    except BrokenPipeError:
+        pass
+    finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    selector = selectors.DefaultSelector()
+    for name, pipe in (
+        ("stdout", proc.stdout),
+        ("stderr", proc.stderr),
+    ):
+        if pipe is None:
+            continue
+        fd = pipe.fileno()
+        os.set_blocking(fd, False)
+        selector.register(fd, selectors.EVENT_READ, data=name)
+
+    deadline = time.monotonic() + max(1, int(timeout))
+    sequence = 0
+
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(
+                    proc.args,
+                    timeout,
+                    output=stdout_buffer.decode(
+                        "utf-8",
+                        errors="replace",
+                    ),
+                    stderr=stderr_buffer.decode(
+                        "utf-8",
+                        errors="replace",
+                    ),
+                )
+
+            ready = selector.select(timeout=min(0.25, remaining))
+            if not ready:
+                continue
+
+            for key, _ in ready:
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+
+                if not chunk:
+                    selector.unregister(key.fd)
+                    continue
+
+                stream_name = str(key.data)
+                buffers[stream_name].extend(chunk)
+
+                preview = stream_activity_preview(
+                    chunk.decode("utf-8", errors="replace")
+                )
+                if preview:
+                    sequence += 1
+                    store_event(
+                        session_id,
+                        "provider.stream",
+                        {
+                            "stream": stream_name,
+                            "text": preview,
+                            "sequence": sequence,
+                            "byteCount": len(chunk),
+                        },
+                    )
+
+        remaining = max(0.05, deadline - time.monotonic())
+        proc.wait(timeout=remaining)
+    finally:
+        selector.close()
+
+    return (
+        stdout_buffer.decode("utf-8", errors="replace"),
+        stderr_buffer.decode("utf-8", errors="replace"),
+    )
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -393,6 +569,7 @@ def status_payload(session_id: str) -> dict:
     return {
         "session": session,
         "status": str(session.get("status") or "IDLE"),
+        "lastActivity": latest_provider_activity(session_id),
         "activePid": int(session.get("activePid") or 0),
         "turnStartedAt": str(session.get("turnStartedAt") or ""),
         "elapsedSeconds": elapsed_seconds(
@@ -905,13 +1082,20 @@ def run_turn(args) -> dict:
     )
 
     try:
-        stdout_text, stderr_text = proc.communicate(
-            input=provider_input,
-            timeout=args.timeout,
+        stdout_text, stderr_text = communicate_with_activity(
+            proc,
+            provider_input,
+            args.timeout,
+            args.session_id,
         )
     except subprocess.TimeoutExpired as exc:
         terminate_process_group(proc.pid)
-        stdout_text, stderr_text = proc.communicate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        stdout_text = str(exc.output or "")
+        stderr_text = str(exc.stderr or "")
         px_hospital(
             "session-runtime",
             args.session_id,
