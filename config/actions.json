@@ -182,6 +182,41 @@
       ]
     },
     {
+      "id": "repository.commits.list",
+      "title": "List Repository Commits",
+      "category": "GitHub",
+      "summary": "List recent commits for a repository, optionally scoped to a ref.",
+      "command": [
+        "commits",
+        "{repository}",
+        "{ref?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "ref",
+          "required": false,
+          "kind": "ref"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "commit",
+        "commits",
+        "history",
+        "sha",
+        "ref"
+      ]
+    },
+    {
       "id": "github.runs.list",
       "title": "List Workflow Runs",
       "category": "GitHub",
