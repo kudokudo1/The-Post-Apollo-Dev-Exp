@@ -109,8 +109,15 @@ Mutation handling is deliberately staged:
   optional script-test path, then supplies an explicit `--install` command.
   Execution regenerates the candidate and refuses branch or YAML drift; verification
   requires the created remote file bytes to match the frozen YAML on an advanced base;
-- after guarded remote execution, TERM EXP reports execution success separately
-  from post-operation verification.
+- Message Doctor plus Quick Continue, Report, Checklist, and Next are guarded
+  `external` mutations. PX freezes the persistent session's Room, Doctor, provider,
+  working directory, runtime state, and last durable event; TERM EXP requires the
+  explicit word `EXTERNAL` before execution. Verification requires exactly one new
+  successful Doctor turn, stable session identity, no failed/cancelled turn, and a
+  return to `WAITING`. Quick Report additionally requires exactly one new checkpoint
+  and one Room Report;
+- after any guarded mutation, TERM EXP reports execution success separately from
+  post-operation verification and labels the result with its real mutation class.
 
 Changing UI selection after a preview cannot silently retarget a pending
 mutation because execution uses the frozen command shown in the preview.
