@@ -90,7 +90,7 @@ guarded_remote_contract="$(jq -c '
     ]
   }
 ' <<<"$registry")"
-[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun","github.workflow.run","workflow.delete"],"invalid":[]}' ]]
+[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun","github.workflow.run","workflow.create","workflow.delete"],"invalid":[]}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
@@ -100,6 +100,15 @@ trigger_choices="$(jq -c '
   | .choices
 ' <<<"$registry")"
 [[ "$trigger_choices" == '["manual","push","manual+push"]' ]]
+
+create_script_path="$(jq -c '
+  .actions[]
+  | select(.id == "workflow.create")
+  | .arguments[]
+  | select(.name == "script_path")
+  | {required,kind}
+' <<<"$registry")"
+[[ "$create_script_path" == '{"required":false,"kind":"path"}' ]]
 
 
 jq -e '
