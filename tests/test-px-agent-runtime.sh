@@ -48,7 +48,8 @@ export PX_AGENT_PROVIDER_CONFIG="$TMP/providers.json"
 providers_json="$("$ROOT/bin/px" agent providers --json)"
 created_json="$("$ROOT/bin/px" agent session-create     --room-id T6     --doctor-id doctor-t6     --provider-id mock     --working-directory "$BED"     --session-id session-t6-agent     --json)"
 
-turn_one_json="$(printf '%s' 'first task' |     "$ROOT/bin/px" agent turn session-t6-agent         --prompt-stdin         --timeout 30         --json)"
+turn_one_frame="$(python3 -c 'import json; print(json.dumps({"prompt": "first task\nwith detail"}))')"
+turn_one_json="$(printf '%s\n' "$turn_one_frame" | "$ROOT/bin/px" agent turn session-t6-agent --prompt-json-stdin --timeout 30 --json)"
 
 turn_two_json="$(printf '%s' 'second task' |     "$ROOT/bin/px" agent turn session-t6-agent         --prompt-stdin         --timeout 30         --json)"
 
@@ -89,7 +90,7 @@ assert created["workingDirectory"] == str(bed), created
 assert created["providerSessionId"] == "", created
 assert created["status"] == "IDLE", created
 
-assert turn_one["assistant"] == "MOCK: first task", turn_one
+assert turn_one["assistant"] == "MOCK: first task\nwith detail", turn_one
 assert turn_one["providerSessionId"] == "mock-provider-session", turn_one
 assert turn_two["assistant"] == "MOCK: second task", turn_two
 assert turn_two["providerSessionId"] == "mock-provider-session", turn_two
@@ -107,8 +108,8 @@ assert [row["direction"] for row in messages] == [
     "incoming",
 ], messages
 assert [row["body"] for row in messages] == [
-    "first task",
-    "MOCK: first task",
+    "first task\nwith detail",
+    "MOCK: first task\nwith detail",
     "second task",
     "MOCK: second task",
 ], messages
