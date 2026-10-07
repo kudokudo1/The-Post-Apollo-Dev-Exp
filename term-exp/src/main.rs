@@ -321,6 +321,90 @@ fn handle_key(
     Ok(())
 }
 
+fn is_specialist_tool(name: &str) -> bool {
+    matches!(name, "lazygit" | "nvim" | "btop" | "zellij" | "fzf")
+}
+
+fn resolve_tool(model: &Model, name: &str) -> Result<ResolvedTool, String> {
+    let output = Command::new(&model.px_path)
+        .args(["which", name, "--json"])
+        .output()
+        .map_err(|error| format!("resolver launch failed: {error}"))?;
+
+    let result: ResolveResult = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("resolver returned invalid JSON: {error}"))?;
+
+    if !output.status.success() || result.status != "FOUND" {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("PX could not resolve {name}")
+        } else {
+            detail
+        });
+    }
+
+    result
+        .selected
+        .ok_or_else(|| format!("PX resolved {name} without an execution target"))
+}
+
+fn launch_specialist(
+    guard: &mut TerminalGuard,
+    app: &mut App,
+    model: &Model,
+    name: &str,
+) -> io::Result<()> {
+    if !is_specialist_tool(name) {
+        app.status = Some(format!(
+            "{name} is visible in Find Anything, but direct delegation is not enabled yet"
+        ));
+        return Ok(());
+    }
+
+    let resolved = match resolve_tool(model, name) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            app.status = Some(format!("{name}: {error}"));
+            return Ok(());
+        }
+    };
+
+    let Some((program, args)) = resolved.invocation.split_first() else {
+        app.status = Some(format!("{name}: resolver returned an empty invocation"));
+        return Ok(());
+    };
+
+    guard.suspend()?;
+    let launch_result = Command::new(program).args(args).status();
+    let resume_result = guard.resume();
+
+    if let Err(error) = resume_result {
+        return Err(error);
+    }
+
+    app.status = Some(match launch_result {
+        Ok(status) if status.success() => format!(
+            "{} returned from {}",
+            resolved.name, resolved.environment
+        ),
+        Ok(status) => format!(
+            "{} exited with {} through {}",
+            resolved.name,
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_owned()),
+            resolved.backend
+        ),
+        Err(error) => format!(
+            "{} failed through {}: {}",
+            resolved.name, resolved.backend, error
+        ),
+    });
+
+    Ok(())
+}
+
 fn resolve_px_path() -> PathBuf {
     if let Ok(root) = env::var("PX_RUNTIME_ROOT") {
         let candidate = Path::new(&root).join("bin").join("px");
