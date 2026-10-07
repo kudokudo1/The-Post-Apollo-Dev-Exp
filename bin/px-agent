@@ -1304,6 +1304,14 @@ def provider_prompt_for_turn(
 
 def run_turn(args) -> dict:
     session = px_hospital("session", args.session_id)
+    session_status = str(session.get("status") or "").upper()
+    active_pid = int(session.get("activePid") or 0)
+
+    if session_status == "OPERATING" or active_pid > 0:
+        raise RuntimeError(
+            "Hospital Doctor is already operating in this persistent session"
+        )
+
     provider_id = str(session.get("providerId") or "").strip()
     if not provider_id:
         raise RuntimeError("Hospital session has no provider")
