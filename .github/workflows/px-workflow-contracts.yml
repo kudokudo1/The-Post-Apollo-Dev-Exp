@@ -18,6 +18,7 @@ on:
       - docs/term-exp.md
       - tests/test-px-actions.sh
       - tests/test-px-operation-journal.py
+      - tests/test-px-operation-recovery.sh
       - tests/test-px-mutation-guards.sh
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
@@ -43,6 +44,7 @@ on:
       - docs/term-exp.md
       - tests/test-px-actions.sh
       - tests/test-px-operation-journal.py
+      - tests/test-px-operation-recovery.sh
       - tests/test-px-mutation-guards.sh
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
@@ -69,6 +71,7 @@ jobs:
           bash -n bin/px-term
           python3 -m py_compile bin/px-tools bin/px-resolve bin/px-operation-store
           python3 -m py_compile tests/test-px-operation-journal.py
+          bash -n tests/test-px-operation-recovery.sh
           bash -n tests/test-px-mutation-guards.sh
           bash -n tests/test-px-actions.sh
           bash -n tests/test-px-tools.sh
@@ -85,6 +88,9 @@ jobs:
 
       - name: Test PX operation journal
         run: python3 ./tests/test-px-operation-journal.py
+
+      - name: Test PX workflow recovery executor
+        run: bash ./tests/test-px-operation-recovery.sh
 
       - name: Test guarded PX mutations
         run: bash ./tests/test-px-mutation-guards.sh
