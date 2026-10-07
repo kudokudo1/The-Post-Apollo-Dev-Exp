@@ -12,6 +12,7 @@ status_json="$("$ROOT/bin/px" hospital status --json)"
 
 patient_json="$("$ROOT/bin/px" hospital patient-put patient-taskbars kudokudo1/taskbars-post-apollo --label "TASKBARS" --json)"
 room_json="$("$ROOT/bin/px" hospital room-put T6 --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json)"
+bind_json="$("$ROOT/bin/px" hospital room-bind T7 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --patient-label "TASKBARS" --team T7 --branch feature/desktop-identity --bed-path "$TMP/t7-bed" --doctor-id doctor-t7 --json)"
 session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --doctor-id doctor-t6 --provider-id codex --status IDLE --json)"
 outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
 incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
@@ -26,6 +27,7 @@ python3 - \
     "$PX_HOSPITAL_DATA_DIR" \
     "$patient_json" \
     "$room_json" \
+    "$bind_json" \
     "$session_json" \
     "$outgoing_json" \
     "$incoming_json" \
@@ -43,13 +45,14 @@ status = json.loads(sys.argv[2])
 data_dir = pathlib.Path(sys.argv[3])
 patient = json.loads(sys.argv[4])
 room = json.loads(sys.argv[5])
-session = json.loads(sys.argv[6])
-outgoing = json.loads(sys.argv[7])
-incoming = json.loads(sys.argv[8])
-rooms = json.loads(sys.argv[9])
-sessions = json.loads(sys.argv[10])
-messages = json.loads(sys.argv[11])
-older = json.loads(sys.argv[12])
+bound = json.loads(sys.argv[6])
+session = json.loads(sys.argv[7])
+outgoing = json.loads(sys.argv[8])
+incoming = json.loads(sys.argv[9])
+rooms = json.loads(sys.argv[10])
+sessions = json.loads(sys.argv[11])
+messages = json.loads(sys.argv[12])
+older = json.loads(sys.argv[13])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
@@ -76,6 +79,12 @@ assert room["displayNameInProfile"] == "T6", room
 assert room["nickname"] == "feature/application-audio", room
 assert room["doctorId"] == "doctor-t6", room
 
+assert bound["id"] == "T7", bound
+assert bound["patientId"] == "patient-taskbars", bound
+assert bound["repository"] == "kudokudo1/taskbars-post-apollo", bound
+assert bound["nickname"] == "feature/desktop-identity", bound
+assert bound["bedPath"].endswith("/t7-bed"), bound
+
 assert session["id"] == "session-t6-1", session
 assert session["roomId"] == "T6", session
 assert session["providerId"] == "codex", session
@@ -85,9 +94,10 @@ assert outgoing["body"] == "Inspect Application Audio ownership.", outgoing
 assert incoming["direction"] == "incoming", incoming
 assert incoming["body"] == "I found two remaining presentation bindings.", incoming
 
-assert len(rooms) == 1, rooms
-assert rooms[0]["id"] == "T6", rooms
-assert rooms[0]["lastMessage"] == incoming["body"], rooms
+assert len(rooms) == 2, rooms
+rooms_by_id = {row["id"]: row for row in rooms}
+assert rooms_by_id["T6"]["lastMessage"] == incoming["body"], rooms
+assert rooms_by_id["T7"]["doctorId"] == "doctor-t7", rooms
 
 assert len(sessions) == 1, sessions
 assert sessions[0]["id"] == "session-t6-1", sessions

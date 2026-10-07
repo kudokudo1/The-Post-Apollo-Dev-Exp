@@ -199,6 +199,58 @@ def patient_put(conn: sqlite3.Connection, args) -> dict:
     return dict(row)
 
 
+def room_bind(conn: sqlite3.Connection, args) -> dict:
+    patient_id = (args.patient_id or args.repository).strip()
+    if not patient_id:
+        raise RuntimeError("Hospital room bind requires a patient identity")
+
+    conn.execute(
+        """
+        INSERT INTO patients(patient_id, repository, label)
+        VALUES(?, ?, ?)
+        ON CONFLICT(patient_id) DO UPDATE SET
+            repository = excluded.repository,
+            label = excluded.label,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            patient_id,
+            args.repository,
+            args.patient_label or "",
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO rooms(
+            room_id, patient_id, team, branch, bed_path, doctor_id,
+            current_assignment_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(room_id) DO UPDATE SET
+            patient_id = excluded.patient_id,
+            team = excluded.team,
+            branch = excluded.branch,
+            bed_path = excluded.bed_path,
+            doctor_id = excluded.doctor_id,
+            current_assignment_id = excluded.current_assignment_id,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            args.room_id,
+            patient_id,
+            args.team or "",
+            args.branch or "",
+            args.bed_path or "",
+            args.doctor_id or "",
+            args.assignment_id or "",
+        ),
+    )
+
+    conn.commit()
+    return room_record(conn, args.room_id)
+
+
 def room_put(conn: sqlite3.Connection, args) -> dict:
     conn.execute(
         """
@@ -502,6 +554,18 @@ def build_parser() -> argparse.ArgumentParser:
     patient.add_argument("--label", default="")
     patient.add_argument("--json", action="store_true")
 
+    bind = sub.add_parser("room-bind")
+    bind.add_argument("room_id")
+    bind.add_argument("--repository", required=True)
+    bind.add_argument("--patient-id", default="")
+    bind.add_argument("--patient-label", default="")
+    bind.add_argument("--team", default="")
+    bind.add_argument("--branch", default="")
+    bind.add_argument("--bed-path", default="")
+    bind.add_argument("--doctor-id", default="")
+    bind.add_argument("--assignment-id", default="")
+    bind.add_argument("--json", action="store_true")
+
     room = sub.add_parser("room-put")
     room.add_argument("room_id")
     room.add_argument("--patient-id", default="")
@@ -569,6 +633,8 @@ def main() -> int:
                 emit(database_status(conn), args.json)
             elif args.command == "patient-put":
                 emit_data(patient_put(conn, args), args.json)
+            elif args.command == "room-bind":
+                emit_data(room_bind(conn, args), args.json)
             elif args.command == "room-put":
                 emit_data(room_put(conn, args), args.json)
             elif args.command == "rooms":
