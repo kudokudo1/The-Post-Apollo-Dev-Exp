@@ -361,7 +361,7 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
-    if not provider_id && existing is not None:
+    if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
 
     conn.execute(
@@ -423,7 +423,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
-    if not provider_id && existing is not None:
+    if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
 
     conn.execute(
