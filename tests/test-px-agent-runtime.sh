@@ -644,6 +644,200 @@ assert "different session id" in session["lastError"], session
 PY
 
 
+ORCH_T9_BED="$TMP/t9-bed"
+ORCH_T10_BED="$TMP/t10-bed"
+mkdir -p "$ORCH_T9_BED" "$ORCH_T10_BED"
+
+"$ROOT/bin/px" hospital room-bind T9 \
+    --repository kudokudo1/taskbars-post-apollo \
+    --patient-id patient-taskbars \
+    --patient-label TASKBARS \
+    --team T9 \
+    --branch feature/orch-t9 \
+    --bed-path "$ORCH_T9_BED" \
+    --doctor-id doctor-t9 \
+    --provider-id mock \
+    --json >/dev/null
+
+"$ROOT/bin/px" hospital room-bind T10 \
+    --repository kudokudo1/taskbars-post-apollo \
+    --patient-id patient-taskbars \
+    --patient-label TASKBARS \
+    --team T10 \
+    --branch feature/orch-t10 \
+    --bed-path "$ORCH_T10_BED" \
+    --doctor-id doctor-t10 \
+    --provider-id mock \
+    --json >/dev/null
+
+"$ROOT/bin/px" agent session-create \
+    --room-id T9 \
+    --doctor-id doctor-t9 \
+    --provider-id mock \
+    --working-directory "$ORCH_T9_BED" \
+    --session-id session-t9-orch \
+    --json >/dev/null
+
+"$ROOT/bin/px" agent session-create \
+    --room-id T10 \
+    --doctor-id doctor-t10 \
+    --provider-id mock \
+    --working-directory "$ORCH_T10_BED" \
+    --session-id session-t10-orch \
+    --json >/dev/null
+
+orch_t9_assignment_json="$("$ROOT/bin/px" hospital assignment-create \
+    --room-id T9 \
+    --title "Parallel T9" \
+    --goal "Run T9 isolated orchestration work." \
+    --permissions-json '["READ"]' \
+    --phase IMPLEMENTATION \
+    --json)"
+orch_t9_assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$orch_t9_assignment_json")"
+"$ROOT/bin/px" hospital assignment-status "$orch_t9_assignment_id" READY --json >/dev/null
+
+orch_t10_assignment_json="$("$ROOT/bin/px" hospital assignment-create \
+    --room-id T10 \
+    --title "Parallel T10" \
+    --goal "Run T10 isolated orchestration work." \
+    --permissions-json '["READ"]' \
+    --phase IMPLEMENTATION \
+    --json)"
+orch_t10_assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$orch_t10_assignment_json")"
+"$ROOT/bin/px" hospital assignment-status "$orch_t10_assignment_id" READY --json >/dev/null
+
+orchestrate_json="$("$ROOT/bin/px" agent orchestrate-ready \
+    --timeout 30 \
+    --max-workers 4 \
+    --json)"
+orch_t9_after_json="$("$ROOT/bin/px" hospital assignment "$orch_t9_assignment_id" --json)"
+orch_t10_after_json="$("$ROOT/bin/px" hospital assignment "$orch_t10_assignment_id" --json)"
+orch_t9_room_json="$("$ROOT/bin/px" hospital room T9 --json)"
+orch_t10_room_json="$("$ROOT/bin/px" hospital room T10 --json)"
+orch_t9_session_json="$("$ROOT/bin/px" hospital session session-t9-orch --json)"
+orch_t10_session_json="$("$ROOT/bin/px" hospital session session-t10-orch --json)"
+orch_t9_messages_json="$("$ROOT/bin/px" hospital messages T9 --limit 20 --json)"
+orch_t10_messages_json="$("$ROOT/bin/px" hospital messages T10 --limit 20 --json)"
+
+python3 - \
+    "$orchestrate_json" \
+    "$orch_t9_after_json" \
+    "$orch_t10_after_json" \
+    "$orch_t9_room_json" \
+    "$orch_t10_room_json" \
+    "$orch_t9_session_json" \
+    "$orch_t10_session_json" \
+    "$orch_t9_messages_json" \
+    "$orch_t10_messages_json" \
+    "$orch_t9_assignment_id" \
+    "$orch_t10_assignment_id" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+a9 = json.loads(sys.argv[2])
+a10 = json.loads(sys.argv[3])
+r9 = json.loads(sys.argv[4])
+r10 = json.loads(sys.argv[5])
+s9 = json.loads(sys.argv[6])
+s10 = json.loads(sys.argv[7])
+m9 = json.loads(sys.argv[8])
+m10 = json.loads(sys.argv[9])
+a9_id = sys.argv[10]
+a10_id = sys.argv[11]
+
+assert result["dryRun"] is False, result
+assert result["readyCount"] == 2, result
+assert result["startableCount"] == 2, result
+assert result["failed"] == [], result
+assert result["skipped"] == [], result
+assert result["queued"] == [], result
+assert {row["roomId"] for row in result["started"]} == {"T9", "T10"}, result
+
+assert a9["status"] == "ACTIVE", a9
+assert a10["status"] == "ACTIVE", a10
+assert r9["assignmentId"] == a9_id, r9
+assert r10["assignmentId"] == a10_id, r10
+assert s9["status"] == "WAITING", s9
+assert s10["status"] == "WAITING", s10
+assert s9["providerSessionId"] == "mock-provider-session", s9
+assert s10["providerSessionId"] == "mock-provider-session", s10
+assert any(
+    row["direction"] == "incoming"
+    and row["body"].startswith("MOCK: QUICK // CONTINUE")
+    for row in m9
+), m9
+assert any(
+    row["direction"] == "incoming"
+    and row["body"].startswith("MOCK: QUICK // CONTINUE")
+    for row in m10
+), m10
+PY
+
+COLLISION_BED="$TMP/orch-collision-bed"
+mkdir -p "$COLLISION_BED"
+
+for room in T11 T12; do
+    doctor="doctor-${room,,}"
+    session="session-${room,,}-orch"
+    branch_name="feature/orch-${room,,}"
+    "$ROOT/bin/px" hospital room-bind "$room" \
+        --repository kudokudo1/taskbars-post-apollo \
+        --patient-id patient-taskbars \
+        --patient-label TASKBARS \
+        --team "$room" \
+        --branch "$branch_name" \
+        --bed-path "$COLLISION_BED" \
+        --doctor-id "$doctor" \
+        --provider-id mock \
+        --json >/dev/null
+    "$ROOT/bin/px" agent session-create \
+        --room-id "$room" \
+        --doctor-id "$doctor" \
+        --provider-id mock \
+        --working-directory "$COLLISION_BED" \
+        --session-id "$session" \
+        --json >/dev/null
+done
+
+orch_t11_assignment_json="$("$ROOT/bin/px" hospital assignment-create \
+    --room-id T11 \
+    --title "Collision T11" \
+    --goal "Exercise shared Bed collision detection." \
+    --permissions-json '["READ"]' \
+    --phase IMPLEMENTATION \
+    --json)"
+orch_t11_assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$orch_t11_assignment_json")"
+"$ROOT/bin/px" hospital assignment-status "$orch_t11_assignment_id" READY --json >/dev/null
+
+orch_t12_assignment_json="$("$ROOT/bin/px" hospital assignment-create \
+    --room-id T12 \
+    --title "Collision T12" \
+    --goal "Exercise shared Bed collision detection." \
+    --permissions-json '["READ"]' \
+    --phase IMPLEMENTATION \
+    --json)"
+orch_t12_assignment_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$orch_t12_assignment_json")"
+"$ROOT/bin/px" hospital assignment-status "$orch_t12_assignment_id" READY --json >/dev/null
+
+collision_json="$("$ROOT/bin/px" agent orchestrate-ready --dry-run --json)"
+
+python3 - "$collision_json" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+assert result["dryRun"] is True, result
+assert result["readyCount"] == 2, result
+assert result["startableCount"] == 0, result
+assert result["started"] == [], result
+assert result["failed"] == [], result
+assert result["queued"] == [], result
+assert {row["roomId"] for row in result["skipped"]} == {"T11", "T12"}, result
+assert {row["reason"] for row in result["skipped"]} == {"BED_COLLISION"}, result
+PY
+
+
 cat > "$TMP/providers.json" <<EOF
 {
   "version": 1,
