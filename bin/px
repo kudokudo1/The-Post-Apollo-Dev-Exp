@@ -783,6 +783,78 @@ mutation_verify() {
                     target:$target
                 }'
             ;;
+        workflow.delete)
+            need gh
+
+            local repository_key repo workflow_path ref_value
+            local expected_repo expected_ref expected_ref_head expected_file_sha
+            local current_ref_head current_file_oid
+            local passed="false" summary="" reason="" target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "workflow.delete verification requires repository"
+            [[ -n "$preflight_token" ]] || die "workflow.delete verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            expected_repo="$(jq -r '.repository // ""' <<<"$preflight_token")"
+            expected_ref="$(jq -r '.ref // ""' <<<"$preflight_token")"
+            expected_ref_head="$(jq -r '.refHead // ""' <<<"$preflight_token")"
+            expected_file_sha="$(jq -r '.fileSha // ""' <<<"$preflight_token")"
+
+            [[ "$repo" == "$expected_repo" ]] \
+                || die "workflow delete verification repository changed"
+            [[ -n "$workflow_path" ]] || die "workflow delete verification token has no path"
+            [[ -n "$expected_ref" ]] || die "workflow delete verification token has no ref"
+            [[ -n "$expected_ref_head" ]] || die "workflow delete verification token has no branch HEAD"
+
+            current_ref_head="$(github_branch_head_sha "$repo" "$expected_ref")"
+            current_file_oid="$(github_file_oid_at_ref "$repo" "$expected_ref" "$workflow_path")"
+
+            target="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg ref "$expected_ref" \
+                --arg previousRefHead "$expected_ref_head" \
+                --arg currentRefHead "$current_ref_head" \
+                --arg previousFileSha "$expected_file_sha" \
+                --arg currentFileOid "$current_file_oid" \
+                '{
+                    repository:$repository,
+                    workflowPath:$workflowPath,
+                    ref:$ref,
+                    previousRefHead:$previousRefHead,
+                    currentRefHead:$currentRefHead,
+                    previousFileSha:$previousFileSha,
+                    currentFileOid:$currentFileOid
+                }')"
+
+            if [[ -z "$current_file_oid" && "$current_ref_head" != "$expected_ref_head" ]]; then
+                passed="true"
+                summary="WORKFLOW DELETE VERIFIED // $workflow_path // $expected_ref@${current_ref_head:0:8}"
+            elif [[ -n "$current_file_oid" ]]; then
+                reason="WORKFLOW FILE STILL EXISTS AFTER DELETE"
+                summary="WORKFLOW DELETE VERIFY FAILED // $workflow_path"
+            else
+                reason="WORKFLOW FILE IS ABSENT BUT BRANCH HEAD DID NOT ADVANCE"
+                summary="WORKFLOW DELETE VERIFY FAILED // $workflow_path"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$target" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
         *)
             die "no PX mutation verification policy for action: $action_id"
             ;;
