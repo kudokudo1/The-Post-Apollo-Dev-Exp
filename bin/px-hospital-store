@@ -2327,6 +2327,94 @@ def normalize_assignment(row: sqlite3.Row) -> dict:
     }
 
 
+def assignment_authority(
+    conn: sqlite3.Connection,
+    room_id: str = "",
+    team: str = "",
+    repository: str = "",
+    permission: str = "",
+) -> dict:
+    room_id = str(room_id or "").strip()
+    team = str(team or "").strip()
+    repository = str(repository or "").strip()
+    requested = str(permission or "READ").strip().upper().replace("-", "_")
+
+    if requested not in ASSIGNMENT_PERMISSIONS:
+        raise RuntimeError(
+            "Hospital authority permission must be one of "
+            + ", ".join(ASSIGNMENT_PERMISSIONS)
+        )
+
+    if room_id:
+        row = conn.execute(
+            """
+            SELECT r.room_id, r.team, r.current_assignment_id,
+                   p.repository
+            FROM rooms r
+            LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE r.room_id = ?
+            """,
+            (room_id,),
+        ).fetchone()
+    else:
+        if not team:
+            raise RuntimeError(
+                "Hospital authority requires --room-id or --team"
+            )
+        clauses = ["r.team = ?"]
+        values = [team]
+        if repository:
+            clauses.append("p.repository = ?")
+            values.append(repository)
+        rows = conn.execute(
+            f"""
+            SELECT r.room_id, r.team, r.current_assignment_id,
+                   p.repository
+            FROM rooms r
+            LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.updated_at DESC, r.room_id ASC
+            """,
+            tuple(values),
+        ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError(
+                "Hospital authority target is ambiguous; include repository"
+            )
+        row = rows[0] if rows else None
+
+    if row is None:
+        raise RuntimeError("unknown Hospital authority Room")
+
+    assignment_id = str(row["current_assignment_id"] or "")
+    assignment = {}
+    if assignment_id:
+        candidate = assignment_record(conn, int(assignment_id))
+        if str(candidate.get("status") or "").upper() == "ACTIVE":
+            assignment = candidate
+
+    permissions = (
+        list(assignment.get("permissions") or [])
+        if assignment
+        else ["READ"]
+    )
+    if "READ" not in permissions:
+        permissions.insert(0, "READ")
+
+    allowed = requested in permissions
+    return {
+        "roomId": str(row["room_id"] or ""),
+        "team": str(row["team"] or ""),
+        "repository": str(row["repository"] or ""),
+        "assignmentId": str(assignment.get("id") or ""),
+        "assignmentStatus": str(assignment.get("status") or ""),
+        "permissions": permissions,
+        "permission": requested,
+        "allowed": allowed,
+        "source": "ACTIVE_ASSIGNMENT" if assignment else "READ_ONLY_DEFAULT",
+    }
+
+
 def assignment_record(
     conn: sqlite3.Connection,
     assignment_id: int,
@@ -2756,6 +2844,18 @@ def build_parser() -> argparse.ArgumentParser:
     assignment_create_parser.add_argument("--created-by-id", default="operator")
     assignment_create_parser.add_argument("--json", action="store_true")
 
+    authority_parser = sub.add_parser("assignment-authority")
+    authority_parser.add_argument("--room-id", default="")
+    authority_parser.add_argument("--team", default="")
+    authority_parser.add_argument("--repository", default="")
+    authority_parser.add_argument(
+        "--permission",
+        default="READ",
+        choices=ASSIGNMENT_PERMISSIONS,
+    )
+    authority_parser.add_argument("--require", action="store_true")
+    authority_parser.add_argument("--json", action="store_true")
+
     assignment_get = sub.add_parser("assignment")
     assignment_get.add_argument("assignment_id", type=int)
     assignment_get.add_argument("--json", action="store_true")
@@ -3068,6 +3168,24 @@ def main() -> int:
                 )
             elif args.command == "assignment-create":
                 emit_data(assignment_create(conn, args), args.json)
+            elif args.command == "assignment-authority":
+                authority = assignment_authority(
+                    conn,
+                    args.room_id,
+                    args.team,
+                    args.repository,
+                    args.permission,
+                )
+                if args.require and not authority["allowed"]:
+                    raise RuntimeError(
+                        "HOSPITAL AUTHORITY REFUSED // "
+                        + authority["permission"]
+                        + " NOT GRANTED // ROOM "
+                        + authority["roomId"]
+                        + " // ASSIGNMENT "
+                        + (authority["assignmentId"] or "NONE")
+                    )
+                emit_data(authority, args.json)
             elif args.command == "assignment":
                 emit_data(
                     assignment_record(conn, args.assignment_id),
