@@ -87,6 +87,36 @@ struct Model {
     px_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Mode {
+    Home,
+    Leader,
+    Search,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SearchScope {
+    All,
+    Actions,
+    Category(String),
+    Tools,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SearchKind {
+    Action,
+    Tool,
+}
+
+#[derive(Clone, Debug)]
+struct SearchItem {
+    kind: SearchKind,
+    key: String,
+    title: String,
+    subtitle: String,
+    score: i64,
+}
+
 struct TerminalGuard {
     terminal: PxTerminal,
 }
