@@ -1,5 +1,8 @@
+mod app;
+
+use app::{App, Mode, SearchScope};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -8,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use serde::Deserialize;
@@ -87,6 +90,21 @@ struct Model {
     px_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SearchKind {
+    Action,
+    Tool,
+}
+
+#[derive(Clone, Debug)]
+struct SearchItem {
+    kind: SearchKind,
+    key: String,
+    title: String,
+    subtitle: String,
+    score: i64,
+}
+
 struct TerminalGuard {
     terminal: PxTerminal,
 }
@@ -148,10 +166,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         px_path,
     };
 
+    let mut app = App::new();
     let mut guard = TerminalGuard::enter()?;
 
-    loop {
-        guard.terminal.draw(|frame| draw(frame, &model))?;
+    while !app.should_quit {
+        guard.terminal.draw(|frame| draw(frame, &app, &model))?;
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
@@ -165,15 +184,105 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let ctrl_c =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-
-        if ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-            break;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            app.should_quit = true;
+            continue;
         }
+
+        handle_key(&mut app, key, &model);
     }
 
     Ok(())
+}
+
+fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
+    match &app.mode {
+        Mode::Home => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char(' ') => app.open_leader(),
+            KeyCode::Char('/') => app.open_search(SearchScope::All),
+            _ => {}
+        },
+
+        Mode::Leader => {
+            let entries = leader_entries(model);
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Backspace => app.home(),
+                KeyCode::Char('/') => app.open_search(SearchScope::All),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    App::next(&mut app.leader_selected, entries.len())
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    App::previous(&mut app.leader_selected, entries.len())
+                }
+                KeyCode::Enter => {
+                    if let Some((_, scope, _)) = entries.get(app.leader_selected) {
+                        app.open_search(scope.clone());
+                    }
+                }
+                KeyCode::Char('a') => app.open_search(SearchScope::Actions),
+                KeyCode::Char('t') => app.open_search(SearchScope::Tools),
+                KeyCode::Char('p') => {
+                    app.open_search(SearchScope::Category("PX".to_owned()))
+                }
+                KeyCode::Char('h') => {
+                    app.open_search(SearchScope::Category("Hospital".to_owned()))
+                }
+                KeyCode::Char('i') => {
+                    app.open_search(SearchScope::Category("AI".to_owned()))
+                }
+                KeyCode::Char('g') => {
+                    app.open_search(SearchScope::Category("GitHub".to_owned()))
+                }
+                KeyCode::Char('w') => {
+                    app.open_search(SearchScope::Category("Workflow".to_owned()))
+                }
+                KeyCode::Char('q') => app.should_quit = true,
+                _ => {}
+            }
+        }
+
+        Mode::Search => {
+            let results = search_results(model, &app.search_scope, &app.query);
+
+            match key.code {
+                KeyCode::Esc => app.home(),
+                KeyCode::Backspace => {
+                    app.query.pop();
+                    app.search_selected = 0;
+                }
+                KeyCode::Down => App::next(&mut app.search_selected, results.len()),
+                KeyCode::Up => App::previous(&mut app.search_selected, results.len()),
+                KeyCode::Enter => {
+                    if let Some(item) = results.get(app.search_selected) {
+                        app.status = Some(match item.kind {
+                            SearchKind::Action => format!(
+                                "Selected action {} — execution is the next lane",
+                                item.key
+                            ),
+                            SearchKind::Tool => format!(
+                                "Selected tool {} — delegation is the next lane",
+                                item.key
+                            ),
+                        });
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.query.clear();
+                    app.search_selected = 0;
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.query.push(character);
+                    app.search_selected = 0;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn resolve_px_path() -> PathBuf {
@@ -244,7 +353,190 @@ fn representative_actions(actions: &[Action]) -> Vec<&Action> {
     representatives
 }
 
-fn draw(frame: &mut Frame, model: &Model) {
+fn leader_entries(model: &Model) -> Vec<(char, SearchScope, String)> {
+    let mut entries = vec![
+        ('a', SearchScope::Actions, "All Actions".to_owned()),
+        ('t', SearchScope::Tools, "Tools".to_owned()),
+    ];
+
+    for (key, category) in [
+        ('p', "PX"),
+        ('h', "Hospital"),
+        ('i', "AI"),
+        ('g', "GitHub"),
+        ('w', "Workflow"),
+    ] {
+        if model
+            .actions
+            .actions
+            .iter()
+            .any(|action| action.category.eq_ignore_ascii_case(category))
+        {
+            entries.push((
+                key,
+                SearchScope::Category(category.to_owned()),
+                category.to_owned(),
+            ));
+        }
+    }
+
+    entries
+}
+
+fn preferred_tools(tools: &[Tool]) -> Vec<&Tool> {
+    let mut by_name = BTreeMap::<&str, &Tool>::new();
+
+    for tool in tools {
+        by_name
+            .entry(tool.name.as_str())
+            .and_modify(|current| {
+                if tool_rank(tool) < tool_rank(current) {
+                    *current = tool;
+                }
+            })
+            .or_insert(tool);
+    }
+
+    by_name.into_values().collect()
+}
+
+fn tool_rank(tool: &Tool) -> u8 {
+    match tool.backend.as_str() {
+        "native" => 0,
+        "toolbox" => 1,
+        "distrobox" => 2,
+        _ => 9,
+    }
+}
+
+fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+
+    let allow_actions = !matches!(scope, SearchScope::Tools);
+    let allow_tools = matches!(scope, SearchScope::All | SearchScope::Tools);
+
+    if allow_actions {
+        for action in &model.actions.actions {
+            if let SearchScope::Category(category) = scope {
+                if !action.category.eq_ignore_ascii_case(category) {
+                    continue;
+                }
+            }
+
+            let searchable = format!(
+                "{} {} {} {}",
+                action.id, action.title, action.category, action.summary
+            );
+
+            let score = if query.is_empty() {
+                Some(1000)
+            } else {
+                fuzzy_score(query, &searchable).map(|score| score + 1000)
+            };
+
+            if let Some(score) = score {
+                items.push(SearchItem {
+                    kind: SearchKind::Action,
+                    key: action.id.clone(),
+                    title: action.title.clone(),
+                    subtitle: format!("{} · {}", action.category, action.summary),
+                    score,
+                });
+            }
+        }
+    }
+
+    if allow_tools && !query.is_empty() {
+        for tool in preferred_tools(&model.tools.tools) {
+            let searchable = format!(
+                "{} {} {} {}",
+                tool.name, tool.path, tool.backend, tool.environment
+            );
+
+            if let Some(score) = fuzzy_score(query, &searchable) {
+                items.push(SearchItem {
+                    kind: SearchKind::Tool,
+                    key: tool.name.clone(),
+                    title: tool.name.clone(),
+                    subtitle: format!("{} · {}", tool.environment, tool.path),
+                    score,
+                });
+            }
+        }
+    }
+
+    if matches!(scope, SearchScope::Tools) && query.is_empty() {
+        for tool in preferred_tools(&model.tools.tools).into_iter().take(128) {
+            items.push(SearchItem {
+                kind: SearchKind::Tool,
+                key: tool.name.clone(),
+                title: tool.name.clone(),
+                subtitle: format!("{} · {}", tool.environment, tool.path),
+                score: 0,
+            });
+        }
+    }
+
+    items.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+
+    items.truncate(128);
+    items
+}
+
+fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let query_chars: Vec<char> = query.chars().collect();
+    let mut query_index = 0usize;
+    let mut score = 0i64;
+    let mut last_match = None;
+
+    for (index, character) in candidate.chars().enumerate() {
+        if query_index >= query_chars.len() {
+            break;
+        }
+
+        if character != query_chars[query_index] {
+            continue;
+        }
+
+        score += 20;
+
+        if index == 0 {
+            score += 25;
+        }
+
+        if let Some(previous) = last_match {
+            if index == previous + 1 {
+                score += 30;
+            } else {
+                score -= (index.saturating_sub(previous + 1) as i64).min(10);
+            }
+        }
+
+        last_match = Some(index);
+        query_index += 1;
+    }
+
+    if query_index == query_chars.len() {
+        score -= candidate.chars().count() as i64 / 8;
+        Some(score)
+    } else {
+        None
+    }
+}
+
+fn draw(frame: &mut Frame, app: &App, model: &Model) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(FG)),
@@ -261,8 +553,14 @@ fn draw(frame: &mut Frame, model: &Model) {
         .split(area);
 
     draw_header(frame, rows[0], model);
-    draw_body(frame, rows[1], model);
-    draw_footer(frame, rows[2], model);
+
+    match &app.mode {
+        Mode::Home => draw_body(frame, rows[1], model),
+        Mode::Leader => draw_leader(frame, rows[1], app, model),
+        Mode::Search => draw_search(frame, rows[1], app, model),
+    }
+
+    draw_footer(frame, rows[2], app, model);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
@@ -293,6 +591,24 @@ fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 fn draw_body(frame: &mut Frame, area: Rect, model: &Model) {
+    if area.width < 88 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(9),
+                Constraint::Length(6),
+                Constraint::Length(9),
+                Constraint::Min(8),
+            ])
+            .split(area);
+
+        draw_control_plane(frame, rows[0], model);
+        draw_environments(frame, rows[1], model);
+        draw_categories(frame, rows[2], model);
+        draw_representative_actions(frame, rows[3], model);
+        return;
+    }
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
@@ -341,20 +657,37 @@ fn draw_environments(frame: &mut Frame, area: Rect, model: &Model) {
                 ORANGE
             };
 
-            let mut spans = vec![
-                Span::styled(
-                    format!("{:<30}", environment.id),
-                    Style::default().fg(FG).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:<12}", environment.status),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    format!("{:>6}", environment.tool_count),
-                    Style::default().fg(ORANGE),
-                ),
-            ];
+            let mut spans = if area.width < 60 {
+                vec![
+                    Span::styled(
+                        format!("{}  ", environment.id),
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}  ", environment.status),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::styled(
+                        environment.tool_count.to_string(),
+                        Style::default().fg(ORANGE),
+                    ),
+                ]
+            } else {
+                vec![
+                    Span::styled(
+                        format!("{:<30}", environment.id),
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<12}", environment.status),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::styled(
+                        format!("{:>6}", environment.tool_count),
+                        Style::default().fg(ORANGE),
+                    ),
+                ]
+            };
 
             if !environment.error.is_empty() {
                 spans.push(Span::styled(
@@ -422,7 +755,75 @@ fn draw_representative_actions(frame: &mut Frame, area: Rect, model: &Model) {
     );
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, model: &Model) {
+fn draw_leader(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let entries = leader_entries(model);
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|(key, _, title)| {
+            ListItem::new(format!(" {key}  {title}"))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" SPACE // COMMANDS ", ORANGE))
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().fg(BG).bg(ORANGE));
+
+    let mut state = ListState::default();
+    if !entries.is_empty() {
+        state.select(Some(app.leader_selected.min(entries.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let input = Paragraph::new(format!(" / {}", app.query))
+        .block(panel(" FIND ANYTHING ", CYAN));
+    frame.render_widget(input, rows[0]);
+
+    let results = search_results(model, &app.search_scope, &app.query);
+    let items: Vec<ListItem> = results
+        .iter()
+        .map(|item| {
+            let kind = match item.kind {
+                SearchKind::Action => "ACTION",
+                SearchKind::Tool => "TOOL",
+            };
+            ListItem::new(vec![
+                Line::from(format!("{kind:<8} {}", item.title)),
+                Line::from(format!("  {}", item.subtitle)),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" RESULTS ", MAGENTA))
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().fg(BG).bg(ORANGE));
+
+    let mut state = ListState::default();
+    if !results.is_empty() {
+        state.select(Some(app.search_selected.min(results.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, rows[1], &mut state);
+}
+
+fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let default = match &app.mode {
+        Mode::Home => "SPACE commands   / find anything   q quit",
+        Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
+        Mode::Search => "type to search   Up/Down move   Enter select   Esc back",
+    };
+    let message = app.status.as_deref().unwrap_or(default);
+    let message_color = if app.status.is_some() { ORANGE } else { FG };
+
     let line = Line::from(vec![
         Span::styled(
             " LIVE ",
@@ -433,18 +834,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         Span::styled(
             format!(
-                " action schema v{} · tool schema v{} · loaded {} tool records ",
-                model.actions.version,
-                model.tools.version,
-                model.tools.tools.len()
+                " a{} t{} ",
+                model.actions.actions.len(),
+                model.tools.counts.total
             ),
-            Style::default().fg(FG),
+            Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            "  SPACE + / navigation is the next lane  ",
-            Style::default().fg(ORANGE),
-        ),
-        Span::styled("q / Esc quit", Style::default().fg(CYAN)),
+        Span::styled(message, Style::default().fg(message_color)),
     ]);
 
     frame.render_widget(
@@ -522,5 +918,23 @@ mod tests {
             .collect();
 
         assert_eq!(ids, vec!["first-git", "first-ai"]);
+    }
+
+
+    #[test]
+    fn fuzzy_match_accepts_subsequence() {
+        assert!(fuzzy_score("hosp", "hospital room status").is_some());
+        assert!(fuzzy_score("zzz", "hospital room status").is_none());
+    }
+
+    #[test]
+    fn search_selector_does_not_move_leader_selector() {
+        let mut app = App::new();
+        app.leader_selected = 3;
+        app.open_search(SearchScope::All);
+        App::next(&mut app.search_selected, 5);
+
+        assert_eq!(app.leader_selected, 3);
+        assert_eq!(app.search_selected, 1);
     }
 }
