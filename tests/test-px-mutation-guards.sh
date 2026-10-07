@@ -71,6 +71,10 @@ jq -e '
   and .token == $token
 ' --arg token "$(jq -r '.token' <<<"$preflight")" <<<"$queued" >/dev/null
 
+export GH_RUN_STATE=rerun_attempt2
+cancel_attempt2="$("$ROOT/bin/px" mutation-preflight github.run.cancel "$arguments")"
+[[ "$(jq -r '.token' <<<"$cancel_attempt2")" != "$(jq -r '.token' <<<"$preflight")" ]]
+
 export GH_RUN_STATE=completed_success
 completed="$("$ROOT/bin/px" mutation-preflight github.run.cancel "$arguments")"
 jq -e '
