@@ -720,6 +720,28 @@ fn draw_representative_actions(frame: &mut Frame, area: Rect, model: &Model) {
     );
 }
 
+fn draw_leader(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let entries = leader_entries(model);
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|(key, _, title)| {
+            ListItem::new(format!(" {key}  {title}"))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" SPACE // COMMANDS ", ORANGE))
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().fg(BG).bg(ORANGE));
+
+    let mut state = ListState::default();
+    if !entries.is_empty() {
+        state.select(Some(app.leader_selected.min(entries.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let default = match app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
