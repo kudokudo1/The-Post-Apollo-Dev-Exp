@@ -1219,6 +1219,7 @@ Usage:
   px verify <repo> <team> <base> <expected-base-head> <expected-room-head>
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
+  px delete-workflow <repo> <workflow-path> [ref]
 
 Workflow factory:
   trigger: manual | push | manual+push
@@ -1237,6 +1238,7 @@ Examples:
   px create dev shell-check shell-syntax manual --preview
   px create dev shell-check shell-syntax manual --preview --json
   px create dev shell-check shell-syntax manual --install
+  px delete-workflow dev .github/workflows/old-check.yml
 
 Repo identities may be aliases from config/repos.tsv or explicit owner/name slugs.
 PX create previews by default. --install writes the validated workflow directly
@@ -1369,6 +1371,48 @@ case "$cmd" in
 
     create)
         create_workflow "$@"
+        ;;
+
+    delete-workflow)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        workflow="${2:-}"
+        ref="${3:-}"
+
+        [[ -n "$workflow" ]] || die "workflow path required"
+        workflow="${workflow#./}"
+
+        case "$workflow" in
+            .github/workflows/*.yml|.github/workflows/*.yaml)
+                ;;
+            *)
+                die "workflow delete refused: path must be .github/workflows/*.yml or *.yaml"
+                ;;
+        esac
+
+        [[ "$workflow" != *".."* ]] \
+            || die "workflow delete refused: parent traversal is not allowed"
+
+        [[ -n "$ref" ]] || ref="$(default_branch_for "$repo")"
+        [[ -n "$ref" ]] || die "workflow delete target ref unavailable"
+
+        metadata="$(gh api "repos/$repo/contents/$workflow?ref=$ref")" \
+            || die "workflow not found on $ref: $workflow"
+
+        type="$(printf '%s' "$metadata" | jq -r '.type // empty')"
+        sha="$(printf '%s' "$metadata" | jq -r '.sha // empty')"
+
+        [[ "$type" == "file" ]] \
+            || die "workflow delete refused: target is not a file"
+        [[ -n "$sha" ]] \
+            || die "workflow delete refused: content SHA missing"
+
+        gh api --method DELETE "repos/$repo/contents/$workflow" \
+            -f "message=Delete workflow $workflow" \
+            -f "sha=$sha" \
+            -f "branch=$ref" >/dev/null
+
+        printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
         ;;
 
     help|-h|--help)
