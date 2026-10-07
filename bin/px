@@ -1714,7 +1714,7 @@ Usage:
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
   px mutation-preflight <action-id> <arguments-json>
-  px mutation-verify <action-id> <arguments-json>
+  px mutation-verify <action-id> <arguments-json> [preflight-token]
   px run <repo> <workflow> [ref]
   px watch <repo> <run-id>
   px rerun <repo> <run-id>
