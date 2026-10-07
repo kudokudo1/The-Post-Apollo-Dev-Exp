@@ -1921,6 +1921,10 @@ def build_parser() -> argparse.ArgumentParser:
     room.add_argument("--assignment-id", default="")
     room.add_argument("--json", action="store_true")
 
+    room_get = sub.add_parser("room")
+    room_get.add_argument("room_id")
+    room_get.add_argument("--json", action="store_true")
+
     rooms = sub.add_parser("rooms")
     rooms.add_argument("--json", action="store_true")
 
@@ -2157,6 +2161,8 @@ def main() -> int:
                 emit_data(room_bind(conn, args), args.json)
             elif args.command == "room-put":
                 emit_data(room_put(conn, args), args.json)
+            elif args.command == "room":
+                emit_data(room_record(conn, args.room_id), args.json)
             elif args.command == "rooms":
                 emit_data(rooms_list(conn), args.json)
             elif args.command == "session-put":

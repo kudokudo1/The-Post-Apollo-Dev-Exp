@@ -22,13 +22,19 @@ if not prompt:
     print("empty prompt", file=sys.stderr)
     raise SystemExit(3)
 
-if "FORCE_SESSION_MISMATCH" in prompt:
+separator = "\nOPERATOR TURN\n"
+if separator in prompt:
+    operator_prompt = prompt.rsplit(separator, 1)[1].strip()
+else:
+    operator_prompt = prompt
+
+if "FORCE_SESSION_MISMATCH" in operator_prompt:
     session_id = "different-provider-session"
 
-if "SLOW_TURN" in prompt:
+if "SLOW_TURN" in operator_prompt:
     time.sleep(30)
 
-reply = "MOCK: " + prompt
+reply = "MOCK: " + operator_prompt
 
 events = [
     {
@@ -36,6 +42,16 @@ events = [
         "subtype": "init",
         "session_id": session_id,
         "model": "mock",
+        "hospital_context": (
+            "HOSPITAL LIVE CONTEXT // GENERATED" in prompt
+        ),
+        "patient_chart": "PATIENT CHART // ACTIVE" in prompt,
+        "room_chart": "ROOM CHART // ACTIVE" in prompt,
+        "recent_transcript": "RECENT CANONICAL TRANSCRIPT" in prompt,
+        "supplemental_context": "SUPPLEMENTAL TURN CONTEXT" in prompt,
+        "report_feedback_context": (
+            "REPORT FEEDBACK // ROOM REPORT" in prompt
+        ),
     },
     {
         "type": "text",

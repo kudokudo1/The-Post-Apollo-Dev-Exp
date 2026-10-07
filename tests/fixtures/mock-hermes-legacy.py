@@ -43,5 +43,11 @@ if not prompt:
     print("empty prompt", file=sys.stderr)
     raise SystemExit(3)
 
-print("LEGACY: " + prompt)
+separator = "\nOPERATOR TURN\n"
+if separator in prompt:
+    operator_prompt = prompt.rsplit(separator, 1)[1].strip()
+else:
+    operator_prompt = prompt
+
+print("LEGACY: " + operator_prompt)
 print("session_id: " + session_id, file=sys.stderr)
