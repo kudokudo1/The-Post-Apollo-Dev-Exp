@@ -196,12 +196,16 @@ mutation_preflight() {
                 [[ -n "$conclusion" ]] && reason+=" // ${conclusion^^}"
             fi
 
-            token="$(jq -nc \
+            token="$(jq -c \
                 --arg repository "$repo" \
                 --arg runId "$run_id" \
-                --arg workflow "$workflow" \
-                --arg headSha "$head_sha" \
-                '{repository:$repository,runId:$runId,workflow:$workflow,headSha:$headSha}')"
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
 
             summary="CANCEL // $workflow // #$run_id // ${status^^}"
             [[ -n "$head_branch" ]] && summary+=" // $head_branch"
