@@ -81,7 +81,7 @@ struct RunRecord {
     status: String,
     conclusion: Option<String>,
     #[serde(rename = "headBranch")]
-    head_branch: String,
+    head_branch: Option<String>,
     #[serde(rename = "createdAt")]
     created_at: String,
 }
