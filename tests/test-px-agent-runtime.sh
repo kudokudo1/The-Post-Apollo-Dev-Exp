@@ -74,6 +74,7 @@ turn_two_json="$(printf '%s' 'second task' |     "$ROOT/bin/px" agent turn sessi
 session_json="$("$ROOT/bin/px" hospital session session-t6-agent --json)"
 messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 200 --json)"
+authority_probe_json="$(printf '%s' 'AUTHORITY_PROBE' | "$ROOT/bin/px" agent turn session-t6-agent --prompt-stdin --timeout 30 --json)"
 
 python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$assignment_json"     "$assignment_active_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED"     "$historical_checkpoint_id"     "$historical_report_id" <<'PY'
 import json
@@ -116,6 +117,11 @@ assert created["providerSessionId"] == "", created
 assert created["status"] == "IDLE", created
 
 assert context["version"] == 2, context
+assert context["authority"]["allowed"] == ["READ", "EDIT", "TEST"], context
+assert context["authority"]["denied"] == [
+    "COMMIT", "PUSH", "OPEN_PR", "INTEGRATE"
+], context
+assert context["authority"]["enforcement"] == "COMMAND_GUARD", context
 assert context["session"]["id"] == "session-t6-agent", context
 assert context["room"]["id"] == "T6", context
 assert context["room"]["patientId"] == "patient-taskbars", context
@@ -208,6 +214,27 @@ assert all(row["hospital_context"] is True for row in provider_system), provider
 assert all(row["patient_chart"] is True for row in provider_system), provider_system
 assert all(row["room_chart"] is True for row in provider_system), provider_system
 assert all(row["recent_transcript"] is True for row in provider_system), provider_system
+PY
+
+python3 - "$authority_probe_json" <<'PY'
+import json
+import sys
+
+turn = json.loads(sys.argv[1])
+probe = json.loads(turn["assistant"])
+
+assert probe["authority"] == "COMMAND_GUARD", probe
+assert probe["permissions"] == "READ,EDIT,TEST", probe
+assert probe["denied"] == "COMMIT,PUSH,OPEN_PR,INTEGRATE", probe
+assert probe["git_status"]["returncode"] == 0, probe
+
+for key in ("git_commit", "git_push", "px_integrate"):
+    assert probe[key]["returncode"] == 77, (key, probe)
+    assert "HOSPITAL AUTHORITY REFUSED" in probe[key]["stderr"], (key, probe)
+
+assert "COMMIT REQUIRED" in probe["git_commit"]["stderr"], probe
+assert "PUSH REQUIRED" in probe["git_push"]["stderr"], probe
+assert "INTEGRATE REQUIRED" in probe["px_integrate"]["stderr"], probe
 PY
 
 CANCEL_BED="$TMP/t8-bed"

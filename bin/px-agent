@@ -6,6 +6,7 @@ import signal
 import time
 import re
 import selectors
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,166 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "agent-providers.json"
 PX = ROOT / "bin" / "px"
+
+ASSIGNMENT_PERMISSIONS = (
+    "READ",
+    "EDIT",
+    "TEST",
+    "COMMIT",
+    "PUSH",
+    "OPEN_PR",
+    "INTEGRATE",
+)
+
+
+def normalized_assignment_permissions(assignment: dict) -> list[str]:
+    raw = assignment.get("permissions") if isinstance(assignment, dict) else []
+    source = raw if isinstance(raw, list) else []
+    allowed = []
+
+    for value in source:
+        item = str(value or "").strip().upper().replace("-", "_")
+        if item in ASSIGNMENT_PERMISSIONS and item not in allowed:
+            allowed.append(item)
+
+    if "READ" not in allowed:
+        allowed.insert(0, "READ")
+    return allowed
+
+
+def assignment_authority(assignment: dict) -> dict:
+    allowed = normalized_assignment_permissions(assignment)
+    return {
+        "allowed": allowed,
+        "denied": [
+            value for value in ASSIGNMENT_PERMISSIONS
+            if value not in allowed
+        ],
+        "enforcement": "COMMAND_GUARD",
+    }
+
+
+def authority_guard_dir(session_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_id or "session"))
+    root = Path(
+        os.environ.get(
+            "PX_AGENT_AUTHORITY_DIR",
+            "/tmp/post-apollo-hospital-authority",
+        )
+    ).expanduser()
+    path = root / safe_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_authority_shim(
+    path: Path,
+    target: str,
+    body: str,
+) -> None:
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "permissions=\",${POST_APOLLO_HOSPITAL_PERMISSIONS:-READ},\"\n"
+        "has_permission() { [[ \"$permissions\" == *\",$1,\"* ]]; }\n"
+        "deny_permission() {\n"
+        "  printf 'HOSPITAL AUTHORITY REFUSED // %s REQUIRED // %s\\n' "
+        "\"$1\" \"$2\" >&2\n"
+        "  exit 77\n"
+        "}\n"
+        + body
+        + "\nexec "
+        + shlex.quote(target)
+        + " \"$@\"\n"
+    )
+    path.write_text(script)
+    path.chmod(0o755)
+
+
+def provider_authority_environment(
+    session_id: str,
+    assignment: dict,
+) -> tuple[dict, dict]:
+    policy = assignment_authority(assignment)
+    env = os.environ.copy()
+    allowed = list(policy["allowed"])
+    denied = list(policy["denied"])
+    env["POST_APOLLO_HOSPITAL_AUTHORITY"] = "COMMAND_GUARD"
+    env["POST_APOLLO_HOSPITAL_PERMISSIONS"] = ",".join(allowed)
+    env["POST_APOLLO_HOSPITAL_DENIED"] = ",".join(denied)
+
+    guard_dir = authority_guard_dir(session_id)
+    real_git = shutil.which("git")
+    if real_git:
+        write_authority_shim(
+            guard_dir / "git",
+            real_git,
+            """
+command="${1:-}"
+case "$command" in
+  add|rm|mv|restore|checkout|switch|clean|stash|worktree)
+    has_permission EDIT || deny_permission EDIT "git $command"
+    ;;
+  commit)
+    has_permission COMMIT || deny_permission COMMIT "git commit"
+    ;;
+  push)
+    has_permission PUSH || deny_permission PUSH "git push"
+    ;;
+  merge|rebase|cherry-pick|revert|reset|pull)
+    has_permission INTEGRATE || deny_permission INTEGRATE "git $command"
+    ;;
+esac
+""".strip(),
+        )
+
+    real_gh = shutil.which("gh")
+    if real_gh:
+        write_authority_shim(
+            guard_dir / "gh",
+            real_gh,
+            """
+group="${1:-}"
+action="${2:-}"
+if [[ "$group" == "pr" ]]; then
+  case "$action" in
+    create|edit|close|reopen|ready|review)
+      has_permission OPEN_PR || deny_permission OPEN_PR "gh pr $action"
+      ;;
+    merge)
+      has_permission INTEGRATE || deny_permission INTEGRATE "gh pr merge"
+      ;;
+  esac
+elif [[ "$group" == "repo" && "$action" == "sync" ]]; then
+  has_permission INTEGRATE || deny_permission INTEGRATE "gh repo sync"
+elif [[ "$group" == "api" ]]; then
+  joined=" $* "
+  if [[ "$joined" == *" -X POST "* || "$joined" == *" -X PATCH "* \
+      || "$joined" == *" -X PUT "* || "$joined" == *" -X DELETE "* \
+      || "$joined" == *" --method POST "* || "$joined" == *" --method PATCH "* \
+      || "$joined" == *" --method PUT "* || "$joined" == *" --method DELETE "* ]]; then
+    has_permission INTEGRATE || deny_permission INTEGRATE "gh api mutation"
+  fi
+fi
+""".strip(),
+        )
+
+    write_authority_shim(
+        guard_dir / "px",
+        str(PX),
+        """
+case "${1:-}" in
+  merge|integrate)
+    has_permission INTEGRATE || deny_permission INTEGRATE "px ${1:-}"
+    ;;
+esac
+""".strip(),
+    )
+
+    current_path = env.get("PATH", "")
+    env["PATH"] = str(guard_dir) + (os.pathsep + current_path if current_path else "")
+    policy["guardDir"] = str(guard_dir)
+    return env, policy
 
 
 def provider_config_path() -> Path:
@@ -883,6 +1044,7 @@ def live_context_payload(
             "assignmentId": str(room.get("assignmentId") or ""),
         },
         "assignment": assignment,
+        "authority": assignment_authority(assignment),
         "git": git_evidence,
         "patientChart": patient_chart,
         "roomChart": room_chart,
@@ -917,6 +1079,7 @@ def render_live_context(payload: dict) -> str:
     room = payload.get("room") or {}
     git = payload.get("git") or {}
     assignment = payload.get("assignment") or {}
+    authority = payload.get("authority") or assignment_authority(assignment)
     recent = payload.get("recentMessages") or []
     retrieved = payload.get("retrievedContext") or []
 
@@ -1044,6 +1207,11 @@ def render_live_context(payload: dict) -> str:
     lines.extend([
         "",
         "AUTHORITY",
+        "ENFORCEMENT: " + str(authority.get("enforcement") or "COMMAND_GUARD"),
+        "ALLOWED: " + (", ".join(authority.get("allowed") or []) or "READ"),
+        "DENIED: " + (", ".join(authority.get("denied") or []) or "NONE"),
+        "- Assignment permissions are command guards for recognized Git/GitHub/PX mutations.",
+        "- EDIT and TEST remain supervised capabilities; provider-native file/tool sandboxes are not assumed.",
         "- Supervised operation: stay within the current Room assignment.",
         "- Never treat a saved Chart/Report Git claim as current truth.",
         "- Reacquire live state before consequential Git claims or edits.",
@@ -1063,6 +1231,16 @@ def context_summary(payload: dict) -> dict:
         "assignmentPhase": str(assignment.get("phase") or ""),
         "assignmentPermissions": list(
             assignment.get("permissions") or []
+        ),
+        "authorityAllowed": list(
+            (payload.get("authority") or {}).get("allowed") or []
+        ),
+        "authorityDenied": list(
+            (payload.get("authority") or {}).get("denied") or []
+        ),
+        "authorityEnforcement": str(
+            (payload.get("authority") or {}).get("enforcement")
+            or "COMMAND_GUARD"
         ),
         "patientChartEntryIds": [
             str(row.get("id") or "")
@@ -1171,6 +1349,10 @@ def run_turn(args) -> dict:
     )
     provider_input = provider_prompt
     effective_dialect = dialect
+    provider_env, authority_policy = provider_authority_environment(
+        args.session_id,
+        context.get("assignment") or {},
+    )
 
     if dialect == "hermes-auto":
         command, provider_input, effective_dialect = build_hermes_turn(
@@ -1220,6 +1402,11 @@ def run_turn(args) -> dict:
             "resume": bool(provider_session_id),
             "workingDirectory": str(cwd),
             "contextVersion": CONTEXT_VERSION,
+            "authorityAllowed": list(authority_policy.get("allowed") or []),
+            "authorityDenied": list(authority_policy.get("denied") or []),
+            "authorityEnforcement": str(
+                authority_policy.get("enforcement") or "COMMAND_GUARD"
+            ),
         },
     )
 
@@ -1232,6 +1419,7 @@ def run_turn(args) -> dict:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            env=provider_env,
         )
     except OSError as exc:
         px_hospital(
