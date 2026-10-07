@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "name": "CODEX",
+      "command": "codex",
+      "dialect": "codex-jsonl",
+      "startArgs": ["exec", "--json", "-"],
+      "resumeArgs": ["exec", "resume", "{provider_session_id}", "--json", "-"]
+    },
+    "hermes": {
+      "name": "HERMES",
+      "command": "hermes",
+      "dialect": "hermes-stream-json",
+      "startArgs": ["chat", "--format", "stream-json", "--query-file", "-"],
+      "resumeArgs": ["chat", "--resume", "{provider_session_id}", "--format", "stream-json", "--query-file", "-"]
+    }
+  }
+}
