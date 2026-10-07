@@ -152,8 +152,8 @@ github_run_guard_record() {
 }
 
 mutation_preflight() {
-    local action_id="\${1:-}"
-    local arguments_json="\${2:-}"
+    local action_id="${1:-}"
+    local arguments_json="${2:-}"
 
     [[ -n "$action_id" ]] || die "mutation action id required"
     [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
@@ -190,10 +190,10 @@ mutation_preflight() {
             if [[ -z "$status" ]]; then
                 allowed="false"
                 reason="RUN STATUS IS UNKNOWN"
-            elif [[ "\${status,,}" == "completed" ]]; then
+            elif [[ "${status,,}" == "completed" ]]; then
                 allowed="false"
                 reason="RUN ALREADY COMPLETED"
-                [[ -n "$conclusion" ]] && reason+=" // \${conclusion^^}"
+                [[ -n "$conclusion" ]] && reason+=" // ${conclusion^^}"
             fi
 
             token="$(jq -nc \
@@ -203,9 +203,9 @@ mutation_preflight() {
                 --arg headSha "$head_sha" \
                 '{repository:$repository,runId:$runId,workflow:$workflow,headSha:$headSha}')"
 
-            summary="CANCEL // $workflow // #$run_id // \${status^^}"
+            summary="CANCEL // $workflow // #$run_id // ${status^^}"
             [[ -n "$head_branch" ]] && summary+=" // $head_branch"
-            [[ -n "$head_sha" ]] && summary+=" // \${head_sha:0:8}"
+            [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
 
             jq -n \
                 --arg actionId "$action_id" \
@@ -231,8 +231,8 @@ mutation_preflight() {
 }
 
 mutation_verify() {
-    local action_id="\${1:-}"
-    local arguments_json="\${2:-}"
+    local action_id="${1:-}"
+    local arguments_json="${2:-}"
 
     [[ -n "$action_id" ]] || die "mutation action id required"
     [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
@@ -262,22 +262,22 @@ mutation_verify() {
                 conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
                 workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
 
-                if [[ "\${status,,}" == "completed" ]]; then
+                if [[ "${status,,}" == "completed" ]]; then
                     break
                 fi
 
                 [[ "$attempt" -eq 5 ]] || sleep 1
             done
 
-            if [[ "\${status,,}" == "completed"
-                    && "\${conclusion,,}" == "cancelled" ]]; then
+            if [[ "${status,,}" == "completed"
+                    && "${conclusion,,}" == "cancelled" ]]; then
                 passed="true"
                 summary="CANCEL VERIFIED // $workflow // #$run_id"
-            elif [[ "\${status,,}" == "completed" ]]; then
-                reason="RUN COMPLETED AS \${conclusion^^} BEFORE CANCELLATION WAS VERIFIED"
+            elif [[ "${status,,}" == "completed" ]]; then
+                reason="RUN COMPLETED AS ${conclusion^^} BEFORE CANCELLATION WAS VERIFIED"
                 summary="CANCEL VERIFY FAILED // $workflow // #$run_id"
             else
-                reason="RUN STILL \${status^^} AFTER CANCELLATION REQUEST"
+                reason="RUN STILL ${status^^} AFTER CANCELLATION REQUEST"
                 summary="CANCEL VERIFY PENDING // $workflow // #$run_id"
             fi
 
