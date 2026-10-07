@@ -441,8 +441,6 @@ def cancel_session(args) -> dict:
             "session": session,
         }
 
-    signalled = terminate_process_group(active_pid)
-
     updated = px_hospital(
         "session-runtime",
         args.session_id,
@@ -451,6 +449,9 @@ def cancel_session(args) -> dict:
         "--clear-turn-started",
         "--clear-error",
     )
+
+    signalled = terminate_process_group(active_pid)
+
     store_event(
         args.session_id,
         "turn.cancelled",
