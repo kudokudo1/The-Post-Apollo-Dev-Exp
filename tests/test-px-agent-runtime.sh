@@ -379,6 +379,46 @@ if [[ "$t6_operating" != true ]]; then
 fi
 
 set +e
+turn_guard_output="$(printf '%s' 'SECOND_TURN_MUST_BE_REFUSED' | \
+    "$ROOT/bin/px" agent turn session-t6-agent \
+        --prompt-stdin \
+        --timeout 30 \
+        --json 2>&1)"
+turn_guard_status=$?
+
+quick_guard_output="$("$ROOT/bin/px" agent quick \
+    session-t6-agent CONTINUE --timeout 30 --json 2>&1)"
+quick_guard_status=$?
+set -e
+
+if [[ "$turn_guard_status" -eq 0 || "$quick_guard_status" -eq 0 ]]; then
+    printf 'expected Doctor turn concurrency guards to fail\n' >&2
+    kill "$t6_turn_pid" 2>/dev/null || true
+    wait "$t6_turn_pid" 2>/dev/null || true
+    exit 1
+fi
+
+case "$turn_guard_output" in
+    *"already operating in this persistent session"*) ;;
+    *)
+        printf 'unexpected direct turn guard failure: %s\n' "$turn_guard_output" >&2
+        kill "$t6_turn_pid" 2>/dev/null || true
+        wait "$t6_turn_pid" 2>/dev/null || true
+        exit 1
+        ;;
+esac
+
+case "$quick_guard_output" in
+    *"already operating in this persistent session"*) ;;
+    *)
+        printf 'unexpected quick turn guard failure: %s\n' "$quick_guard_output" >&2
+        kill "$t6_turn_pid" 2>/dev/null || true
+        wait "$t6_turn_pid" 2>/dev/null || true
+        exit 1
+        ;;
+esac
+
+set +e
 feedback_guard_output="$(printf '%s' 'This feedback must be refused while operating.' | \
     "$ROOT/bin/px" agent report-feedback \
         session-t6-agent \
