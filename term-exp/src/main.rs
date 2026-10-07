@@ -936,7 +936,7 @@ fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         Span::styled(
             format!(
-                "  {} actions · {} tools",
+                "  {} actions · {} commands",
                 model.actions.actions.len(),
                 model.tools.counts.total
             ),
@@ -998,7 +998,7 @@ fn draw_body(frame: &mut Frame, area: Rect, model: &Model) {
 fn draw_control_plane(frame: &mut Frame, area: Rect, model: &Model) {
     let lines = vec![
         kv("ACTION REGISTRY", model.actions.actions.len().to_string(), MAGENTA),
-        kv("TOOL REGISTRY", model.tools.counts.total.to_string(), CYAN),
+        kv("COMMAND REGISTRY", model.tools.counts.total.to_string(), CYAN),
         kv("HOST", model.tools.counts.host.to_string(), FG),
         kv("TOOLBOX", model.tools.counts.toolbox.to_string(), FG),
         kv("PX", model.px_path.display().to_string(), ORANGE),
@@ -1158,11 +1158,27 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         .map(|item| {
             let kind = match item.kind {
                 SearchKind::Action => "ACTION",
-                SearchKind::Tool => "TOOL",
+                SearchKind::Tool if is_specialist_tool(&item.key) => "SPECIAL",
+                SearchKind::Tool => "COMMAND",
             };
+            let kind_color = match item.kind {
+                SearchKind::Action => MAGENTA,
+                SearchKind::Tool if is_specialist_tool(&item.key) => ORANGE,
+                SearchKind::Tool => CYAN,
+            };
+
             ListItem::new(vec![
-                Line::from(format!("{kind:<8} {}", item.title)),
-                Line::from(format!("  {}", item.subtitle)),
+                Line::from(vec![
+                    Span::styled(format!("{kind:<8}"), Style::default().fg(kind_color)),
+                    Span::styled(
+                        &item.title,
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("  {}", item.subtitle),
+                    Style::default().fg(Color::DarkGray),
+                )),
             ])
         })
         .collect();
