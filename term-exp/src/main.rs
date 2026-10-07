@@ -657,20 +657,37 @@ fn draw_environments(frame: &mut Frame, area: Rect, model: &Model) {
                 ORANGE
             };
 
-            let mut spans = vec![
-                Span::styled(
-                    format!("{:<30}", environment.id),
-                    Style::default().fg(FG).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:<12}", environment.status),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    format!("{:>6}", environment.tool_count),
-                    Style::default().fg(ORANGE),
-                ),
-            ];
+            let mut spans = if area.width < 60 {
+                vec![
+                    Span::styled(
+                        format!("{}  ", environment.id),
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}  ", environment.status),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::styled(
+                        environment.tool_count.to_string(),
+                        Style::default().fg(ORANGE),
+                    ),
+                ]
+            } else {
+                vec![
+                    Span::styled(
+                        format!("{:<30}", environment.id),
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<12}", environment.status),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::styled(
+                        format!("{:>6}", environment.tool_count),
+                        Style::default().fg(ORANGE),
+                    ),
+                ]
+            };
 
             if !environment.error.is_empty() {
                 spans.push(Span::styled(
