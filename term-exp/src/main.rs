@@ -686,7 +686,7 @@ fn representative_actions(actions: &[Action]) -> Vec<&Action> {
 fn leader_entries(model: &Model) -> Vec<(char, SearchScope, String)> {
     let mut entries = vec![
         ('a', SearchScope::Actions, "All Actions".to_owned()),
-        ('t', SearchScope::Tools, "Tools".to_owned()),
+        ('t', SearchScope::Tools, "Commands".to_owned()),
     ];
 
     for (key, category) in [
