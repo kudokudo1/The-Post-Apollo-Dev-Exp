@@ -77,12 +77,25 @@ Mutation handling is deliberately staged:
 - `read` actions execute immediately after argument resolution;
 - `local` mutations resolve all arguments, freeze the exact PX command, show a
   preview, then require a second confirmation screen and the word `LOCAL`;
-- `remote` and `external` mutations can resolve and preview their exact frozen
-  targets, but execution remains locked until their stronger policy and
-  verification lanes are certified.
+- generic `remote` and `external` mutations can resolve and preview their exact
+  frozen targets but remain execution-locked;
+- Hospital fast-forward integration is the first narrow remote exception:
+  TERM EXP re-runs `px room <repo> <room> prepare`, requires its branch, Room
+  HEAD, base, and base HEAD to match the frozen selection exactly, then asks
+  for the explicit word `REMOTE` before calling the already-guarded
+  `px integrate` contract;
+- after that integration succeeds, TERM EXP automatically calls `px verify`
+  and reports execution success separately from post-operation verification.
 
 Changing UI selection after a preview cannot silently retarget a pending
 mutation because execution uses the frozen command shown in the preview.
+
+Every action also declares a recovery class. `NONE` means the action does not
+need recovery semantics; `EVIDENCE_ONLY` means PX/TERM EXP can preserve and
+verify evidence but must not promise an automatic undo. Stronger classes such
+as `REF_RECOVERABLE` and `CONTENT_RECOVERABLE` are reserved for domain
+operations that actually prove those recovery guarantees. Confirmation and
+recovery are intentionally separate concepts.
 
 ## Known-value arguments
 
