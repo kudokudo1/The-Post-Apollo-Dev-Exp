@@ -9,6 +9,13 @@ export PX_HOSPITAL_DATA_DIR="$TMP/hospital-data"
 BED="$TMP/t6-bed"
 mkdir -p "$BED"
 
+git -C "$BED" init -q
+git -C "$BED" config user.email "hospital-test@example.invalid"
+git -C "$BED" config user.name "Hospital Test"
+printf 'base\n' >"$BED/tracked.txt"
+git -C "$BED" add tracked.txt
+git -C "$BED" commit -qm "baseline"
+
 cat > "$TMP/providers.json" <<EOF
 {
   "version": 1,
@@ -213,17 +220,22 @@ assert any(row["type"] == "turn.cancelled" for row in events), events
 PY
 
 quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
+printf 'change\n' >>"$BED/tracked.txt"
 quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
 quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
+quick_room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
+quick_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 300 --json)"
 
 python3 - \
     "$quick_status_json" \
     "$quick_report_json" \
     "$quick_pause_json" \
     "$quick_continue_json" \
-    "$quick_checkpoints_json" <<'PY'
+    "$quick_checkpoints_json" \
+    "$quick_room_reports_json" \
+    "$quick_events_json" <<'PY'
 import json
 import sys
 
@@ -232,6 +244,8 @@ report = json.loads(sys.argv[2])
 pause = json.loads(sys.argv[3])
 continue_result = json.loads(sys.argv[4])
 checkpoints = json.loads(sys.argv[5])
+room_reports = json.loads(sys.argv[6])
+events = json.loads(sys.argv[7])
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
