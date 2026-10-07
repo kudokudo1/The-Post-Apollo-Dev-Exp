@@ -1362,6 +1362,10 @@ mod tests {
             title: id.to_owned(),
             category: category.to_owned(),
             summary: String::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
         }
     }
 
@@ -1405,6 +1409,57 @@ mod tests {
     fn fuzzy_match_accepts_subsequence() {
         assert!(fuzzy_score("hosp", "hospital room status").is_some());
         assert!(fuzzy_score("zzz", "hospital room status").is_none());
+    }
+
+    #[test]
+    fn exact_and_prefix_matches_beat_loose_fuzzy_matches() {
+        let exact = search_field_score("lazy", "lazy").unwrap();
+        let prefix = search_field_score("lazy", "lazygit").unwrap();
+        let fuzzy = search_field_score("lazy", "local analyzer yearly").unwrap();
+
+        assert!(exact > prefix);
+        assert!(prefix > fuzzy);
+    }
+
+    #[test]
+    fn action_expansion_handles_required_and_optional_arguments() {
+        let action = Action {
+            id: "test".to_owned(),
+            title: "Test".to_owned(),
+            category: "PX".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "inspect".to_owned(),
+                "{repository}".to_owned(),
+                "{run_id}".to_owned(),
+                "{optional?}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                },
+                ActionArgument {
+                    name: "run_id".to_owned(),
+                    required: true,
+                    kind: "run".to_owned(),
+                },
+                ActionArgument {
+                    name: "optional".to_owned(),
+                    required: false,
+                    kind: "text".to_owned(),
+                },
+            ],
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
+        };
+
+        let values = vec!["dev".to_owned(), "1234".to_owned(), String::new()];
+        assert_eq!(
+            expand_action_command(&action, &values).unwrap(),
+            vec!["inspect", "dev", "1234"]
+        );
     }
 
     #[test]
