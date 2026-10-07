@@ -1196,6 +1196,103 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
+fn draw_action_prompt(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending action").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Action no longer exists").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        frame.render_widget(
+            Paragraph::new("No remaining arguments").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                &action.title,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", action.id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    for (index, previous) in action.arguments.iter().enumerate().take(app.prompt_index) {
+        let value = app.prompt_values.get(index).map(String::as_str).unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<18}", previous.name),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(value, Style::default().fg(FG)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                "{}{} [{}]  ",
+                argument.name,
+                if argument.required { " *" } else { "" },
+                argument.kind
+            ),
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&app.prompt_buffer, Style::default().fg(FG)),
+    ]));
+
+    if let Some(status) = &app.status {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(status, Style::default().fg(ORANGE))));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" ACTION INPUT ", ORANGE))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
+    let title = if app.output_title.is_empty() {
+        " ACTION OUTPUT ".to_owned()
+    } else {
+        format!(" {} ", app.output_title)
+    };
+
+    frame.render_widget(
+        Paragraph::new(app.output_text.as_str())
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(CYAN))
+                    .style(Style::default().bg(BG).fg(FG)),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((app.output_scroll, 0)),
+        area,
+    );
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let default = match &app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
