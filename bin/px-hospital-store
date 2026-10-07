@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -124,6 +124,30 @@ ALTER TABLE sessions
     ADD COLUMN turn_started_at TEXT NOT NULL DEFAULT '';
 """
 
+SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS room_checkpoints (
+    checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    session_id TEXT,
+    doctor_id TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    assignment_id TEXT NOT NULL DEFAULT '',
+    checkpoint_kind TEXT NOT NULL DEFAULT 'PROGRESS',
+    body_md TEXT NOT NULL,
+    source_message_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_checkpoints_room
+    ON room_checkpoints(room_id, checkpoint_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_room_checkpoints_session
+    ON room_checkpoints(session_id, checkpoint_id DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -225,12 +249,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 5
 
+    if version < 6:
+        conn.executescript(SCHEMA_V6)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("6",),
+        )
+        conn.commit()
+        version = 6
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -782,6 +815,179 @@ def events_list(
     return [normalize_event(row) for row in rows]
 
 
+def normalize_checkpoint(row: sqlite3.Row) -> dict:
+    return {
+        "id": str(row["checkpoint_id"]),
+        "roomId": str(row["room_id"]),
+        "sessionId": str(row["session_id"] or ""),
+        "doctorId": str(row["doctor_id"] or ""),
+        "providerId": str(row["provider_id"] or ""),
+        "assignmentId": str(row["assignment_id"] or ""),
+        "kind": str(row["checkpoint_kind"] or "PROGRESS"),
+        "body": str(row["body_md"] or ""),
+        "sourceMessageId": (
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else ""
+        ),
+        "createdAt": str(row["created_at"] or ""),
+    }
+
+
+def checkpoint_append(conn: sqlite3.Connection, args) -> dict:
+    room = conn.execute(
+        """
+        SELECT current_assignment_id
+        FROM rooms
+        WHERE room_id = ?
+        """,
+        (args.room_id,),
+    ).fetchone()
+    if room is None:
+        raise RuntimeError(f"unknown Hospital room: {args.room_id}")
+
+    session = None
+    if args.session_id:
+        session = conn.execute(
+            """
+            SELECT room_id, doctor_id, provider_id
+            FROM sessions
+            WHERE session_id = ?
+            """,
+            (args.session_id,),
+        ).fetchone()
+        if session is None:
+            raise RuntimeError(
+                f"unknown Hospital session: {args.session_id}"
+            )
+        if str(session["room_id"]) != args.room_id:
+            raise RuntimeError(
+                f"Hospital session {args.session_id} belongs to "
+                f"{session['room_id']}, not {args.room_id}"
+            )
+
+    if args.body_stdin:
+        body = sys.stdin.read()
+    else:
+        body = args.body or ""
+
+    if not body.strip():
+        raise RuntimeError("Hospital checkpoint body is empty")
+
+    source_message_id = args.source_message_id
+    if source_message_id is not None:
+        message = conn.execute(
+            """
+            SELECT room_id, session_id
+            FROM messages
+            WHERE message_id = ?
+            """,
+            (source_message_id,),
+        ).fetchone()
+        if message is None:
+            raise RuntimeError(
+                f"unknown Hospital source message: {source_message_id}"
+            )
+        if str(message["room_id"]) != args.room_id:
+            raise RuntimeError(
+                "Hospital checkpoint source message belongs to another Room"
+            )
+        if args.session_id and str(message["session_id"] or "") != args.session_id:
+            raise RuntimeError(
+                "Hospital checkpoint source message belongs to another session"
+            )
+
+    doctor_id = (
+        args.doctor_id
+        or (str(session["doctor_id"] or "") if session else "")
+    )
+    provider_id = (
+        args.provider_id
+        or (str(session["provider_id"] or "") if session else "")
+    )
+    assignment_id = (
+        args.assignment_id
+        or str(room["current_assignment_id"] or "")
+    )
+
+    cur = conn.execute(
+        """
+        INSERT INTO room_checkpoints(
+            room_id, session_id, doctor_id, provider_id, assignment_id,
+            checkpoint_kind, body_md, source_message_id
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            args.room_id,
+            args.session_id or None,
+            doctor_id,
+            provider_id,
+            assignment_id,
+            args.checkpoint_kind,
+            body,
+            source_message_id,
+        ),
+    )
+    conn.execute(
+        "UPDATE rooms SET updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
+        (args.room_id,),
+    )
+    conn.commit()
+
+    row = conn.execute(
+        """
+        SELECT * FROM room_checkpoints
+        WHERE checkpoint_id = ?
+        """,
+        (cur.lastrowid,),
+    ).fetchone()
+    return normalize_checkpoint(row)
+
+
+def checkpoints_list(
+    conn: sqlite3.Connection,
+    room_id: str,
+    limit: int,
+    before_id: int | None,
+) -> list:
+    exists = conn.execute(
+        "SELECT 1 FROM rooms WHERE room_id = ?",
+        (room_id,),
+    ).fetchone()
+    if exists is None:
+        raise RuntimeError(f"unknown Hospital room: {room_id}")
+
+    if limit < 1 or limit > 500:
+        raise RuntimeError(
+            "Hospital checkpoint limit must be between 1 and 500"
+        )
+
+    if before_id is None:
+        rows = conn.execute(
+            """
+            SELECT * FROM room_checkpoints
+            WHERE room_id = ?
+            ORDER BY checkpoint_id DESC
+            LIMIT ?
+            """,
+            (room_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM room_checkpoints
+            WHERE room_id = ? AND checkpoint_id < ?
+            ORDER BY checkpoint_id DESC
+            LIMIT ?
+            """,
+            (room_id, before_id, limit),
+        ).fetchall()
+
+    rows = list(reversed(rows))
+    return [normalize_checkpoint(row) for row in rows]
+
+
 def sessions_list(conn: sqlite3.Connection, room_id: str | None) -> list:
     if room_id:
         rows = conn.execute(
@@ -1037,6 +1243,33 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--before-id", type=int)
     events.add_argument("--json", action="store_true")
 
+    checkpoint = sub.add_parser("checkpoint-append")
+    checkpoint.add_argument("--room-id", required=True)
+    checkpoint.add_argument("--session-id", default="")
+    checkpoint.add_argument("--doctor-id", default="")
+    checkpoint.add_argument("--provider-id", default="")
+    checkpoint.add_argument("--assignment-id", default="")
+    checkpoint.add_argument(
+        "--checkpoint-kind",
+        default="PROGRESS",
+    )
+    checkpoint.add_argument("--source-message-id", type=int)
+    checkpoint_body = checkpoint.add_mutually_exclusive_group(
+        required=True
+    )
+    checkpoint_body.add_argument("--body")
+    checkpoint_body.add_argument(
+        "--body-stdin",
+        action="store_true",
+    )
+    checkpoint.add_argument("--json", action="store_true")
+
+    checkpoints = sub.add_parser("checkpoints")
+    checkpoints.add_argument("room_id")
+    checkpoints.add_argument("--limit", type=int, default=50)
+    checkpoints.add_argument("--before-id", type=int)
+    checkpoints.add_argument("--json", action="store_true")
+
     message = sub.add_parser("message-append")
     message.add_argument("--room-id", required=True)
     message.add_argument("--session-id", default="")
@@ -1105,6 +1338,18 @@ def main() -> int:
                     events_list(
                         conn,
                         args.session_id,
+                        args.limit,
+                        args.before_id,
+                    ),
+                    args.json,
+                )
+            elif args.command == "checkpoint-append":
+                emit_data(checkpoint_append(conn, args), args.json)
+            elif args.command == "checkpoints":
+                emit_data(
+                    checkpoints_list(
+                        conn,
+                        args.room_id,
                         args.limit,
                         args.before_id,
                     ),
