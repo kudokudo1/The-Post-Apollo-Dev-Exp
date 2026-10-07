@@ -1,6 +1,6 @@
 mod app;
 
-use app::{App, Mode, SearchScope};
+use app::{ActionChoiceItem, App, Mode, SearchScope};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -61,6 +61,32 @@ struct ActionArgument {
 }
 
 #[derive(Debug, Deserialize)]
+struct RepositoryRegistry {
+    #[serde(default)]
+    repositories: Vec<RepositoryRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryRecord {
+    alias: String,
+    repository: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunRecord {
+    #[serde(rename = "databaseId")]
+    database_id: u64,
+    #[serde(rename = "workflowName")]
+    workflow_name: Option<String>,
+    status: String,
+    conclusion: Option<String>,
+    #[serde(rename = "headBranch")]
+    head_branch: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolRegistry {
     version: u64,
     counts: ToolCounts,
@@ -100,6 +126,7 @@ struct Tool {
 struct Model {
     actions: ActionRegistry,
     tools: ToolRegistry,
+    repositories: Vec<RepositoryRecord>,
     px_path: PathBuf,
 }
 
