@@ -17,6 +17,7 @@ bind_json="$("$ROOT/bin/px" hospital room-bind T7 --repository kudokudo1/taskbar
 session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --doctor-id doctor-t6 --provider-id codex --status IDLE --json)"
 outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
 incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
+"$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
 rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
 doctors_json="$("$ROOT/bin/px" hospital doctors --json)"
 sessions_json="$("$ROOT/bin/px" hospital sessions --room-id T6 --json)"
