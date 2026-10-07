@@ -2216,6 +2216,74 @@ mod tests {
     }
 
     #[test]
+    fn mutation_execution_policy_only_allows_local_actions() {
+        let mut local = action("local", "AI");
+        local.mutation = "local".to_owned();
+        let mut remote = action("remote", "GitHub");
+        remote.mutation = "remote".to_owned();
+        let mut external = action("external", "AI");
+        external.mutation = "external".to_owned();
+
+        assert!(mutation_execution_enabled(&local));
+        assert!(!mutation_execution_enabled(&remote));
+        assert!(!mutation_execution_enabled(&external));
+        assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
+        assert_eq!(mutation_confirmation_phrase(&remote), "REMOTE");
+        assert_eq!(mutation_confirmation_phrase(&external), "EXTERNAL");
+    }
+
+    #[test]
+    fn mutation_preview_freezes_the_expanded_px_command() {
+        let action = Action {
+            id: "test.mutate".to_owned(),
+            title: "Test Mutation".to_owned(),
+            category: "PX".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "agent".to_owned(),
+                "cancel".to_owned(),
+                "{session_id}".to_owned(),
+                "--reason".to_owned(),
+                "{reason?}".to_owned(),
+                "--json".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "session_id".to_owned(),
+                    required: true,
+                    kind: "session".to_owned(),
+                    choices: Vec::new(),
+                },
+                ActionArgument {
+                    name: "reason".to_owned(),
+                    required: false,
+                    kind: "text".to_owned(),
+                    choices: Vec::new(),
+                },
+            ],
+            mutation: "local".to_owned(),
+            keywords: Vec::new(),
+        };
+        let mut app = App::new();
+        let values = vec!["session-123".to_owned(), "OPERATOR".to_owned()];
+
+        prepare_mutation_preview(&mut app, &action, &values);
+
+        assert_eq!(app.mode, Mode::MutationPreview);
+        assert_eq!(
+            app.mutation_args,
+            vec![
+                "agent",
+                "cancel",
+                "session-123",
+                "--reason",
+                "OPERATOR",
+                "--json"
+            ]
+        );
+    }
+
+    #[test]
     fn search_selector_does_not_move_leader_selector() {
         let mut app = App::new();
         app.leader_selected = 3;
