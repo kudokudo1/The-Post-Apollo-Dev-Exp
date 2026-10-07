@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -69,6 +69,32 @@ CREATE INDEX IF NOT EXISTS idx_messages_room
 
 CREATE INDEX IF NOT EXISTS idx_messages_session
     ON messages(session_id, message_id DESC);
+"""
+
+SCHEMA_V2 = """
+ALTER TABLE sessions
+    ADD COLUMN provider_session_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE sessions
+    ADD COLUMN working_directory TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE sessions
+    ADD COLUMN last_exit_code INTEGER;
+
+ALTER TABLE sessions
+    ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS session_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_events_session
+    ON session_events(session_id, event_id DESC);
 """
 
 def hospital_data_dir() -> Path:
@@ -136,12 +162,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 1
 
+    if version < 2:
+        conn.executescript(SCHEMA_V2)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("2",),
+        )
+        conn.commit()
+        version = 2
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "sessions", "messages"):
+    for table in ("patients", "rooms", "sessions", "messages", "session_events"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -168,7 +203,8 @@ def emit(payload: dict, as_json: bool) -> None:
         f"patients={counts['patients']} "
         f"rooms={counts['rooms']} "
         f"sessions={counts['sessions']} "
-        f"messages={counts['messages']}"
+        f"messages={counts['messages']} "
+        f"events={counts['session_events']}"
     )
 
 
@@ -389,16 +425,167 @@ def session_put(conn: sqlite3.Connection, args) -> dict:
 
 
 def normalize_session(row: sqlite3.Row) -> dict:
+    keys = set(row.keys())
     return {
         "id": str(row["session_id"]),
         "roomId": str(row["room_id"]),
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
+        "providerSessionId": (
+            str(row["provider_session_id"] or "")
+            if "provider_session_id" in keys
+            else ""
+        ),
+        "workingDirectory": (
+            str(row["working_directory"] or "")
+            if "working_directory" in keys
+            else ""
+        ),
         "status": str(row["status"] or ""),
+        "lastExitCode": (
+            row["last_exit_code"]
+            if "last_exit_code" in keys
+            else None
+        ),
+        "lastError": (
+            str(row["last_error"] or "")
+            if "last_error" in keys
+            else ""
+        ),
         "startedAt": str(row["started_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
         "endedAt": str(row["ended_at"] or ""),
     }
+
+
+def session_record(conn: sqlite3.Connection, session_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"unknown Hospital session: {session_id}")
+    return normalize_session(row)
+
+
+def session_runtime_update(conn: sqlite3.Connection, args) -> dict:
+    session_record(conn, args.session_id)
+
+    fields = ["updated_at = CURRENT_TIMESTAMP"]
+    values = []
+
+    if args.provider_session_id is not None:
+        fields.append("provider_session_id = ?")
+        values.append(args.provider_session_id)
+
+    if args.working_directory is not None:
+        fields.append("working_directory = ?")
+        values.append(args.working_directory)
+
+    if args.status is not None:
+        fields.append("status = ?")
+        values.append(args.status)
+
+    if args.last_exit_code is not None:
+        fields.append("last_exit_code = ?")
+        values.append(args.last_exit_code)
+
+    if args.last_error is not None:
+        fields.append("last_error = ?")
+        values.append(args.last_error)
+
+    if args.clear_error:
+        fields.append("last_error = ''")
+
+    if args.ended:
+        fields.append("ended_at = CURRENT_TIMESTAMP")
+
+    values.append(args.session_id)
+    conn.execute(
+        f"UPDATE sessions SET {', '.join(fields)} WHERE session_id = ?",
+        values,
+    )
+    conn.commit()
+    return session_record(conn, args.session_id)
+
+
+def normalize_event(row: sqlite3.Row) -> dict:
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except json.JSONDecodeError:
+        payload = {"raw": str(row["payload_json"] or "")}
+
+    return {
+        "id": str(row["event_id"]),
+        "sessionId": str(row["session_id"]),
+        "type": str(row["event_type"]),
+        "payload": payload,
+        "createdAt": str(row["created_at"]),
+    }
+
+
+def event_append(conn: sqlite3.Connection, args) -> dict:
+    session_record(conn, args.session_id)
+
+    payload_text = args.payload or "{}"
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Hospital event payload is not valid JSON: {exc}")
+
+    cur = conn.execute(
+        """
+        INSERT INTO session_events(session_id, event_type, payload_json)
+        VALUES(?, ?, ?)
+        """,
+        (
+            args.session_id,
+            args.event_type,
+            json.dumps(payload, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM session_events WHERE event_id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return normalize_event(row)
+
+
+def events_list(
+    conn: sqlite3.Connection,
+    session_id: str,
+    limit: int,
+    before_id: int | None,
+) -> list:
+    session_record(conn, session_id)
+
+    if limit < 1 or limit > 1000:
+        raise RuntimeError("Hospital event limit must be between 1 and 1000")
+
+    if before_id is None:
+        rows = conn.execute(
+            """
+            SELECT * FROM session_events
+            WHERE session_id = ?
+            ORDER BY event_id DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM session_events
+            WHERE session_id = ? AND event_id < ?
+            ORDER BY event_id DESC
+            LIMIT ?
+            """,
+            (session_id, before_id, limit),
+        ).fetchall()
+
+    rows = list(reversed(rows))
+    return [normalize_event(row) for row in rows]
 
 
 def sessions_list(conn: sqlite3.Connection, room_id: str | None) -> list:
@@ -598,6 +785,39 @@ def build_parser() -> argparse.ArgumentParser:
     sessions.add_argument("--room-id", default="")
     sessions.add_argument("--json", action="store_true")
 
+    session_get = sub.add_parser("session")
+    session_get.add_argument("session_id")
+    session_get.add_argument("--json", action="store_true")
+
+    session_runtime = sub.add_parser("session-runtime")
+    session_runtime.add_argument("session_id")
+    session_runtime.add_argument("--provider-session-id")
+    session_runtime.add_argument("--working-directory")
+    session_runtime.add_argument(
+        "--status",
+        choices=(
+            "IDLE", "THINKING", "OPERATING", "WAITING",
+            "PAUSED", "REVIEW", "COMPLETE", "FAILED",
+        ),
+    )
+    session_runtime.add_argument("--last-exit-code", type=int)
+    session_runtime.add_argument("--last-error")
+    session_runtime.add_argument("--clear-error", action="store_true")
+    session_runtime.add_argument("--ended", action="store_true")
+    session_runtime.add_argument("--json", action="store_true")
+
+    event = sub.add_parser("event-append")
+    event.add_argument("--session-id", required=True)
+    event.add_argument("--event-type", required=True)
+    event.add_argument("--payload", default="{}")
+    event.add_argument("--json", action="store_true")
+
+    events = sub.add_parser("events")
+    events.add_argument("session_id")
+    events.add_argument("--limit", type=int, default=200)
+    events.add_argument("--before-id", type=int)
+    events.add_argument("--json", action="store_true")
+
     message = sub.add_parser("message-append")
     message.add_argument("--room-id", required=True)
     message.add_argument("--session-id", default="")
@@ -644,6 +864,22 @@ def main() -> int:
             elif args.command == "sessions":
                 emit_data(
                     sessions_list(conn, args.room_id or None),
+                    args.json,
+                )
+            elif args.command == "session":
+                emit_data(session_record(conn, args.session_id), args.json)
+            elif args.command == "session-runtime":
+                emit_data(session_runtime_update(conn, args), args.json)
+            elif args.command == "event-append":
+                emit_data(event_append(conn, args), args.json)
+            elif args.command == "events":
+                emit_data(
+                    events_list(
+                        conn,
+                        args.session_id,
+                        args.limit,
+                        args.before_id,
+                    ),
                     args.json,
                 )
             elif args.command == "message-append":

@@ -56,12 +56,13 @@ older = json.loads(sys.argv[13])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 1, payload
+    assert payload["schema_version"] == 2, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
         "sessions": 0,
         "messages": 0,
+        "session_events": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -113,7 +114,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("1",), version
+    assert version == ("2",), version
 
     tables = {
         row[0]
@@ -121,8 +122,20 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "sessions", "messages"):
+    for table in ("patients", "rooms", "sessions", "messages", "session_events"):
         assert table in tables, (table, tables)
+
+    session_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(sessions)")
+    }
+    for column in (
+        "provider_session_id",
+        "working_directory",
+        "last_exit_code",
+        "last_error",
+    ):
+        assert column in session_columns, (column, session_columns)
 
     journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert str(journal_mode).lower() == "wal", journal_mode
