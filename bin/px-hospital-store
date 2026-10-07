@@ -1246,6 +1246,21 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
     return normalize_room_report(row)
 
 
+def room_report_record(
+    conn: sqlite3.Connection,
+    report_id: int,
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM room_reports WHERE report_id = ?",
+        (report_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital Room Report: {report_id}"
+        )
+    return normalize_room_report(row)
+
+
 def room_reports_list(
     conn: sqlite3.Connection,
     room_id: str,
@@ -1575,6 +1590,10 @@ def build_parser() -> argparse.ArgumentParser:
     report_body.add_argument("--body-stdin", action="store_true")
     room_report.add_argument("--json", action="store_true")
 
+    room_report_get = sub.add_parser("room-report")
+    room_report_get.add_argument("report_id", type=int)
+    room_report_get.add_argument("--json", action="store_true")
+
     room_reports = sub.add_parser("room-reports")
     room_reports.add_argument("room_id")
     room_reports.add_argument("--limit", type=int, default=50)
@@ -1683,6 +1702,14 @@ def main() -> int:
                 )
             elif args.command == "room-report-append":
                 emit_data(room_report_append(conn, args), args.json)
+            elif args.command == "room-report":
+                emit_data(
+                    room_report_record(
+                        conn,
+                        args.report_id,
+                    ),
+                    args.json,
+                )
             elif args.command == "room-reports":
                 emit_data(
                     room_reports_list(

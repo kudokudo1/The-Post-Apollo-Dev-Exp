@@ -222,6 +222,10 @@ PY
 quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
 printf 'change\n' >>"$BED/tracked.txt"
 quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
+quick_report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["roomReport"]["id"])' "$quick_report_json")"
+feedback_json="$(printf '%s' 'The VERIFY section missed the regression test. Fix that and re-check the Room.' | "$ROOT/bin/px" agent report-feedback session-t6-agent "$quick_report_id" --feedback-stdin --timeout 30 --json)"
+feedback_messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
+feedback_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 400 --json)"
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
 quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
@@ -231,6 +235,9 @@ quick_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 300
 python3 - \
     "$quick_status_json" \
     "$quick_report_json" \
+    "$feedback_json" \
+    "$feedback_messages_json" \
+    "$feedback_events_json" \
     "$quick_pause_json" \
     "$quick_continue_json" \
     "$quick_checkpoints_json" \
@@ -241,11 +248,14 @@ import sys
 
 status = json.loads(sys.argv[1])
 report = json.loads(sys.argv[2])
-pause = json.loads(sys.argv[3])
-continue_result = json.loads(sys.argv[4])
-checkpoints = json.loads(sys.argv[5])
-room_reports = json.loads(sys.argv[6])
-events = json.loads(sys.argv[7])
+feedback = json.loads(sys.argv[3])
+feedback_messages = json.loads(sys.argv[4])
+feedback_events = json.loads(sys.argv[5])
+pause = json.loads(sys.argv[6])
+continue_result = json.loads(sys.argv[7])
+checkpoints = json.loads(sys.argv[8])
+room_reports = json.loads(sys.argv[9])
+events = json.loads(sys.argv[10])
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
@@ -294,6 +304,27 @@ assert room_report["branch"], room_report
 assert report["gitEvidence"]["status"] == "VERIFIED", report
 assert report["gitEvidence"]["changedFiles"] == ["tracked.txt"], report
 assert report["gitEvidence"]["insertions"] == 1, report
+
+assert feedback["report"]["id"] == room_report["id"], feedback
+assert feedback["report"]["sessionId"] == "session-t6-agent", feedback
+assert feedback["feedback"].startswith("The VERIFY section missed"), feedback
+assert (
+    feedback["result"]["providerSessionId"]
+    == "mock-provider-session"
+), feedback
+assert feedback["result"]["session"]["status"] == "WAITING", feedback
+assert "REPORT FEEDBACK // ROOM REPORT" in feedback["result"]["assistant"], feedback
+assert "The VERIFY section missed the regression test." in feedback["result"]["assistant"], feedback
+
+assert feedback_messages[-2]["direction"] == "outgoing", feedback_messages
+assert feedback_messages[-2]["messageType"] == "report_feedback", feedback_messages
+assert "OPERATOR FEEDBACK" in feedback_messages[-2]["body"], feedback_messages
+assert feedback_messages[-1]["direction"] == "incoming", feedback_messages
+assert "REPORT FEEDBACK // ROOM REPORT" in feedback_messages[-1]["body"], feedback_messages
+
+feedback_types = [row["type"] for row in feedback_events]
+assert "room_report.feedback.started" in feedback_types, feedback_types
+assert "room_report.feedback.completed" in feedback_types, feedback_types
 
 assert len(checkpoints) == 1, checkpoints
 assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
