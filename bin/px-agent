@@ -73,10 +73,10 @@ def px_hospital(*args: str, stdin_text: str | None = None):
         check=False,
     )
     if proc.returncode != 0:
-        detail = stderr_text.strip() or stdout_text.strip()
+        detail = proc.stderr.strip() or proc.stdout.strip()
         raise RuntimeError(detail or f"px hospital exited {proc.returncode}")
     try:
-        return json.loads(stdout_text)
+        return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"px hospital returned invalid JSON: {exc}")
 
