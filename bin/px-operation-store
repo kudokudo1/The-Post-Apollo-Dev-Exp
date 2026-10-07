@@ -256,6 +256,57 @@ def list_operations(conn: sqlite3.Connection, args) -> list:
     return [normalize_record(row) for row in rows]
 
 
+def workflow_create_recovery_plan(record: dict) -> dict | None:
+    if str(record.get("actionId") or "") != "workflow.create":
+        return None
+    if str(record.get("status") or "") != "COMPLETE":
+        return None
+    if str(record.get("verificationStatus") or "") != "PASSED":
+        return None
+
+    after = record.get("after") or {}
+    stdout = after.get("stdout") if isinstance(after, dict) else None
+    verification = record.get("verification") or {}
+    target = (
+        verification.get("target")
+        if isinstance(verification, dict)
+        else None
+    )
+
+    if not isinstance(stdout, dict) or not isinstance(target, dict):
+        return None
+
+    install = stdout.get("install") or {}
+    if not isinstance(install, dict) or install.get("installed") is not True:
+        return None
+
+    plan = {
+        "repository": str(stdout.get("repository") or ""),
+        "base": str(stdout.get("base") or ""),
+        "path": str(stdout.get("path") or ""),
+        "yaml": str(stdout.get("yaml") or ""),
+        "installCommit": str(install.get("commit") or ""),
+        "remoteBlobSha": str(target.get("remoteBlobSha") or ""),
+        "verifiedBaseSha": str(target.get("currentBaseSha") or ""),
+        "expectedYamlSha": str(target.get("expectedYamlSha") or ""),
+    }
+
+    required = (
+        "repository",
+        "base",
+        "path",
+        "yaml",
+        "installCommit",
+        "remoteBlobSha",
+        "verifiedBaseSha",
+        "expectedYamlSha",
+    )
+    if any(not plan[key] for key in required):
+        return None
+
+    return plan
+
+
 def recovery_payload(record: dict) -> dict:
     recovery = str(record.get("recovery") or "NONE")
     base = {
@@ -264,6 +315,7 @@ def recovery_payload(record: dict) -> dict:
         "status": record["status"],
         "recovery": recovery,
         "automaticRecoveryAvailable": False,
+        "planAvailable": False,
     }
 
     if recovery == "NONE":
@@ -279,12 +331,26 @@ def recovery_payload(record: dict) -> dict:
             "reason": "operation evidence is durable; automatic undo is not promised",
         }
 
+    if recovery == "CONTENT_RECOVERABLE":
+        plan = workflow_create_recovery_plan(record)
+        if plan is not None:
+            return {
+                **base,
+                "strategy": "DELETE_CREATED_WORKFLOW",
+                "planAvailable": True,
+                "plan": plan,
+                "reason": (
+                    "exact created-workflow content and verified remote identity "
+                    "are durable; the PX recovery executor is not registered yet"
+                ),
+            }
+
     return {
         **base,
         "strategy": recovery,
         "reason": (
-            "the action declares a recoverable class, but no PX recovery "
-            "executor is registered for this operation"
+            "the action declares a recoverable class, but durable evidence is "
+            "insufficient for a registered PX recovery plan"
         ),
     }
 
