@@ -166,10 +166,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         px_path,
     };
 
+    let mut app = App::new();
     let mut guard = TerminalGuard::enter()?;
 
-    loop {
-        guard.terminal.draw(|frame| draw(frame, &model))?;
+    while !app.should_quit {
+        guard.terminal.draw(|frame| draw(frame, &app, &model))?;
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
@@ -183,12 +184,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let ctrl_c =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-
-        if ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-            break;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            app.should_quit = true;
+            continue;
         }
+
+        handle_key(&mut app, key, &model);
     }
 
     Ok(())
