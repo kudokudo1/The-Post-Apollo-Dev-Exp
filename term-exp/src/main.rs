@@ -769,12 +769,7 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
 
     if allow_tools && !query.is_empty() {
         for tool in preferred_tools(&model.tools.tools) {
-            let searchable = format!(
-                "{} {} {} {}",
-                tool.name, tool.path, tool.backend, tool.environment
-            );
-
-            if let Some(score) = fuzzy_score(query, &searchable) {
+            if let Some(score) = search_field_score(query, &tool.name) {
                 items.push(SearchItem {
                     kind: SearchKind::Tool,
                     key: tool.name.clone(),
