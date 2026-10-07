@@ -58,6 +58,8 @@ struct ActionArgument {
     name: String,
     required: bool,
     kind: String,
+    #[serde(default)]
+    choices: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1056,6 +1058,17 @@ fn known_value_choices(
         "provider" => provider_choices(model).map(Some),
         "session" => session_choices(model, room).map(Some),
         "workflow_template" => workflow_template_choices(model).map(Some),
+        "enum" if !argument.choices.is_empty() => Ok(Some(
+            argument
+                .choices
+                .iter()
+                .map(|value| ActionChoiceItem {
+                    value: value.clone(),
+                    label: value.clone(),
+                    detail: String::new(),
+                })
+                .collect(),
+        )),
         _ => Ok(None),
     }
 }
@@ -2042,16 +2055,19 @@ mod tests {
                     name: "repository".to_owned(),
                     required: true,
                     kind: "repository".to_owned(),
+                    choices: Vec::new(),
                 },
                 ActionArgument {
                     name: "run_id".to_owned(),
                     required: true,
                     kind: "run".to_owned(),
+                    choices: Vec::new(),
                 },
                 ActionArgument {
                     name: "optional".to_owned(),
                     required: false,
                     kind: "text".to_owned(),
+                    choices: Vec::new(),
                 },
             ],
             mutation: "read".to_owned(),
@@ -2082,11 +2098,13 @@ mod tests {
                     name: "repository".to_owned(),
                     required: true,
                     kind: "repository".to_owned(),
+                    choices: Vec::new(),
                 },
                 ActionArgument {
                     name: "run_id".to_owned(),
                     required: true,
                     kind: "run".to_owned(),
+                    choices: Vec::new(),
                 },
             ],
             mutation: "read".to_owned(),
