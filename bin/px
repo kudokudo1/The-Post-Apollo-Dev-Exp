@@ -148,7 +148,7 @@ github_run_guard_record() {
     local run_id="$2"
 
     gh run view "$run_id" -R "$repo" \
-        --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
+        --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
 }
 
 mutation_preflight() {
@@ -233,6 +233,7 @@ mutation_preflight() {
 mutation_verify() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
+    local preflight_token="${3:-}"
 
     [[ -n "$action_id" ]] || die "mutation action id required"
     [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
