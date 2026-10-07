@@ -8,6 +8,7 @@ on:
       - bin/px-tools
       - bin/px-resolve
       - bin/px-term
+      - bin/px-operation-store
       - term-exp/**
       - config/actions.json
       - config/repos.tsv
@@ -16,6 +17,7 @@ on:
       - docs/tool-resolver.md
       - docs/term-exp.md
       - tests/test-px-actions.sh
+      - tests/test-px-operation-journal.py
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
       - tests/test-px-factory.sh
@@ -30,6 +32,7 @@ on:
       - bin/px-tools
       - bin/px-resolve
       - bin/px-term
+      - bin/px-operation-store
       - term-exp/**
       - config/actions.json
       - config/repos.tsv
@@ -38,6 +41,7 @@ on:
       - docs/tool-resolver.md
       - docs/term-exp.md
       - tests/test-px-actions.sh
+      - tests/test-px-operation-journal.py
       - tests/test-px-tools.sh
       - tests/test-px-resolver.sh
       - tests/test-px-factory.sh
@@ -61,7 +65,8 @@ jobs:
         run: |
           bash -n bin/px
           bash -n bin/px-term
-          python3 -m py_compile bin/px-tools bin/px-resolve
+          python3 -m py_compile bin/px-tools bin/px-resolve bin/px-operation-store
+          python3 -m py_compile tests/test-px-operation-journal.py
           bash -n tests/test-px-actions.sh
           bash -n tests/test-px-tools.sh
           bash -n tests/test-px-resolver.sh
@@ -74,6 +79,9 @@ jobs:
 
       - name: Test PX action registry
         run: bash ./tests/test-px-actions.sh
+
+      - name: Test PX operation journal
+        run: python3 ./tests/test-px-operation-journal.py
 
       - name: Test PX tool registry
         run: bash ./tests/test-px-tools.sh
