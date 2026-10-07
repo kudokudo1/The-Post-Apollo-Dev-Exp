@@ -195,6 +195,27 @@ github_workflow_blob_sha() {
     gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref" --jq '.sha'
 }
 
+github_remote_file_sha256() {
+    local repo="$1"
+    local path="$2"
+    local ref="$3"
+    local encoded_ref metadata encoding content
+
+    need base64
+    need sha256sum
+    need awk
+
+    encoded_ref="$(jq -rn --arg value "$ref" '$value | @uri')"
+    metadata="$(gh api "repos/$repo/contents/$path?ref=$encoded_ref")"
+    encoding="$(jq -r '.encoding // ""' <<<"$metadata")"
+    content="$(jq -r '.content // ""' <<<"$metadata" | tr -d '\n')"
+
+    [[ "$encoding" == "base64" ]]         || die "remote workflow content encoding is not base64"
+    [[ -n "$content" ]]         || die "remote workflow content is empty"
+
+    printf '%s' "$content"         | base64 --decode         | sha256sum         | awk '{print $1}'
+}
+
 github_dispatch_runs_for() {
     local repo="$1"
     local workflow_path="$2"
@@ -447,6 +468,143 @@ mutation_preflight() {
                     frozenCommand:$frozenCommand,
                     target:$target
                 }'
+            ;;
+        workflow.create)
+            need gh
+            need mktemp
+            need base64
+            need sha256sum
+            need awk
+
+            local repository_key repo template slug trigger script_path
+            local base base_sha workflow_path encoded_base lookup_tmp lookup_error=""
+            local tmp yaml_sha yaml_base64 validation_ok="true"
+            local allowed="true" reason="" token summary frozen_command target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            template="$(jq -r '.template // ""' <<<"$arguments_json")"
+            slug="$(jq -r '.slug // ""' <<<"$arguments_json")"
+            trigger="$(jq -r '.trigger // ""' <<<"$arguments_json")"
+            script_path="$(jq -r '.script_path // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "workflow.create preflight requires repository"
+            [[ -n "$template" ]] || die "workflow.create preflight requires template"
+            [[ -n "$slug" ]] || die "workflow.create preflight requires slug"
+
+            [[ -n "$trigger" ]] || trigger="manual"
+            validate_slug "$slug"
+
+            if [[ "$template" == "script-test" ]]; then
+                validate_script_path "$script_path"
+            elif [[ -n "$script_path" ]]; then
+                die "--script is only valid with script-test"
+            fi
+
+            repo="$(repo_for "$repository_key")"
+            base="$(default_branch_for "$repo")"
+            [[ -n "$base" ]] || die "workflow create default branch unavailable"
+            base_sha="$(github_ref_sha "$repo" "$base")"
+            [[ -n "$base_sha" ]] || die "workflow create base has no commit SHA"
+
+            workflow_path=".github/workflows/${slug}.yml"
+            encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+            lookup_tmp="$(mktemp)"
+
+            if gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" >/dev/null 2>"$lookup_tmp"; then
+                allowed="false"
+                reason="WORKFLOW TARGET ALREADY EXISTS // $workflow_path"
+            else
+                lookup_error="$(cat "$lookup_tmp")"
+                if ! grep -qiE '404|not found' <<<"$lookup_error"; then
+                    rm -f "$lookup_tmp"
+                    die "workflow create target lookup failed // ${lookup_error:-unknown GitHub error}"
+                fi
+            fi
+            rm -f "$lookup_tmp"
+
+            tmp="$(mktemp)"
+            render_workflow "$template" "$slug" "$trigger" "$base" "$script_path" > "$tmp"
+
+            if ! validate_workflow "$tmp"; then
+                validation_ok="false"
+            fi
+
+            yaml_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+            yaml_base64="$(base64 < "$tmp" | tr -d '\n')"
+
+            if [[ "$validation_ok" != "true"
+                    || "$VALIDATION_STATUS" != "pass" ]]; then
+                allowed="false"
+                if [[ -z "$reason" ]]; then
+                    reason="WORKFLOW VALIDATION DID NOT PASS // ${VALIDATION_STATUS^^}"
+                    [[ -n "$VALIDATION_MESSAGE" ]] && reason+=" // $VALIDATION_MESSAGE"
+                fi
+            fi
+
+            token="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg workflowPath "$workflow_path"                 --arg yamlSha "$yaml_sha"                 --arg yamlBase64 "$yaml_base64"                 '{
+                    repository:$repository,
+                    base:$base,
+                    baseSha:$baseSha,
+                    template:$template,
+                    slug:$slug,
+                    trigger:$trigger,
+                    scriptPath:$scriptPath,
+                    workflowPath:$workflowPath,
+                    yamlSha:$yamlSha,
+                    yamlBase64:$yamlBase64
+                }')"
+
+            frozen_command="$(jq -nc                 --arg repository "$repo"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg yamlSha "$yaml_sha"                 '[
+                    "create",
+                    $repository,
+                    $template,
+                    $slug,
+                    $trigger
+                ]
+                + (
+                    if $scriptPath == ""
+                    then []
+                    else ["--script=" + $scriptPath]
+                    end
+                )
+                + [
+                    "--install",
+                    "--json",
+                    "--expect-base=" + $base,
+                    "--expect-base-sha=" + $baseSha,
+                    "--expect-yaml-sha=" + $yamlSha
+                ]')"
+
+            target="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg workflowPath "$workflow_path"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg yamlSha "$yaml_sha"                 --arg validationStatus "$VALIDATION_STATUS"                 --arg validationValidator "$VALIDATION_VALIDATOR"                 '{
+                    repository:$repository,
+                    base:$base,
+                    baseSha:$baseSha,
+                    workflowPath:$workflowPath,
+                    template:$template,
+                    slug:$slug,
+                    trigger:$trigger,
+                    scriptPath:(if $scriptPath == "" then null else $scriptPath end),
+                    yamlSha:$yamlSha,
+                    validation:{
+                        status:$validationStatus,
+                        validator:$validationValidator
+                    }
+                }')"
+
+            summary="CREATE WORKFLOW // $workflow_path // $base@${base_sha:0:8} // YAML ${yaml_sha:0:8}"
+
+            jq -n                 --arg actionId "$action_id"                 --argjson allowed "$allowed"                 --arg summary "$summary"                 --arg reason "$reason"                 --arg token "$token"                 --argjson frozenCommand "$frozen_command"                 --argjson target "$target"                 '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+
+            rm -f "$tmp"
             ;;
         workflow.delete)
             need gh
@@ -733,6 +891,94 @@ mutation_verify() {
                 --arg reason "$reason" \
                 --argjson target "$target" \
                 '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        workflow.create)
+            need gh
+            need mktemp
+
+            local repository_key repo token_repo base expected_base_sha
+            local workflow_path expected_yaml_sha current_base current_base_sha
+            local metadata remote_yaml_sha remote_blob_sha encoded_base tmp lookup_error=""
+            local passed="false" summary="" reason="" target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "workflow.create verification requires repository"
+            [[ -n "$preflight_token" ]] || die "workflow.create verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            token_repo="$(jq -r '.repository // ""' <<<"$preflight_token")"
+            base="$(jq -r '.base // ""' <<<"$preflight_token")"
+            expected_base_sha="$(jq -r '.baseSha // ""' <<<"$preflight_token")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            expected_yaml_sha="$(jq -r '.yamlSha // ""' <<<"$preflight_token")"
+
+            [[ "$token_repo" == "$repo" ]] || die "workflow create verification repository changed"
+            [[ -n "$base" ]] || die "workflow create verification token has no base"
+            [[ -n "$expected_base_sha" ]] || die "workflow create verification token has no base SHA"
+            [[ -n "$workflow_path" ]] || die "workflow create verification token has no workflow path"
+            [[ -n "$expected_yaml_sha" ]] || die "workflow create verification token has no YAML SHA"
+
+            current_base="$(default_branch_for "$repo")"
+            current_base_sha="$(github_ref_sha "$repo" "$base")"
+            encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+
+            if [[ "$current_base" != "$base" ]]; then
+                reason="DEFAULT BRANCH CHANGED // EXPECTED $base // CURRENT $current_base"
+                summary="CREATE VERIFY FAILED // $workflow_path"
+                metadata='{}'
+                remote_blob_sha=""
+                remote_yaml_sha=""
+            else
+                tmp="$(mktemp)"
+                if metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>"$tmp")"; then
+                    remote_blob_sha="$(jq -r '.sha // ""' <<<"$metadata")"
+                    remote_yaml_sha="$(github_remote_file_sha256 "$repo" "$workflow_path" "$base")"
+
+                    if [[ "$current_base_sha" == "$expected_base_sha" ]]; then
+                        reason="TARGET REF DID NOT ADVANCE AFTER WORKFLOW CREATE"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                    elif [[ "$remote_yaml_sha" != "$expected_yaml_sha" ]]; then
+                        reason="CREATED WORKFLOW CONTENT DOES NOT MATCH FROZEN YAML"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                    else
+                        passed="true"
+                        summary="CREATE VERIFIED // $workflow_path // $base@${current_base_sha:0:8}"
+                    fi
+                else
+                    lookup_error="$(cat "$tmp")"
+                    if grep -qiE '404|not found' <<<"$lookup_error"; then
+                        reason="CREATED WORKFLOW IS MISSING // $workflow_path"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                        metadata='{}'
+                        remote_blob_sha=""
+                        remote_yaml_sha=""
+                    else
+                        rm -f "$tmp"
+                        die "workflow create verification lookup failed // ${lookup_error:-unknown GitHub error}"
+                    fi
+                fi
+                rm -f "$tmp"
+            fi
+
+            target="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg previousBaseSha "$expected_base_sha"                 --arg currentBaseSha "$current_base_sha"                 --arg workflowPath "$workflow_path"                 --arg expectedYamlSha "$expected_yaml_sha"                 --arg remoteYamlSha "$remote_yaml_sha"                 --arg remoteBlobSha "$remote_blob_sha"                 '{
+                    repository:$repository,
+                    base:$base,
+                    previousBaseSha:$previousBaseSha,
+                    currentBaseSha:$currentBaseSha,
+                    workflowPath:$workflowPath,
+                    expectedYamlSha:$expectedYamlSha,
+                    remoteYamlSha:(if $remoteYamlSha == "" then null else $remoteYamlSha end),
+                    remoteBlobSha:(if $remoteBlobSha == "" then null else $remoteBlobSha end)
+                }')"
+
+            jq -n                 --arg actionId "$action_id"                 --argjson passed "$passed"                 --arg summary "$summary"                 --arg reason "$reason"                 --argjson target "$target"                 '{
                     version:1,
                     actionId:$actionId,
                     passed:$passed,
@@ -1071,6 +1317,11 @@ create_workflow() {
     local mode="--preview"
     local format="human"
     local script_path=""
+    local expected_base=""
+    local expected_base_sha=""
+    local expected_yaml_sha=""
+    local generated_yaml_sha=""
+    local current_base_sha=""
     local repo base tmp workflow_path arg
     local validation_ok=true
 
@@ -1093,6 +1344,15 @@ create_workflow() {
             --script=*)
                 script_path="${arg#--script=}"
                 ;;
+            --expect-base=*)
+                expected_base="${arg#--expect-base=}"
+                ;;
+            --expect-base-sha=*)
+                expected_base_sha="${arg#--expect-base-sha=}"
+                ;;
+            --expect-yaml-sha=*)
+                expected_yaml_sha="${arg#--expect-yaml-sha=}"
+                ;;
             *)
                 die "unknown create option: $arg"
                 ;;
@@ -1113,6 +1373,11 @@ create_workflow() {
     repo="$(repo_for "$alias")"
     base="$(default_branch_for "$repo")"
     [[ -n "$base" ]] || die "could not resolve default branch for $repo"
+
+    if [[ -n "$expected_base" && "$base" != "$expected_base" ]]; then
+        die "workflow create refused: default branch changed after confirmation // expected $expected_base // current $base"
+    fi
+
     workflow_path=".github/workflows/${slug}.yml"
 
     tmp="$(mktemp)"
@@ -1121,6 +1386,18 @@ create_workflow() {
 
     if ! validate_workflow "$tmp"; then
         validation_ok=false
+    fi
+
+    if [[ -n "$expected_yaml_sha" ]]; then
+        need sha256sum
+        need awk
+        generated_yaml_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+        [[ "$generated_yaml_sha" == "$expected_yaml_sha" ]]             || die "workflow create refused: generated YAML changed after confirmation // expected $expected_yaml_sha // current $generated_yaml_sha"
+    fi
+
+    if [[ -n "$expected_base_sha" ]]; then
+        current_base_sha="$(github_ref_sha "$repo" "$base")"
+        [[ "$current_base_sha" == "$expected_base_sha" ]]             || die "workflow create refused: base moved after confirmation // expected $expected_base_sha // current $current_base_sha"
     fi
 
     INSTALL_BRANCH=""
@@ -2137,6 +2414,8 @@ Usage:
   px operation <start|finish|get|list|recovery> ...
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
+            [--script=PATH] [--expect-base=BRANCH] [--expect-base-sha=SHA]
+            [--expect-yaml-sha=SHA256]
   px delete-workflow <repo> <workflow-path> [ref] [--expect-sha SHA]
   px hospital <init|status> [--json]
   px agent <providers|session-create|turn|status|cancel|quick> ...
