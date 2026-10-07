@@ -5,12 +5,14 @@ on:
   pull_request:
     paths:
       - bin/px
+      - bin/px-hospital-store
       - config/repos.tsv
       - docs/control-plane.md
       - docs/workflow-factory.md
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
+      - tests/test-px-hospital-store.sh
       - .github/workflows/px-smoke.yml
   push:
     branches:
@@ -22,12 +24,14 @@ on:
       - automation/px-empty-workflows-v0
     paths:
       - bin/px
+      - bin/px-hospital-store
       - config/repos.tsv
       - docs/control-plane.md
       - docs/workflow-factory.md
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
+      - tests/test-px-hospital-store.sh
       - .github/workflows/px-smoke.yml
 
 permissions:
@@ -48,6 +52,7 @@ jobs:
           bash -n tests/test-px-factory.sh
           bash -n tests/test-px-runs.sh
           bash -n tests/test-px-delete-workflow.sh
+          bash -n tests/test-px-hospital-store.sh
 
       - name: Exercise local PX commands
         run: |
@@ -63,6 +68,9 @@ jobs:
 
       - name: Test guarded workflow deletion
         run: bash ./tests/test-px-delete-workflow.sh
+
+      - name: Test Hospital durable state store
+        run: bash ./tests/test-px-hospital-store.sh
 
       - name: Report execution identity
         run: |
