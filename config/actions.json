@@ -218,6 +218,43 @@
       ]
     },
     {
+      "id": "px.operation.recover.execute",
+      "title": "Recover PX Operation",
+      "category": "PX",
+      "summary": "Execute a certified PX recovery plan after exact-target preflight and explicit confirmation.",
+      "command": [
+        "operation",
+        "recover",
+        "{operation_id}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "operation_id",
+          "required": true,
+          "kind": "operation"
+        }
+      ],
+      "mutation": "remote",
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-self-journaled",
+      "requires": [
+        "python3",
+        "jq",
+        "gh"
+      ],
+      "keywords": [
+        "operation",
+        "recovery",
+        "recover",
+        "undo",
+        "journal",
+        "workflow",
+        "rollback",
+        "executor"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",

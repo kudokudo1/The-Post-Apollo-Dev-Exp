@@ -641,6 +641,108 @@ mutation_preflight() {
     need jq
 
     case "$action_id" in
+        px.operation.recover.execute)
+            local operation_id facts strategy plan_available executor_available live_validation
+            local source_action source_status recovery_class reason allowed="true"
+            local plan_repo plan_base plan_path plan_blob plan_yaml_sha plan_install plan_verified
+            local token summary frozen_command
+
+            operation_id="$(jq -r '.operation_id // ""' <<<"$arguments_json")"
+            [[ -n "$operation_id" ]] || die "px.operation.recover.execute preflight requires operation_id"
+
+            facts="$(python3 "$ROOT/bin/px-operation-store" recovery "$operation_id" --json)"
+            strategy="$(jq -r '.strategy // ""' <<<"$facts")"
+            plan_available="$(jq -r '.planAvailable // false' <<<"$facts")"
+            executor_available="$(jq -r '.executorAvailable // false' <<<"$facts")"
+            live_validation="$(jq -r '.requiresLiveValidation // false' <<<"$facts")"
+            source_action="$(jq -r '.actionId // ""' <<<"$facts")"
+            source_status="$(jq -r '.status // ""' <<<"$facts")"
+            recovery_class="$(jq -r '.recovery // ""' <<<"$facts")"
+            reason="$(jq -r '.reason // ""' <<<"$facts")"
+
+            if [[ "$strategy" != "DELETE_CREATED_WORKFLOW"
+                    || "$plan_available" != "true"
+                    || "$executor_available" != "true" ]]; then
+                allowed="false"
+                [[ -n "$reason" ]] || reason="NO EXECUTABLE RECOVERY PLAN"
+            fi
+
+            plan_repo="$(jq -r '.plan.repository // ""' <<<"$facts")"
+            plan_base="$(jq -r '.plan.base // ""' <<<"$facts")"
+            plan_path="$(jq -r '.plan.path // ""' <<<"$facts")"
+            plan_blob="$(jq -r '.plan.remoteBlobSha // ""' <<<"$facts")"
+            plan_yaml_sha="$(jq -r '.plan.expectedYamlSha // ""' <<<"$facts")"
+            plan_install="$(jq -r '.plan.installCommit // ""' <<<"$facts")"
+            plan_verified="$(jq -r '.plan.verifiedBaseSha // ""' <<<"$facts")"
+
+            if [[ "$allowed" == "true" ]]; then
+                if [[ -z "$plan_repo" || -z "$plan_base" || -z "$plan_path"
+                        || -z "$plan_blob" || -z "$plan_yaml_sha"
+                        || -z "$plan_install" || -z "$plan_verified" ]]; then
+                    allowed="false"
+                    reason="RECOVERY PLAN IDENTITY IS INCOMPLETE"
+                fi
+            fi
+
+            token="$(jq -nc \
+                --arg operationId "$operation_id" \
+                --arg actionId "$source_action" \
+                --arg status "$source_status" \
+                --arg recovery "$recovery_class" \
+                --arg strategy "$strategy" \
+                --arg repository "$plan_repo" \
+                --arg base "$plan_base" \
+                --arg path "$plan_path" \
+                --arg blobSha "$plan_blob" \
+                --arg yamlSha "$plan_yaml_sha" \
+                --arg installCommit "$plan_install" \
+                --arg verifiedBaseSha "$plan_verified" \
+                --argjson requiresLiveValidation "$live_validation" \
+                '{
+                    operationId:$operationId,
+                    actionId:$actionId,
+                    status:$status,
+                    recovery:$recovery,
+                    strategy:$strategy,
+                    repository:$repository,
+                    base:$base,
+                    path:$path,
+                    blobSha:$blobSha,
+                    yamlSha:$yamlSha,
+                    installCommit:$installCommit,
+                    verifiedBaseSha:$verifiedBaseSha,
+                    requiresLiveValidation:$requiresLiveValidation
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg operationId "$operation_id" \
+                '["operation","recover",$operationId,"--json"]')"
+
+            if [[ -n "$plan_path" ]]; then
+                summary="RECOVER // $strategy // $plan_repo // $plan_path // $plan_base // BLOB ${plan_blob:0:12}"
+            else
+                summary="RECOVER // $operation_id // ${strategy:-NO STRATEGY}"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$facts" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
         ai.turn|ai.quick.continue|ai.quick.report|ai.quick.checklist|ai.quick.next)
             local session_id session_json events_json baseline_event_id
             local status active_pid room_id doctor_id provider_id provider_session_id

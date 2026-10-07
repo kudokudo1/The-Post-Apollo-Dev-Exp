@@ -926,8 +926,16 @@ fn mutation_uses_px_guard(action: &Action) -> bool {
     action.execution_policy == "px-guarded"
 }
 
+fn mutation_uses_px_self_journal(action: &Action) -> bool {
+    action.execution_policy == "px-self-journaled"
+}
+
+fn mutation_uses_px_preflight(action: &Action) -> bool {
+    mutation_uses_px_guard(action) || mutation_uses_px_self_journal(action)
+}
+
 fn mutation_requires_arm(action: &Action) -> bool {
-    mutation_requires_hospital_arm(action) || mutation_uses_px_guard(action)
+    mutation_requires_hospital_arm(action) || mutation_uses_px_preflight(action)
 }
 
 fn mutation_execution_enabled(action: &Action) -> bool {
@@ -1094,14 +1102,14 @@ fn arm_mutation(app: &mut App, model: &Model, action: &Action) -> Result<(), Str
         return arm_hospital_integration(app, model, action);
     }
 
-    if mutation_uses_px_guard(action) {
+    if mutation_uses_px_preflight(action) {
         return arm_px_guarded_mutation(app, model, action);
     }
 
     Err("mutation has no arming policy".to_owned())
 }
 
-fn revalidate_px_guarded_mutation(
+fn revalidate_px_preflighted_mutation(
     app: &mut App,
     model: &Model,
     action: &Action,
@@ -1200,6 +1208,74 @@ fn journal_warning(result: Result<(), String>) -> String {
     }
 }
 
+fn run_px_self_journaled_mutation(app: &mut App, model: &Model, action: &Action) {
+    let output = match Command::new(&model.px_path)
+        .args(&app.mutation_args)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            app.open_output(
+                format!("{} // ERROR", action.title),
+                format!(
+                    "PX SELF-JOURNALED EXECUTION\n\ncould not launch PX recovery: {error}"
+                ),
+            );
+            return;
+        }
+    };
+
+    let text = display_output(&output.stdout, &output.stderr);
+
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "signal".to_owned());
+        app.open_output(
+            format!(
+                "{} // {} // FAILED",
+                action.title,
+                action.mutation.to_uppercase()
+            ),
+            format!(
+                "PX SELF-JOURNALED EXECUTION\n\nEXIT {code}\n\n{text}\n\nPX owns recovery journaling and verification for this action."
+            ),
+        );
+        return;
+    }
+
+    let payload = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+    let verified = payload
+        .as_ref()
+        .and_then(|value| value.get("verification"))
+        .and_then(serde_json::Value::as_str)
+        == Some("PASSED");
+    let recovered = payload
+        .as_ref()
+        .and_then(|value| value.get("recovered"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let state = if recovered && verified {
+        "VERIFIED"
+    } else {
+        "COMPLETE"
+    };
+
+    app.open_output(
+        format!(
+            "{} // {} // {state}",
+            action.title,
+            action.mutation.to_uppercase()
+        ),
+        format!(
+            "PX SELF-JOURNALED EXECUTION\n\n{text}\n\nPX owns the recovery operation journal and post-recovery verification."
+        ),
+    );
+}
+
 fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
     if !mutation_execution_enabled(action) {
         app.mode = Mode::MutationPreview;
@@ -1219,8 +1295,8 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         return;
     }
 
-    if mutation_uses_px_guard(action) {
-        if let Err(error) = revalidate_px_guarded_mutation(app, model, action) {
+    if mutation_uses_px_preflight(action) {
+        if let Err(error) = revalidate_px_preflighted_mutation(app, model, action) {
             app.mode = Mode::MutationPreview;
             app.mutation_armed = false;
             app.mutation_preflight.clear();
@@ -1231,6 +1307,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             ));
             return;
         }
+    }
+
+    if mutation_uses_px_self_journal(action) {
+        run_px_self_journaled_mutation(app, model, action);
+        return;
     }
 
     let argument_pairs = mutation_argument_pairs(action, &app.prompt_values);
@@ -2979,6 +3060,10 @@ mod tests {
         doctor_turn.mutation = "external".to_owned();
         doctor_turn.recovery = "EVIDENCE_ONLY".to_owned();
         doctor_turn.execution_policy = "px-guarded".to_owned();
+        let mut recovery = action("px.operation.recover.execute", "PX");
+        recovery.mutation = "remote".to_owned();
+        recovery.recovery = "EVIDENCE_ONLY".to_owned();
+        recovery.execution_policy = "px-self-journaled".to_owned();
 
         assert!(mutation_execution_enabled(&local));
         assert!(!mutation_execution_enabled(&remote));
@@ -2986,18 +3071,24 @@ mod tests {
         assert!(mutation_execution_enabled(&integration));
         assert!(mutation_execution_enabled(&cancel));
         assert!(mutation_execution_enabled(&doctor_turn));
+        assert!(mutation_execution_enabled(&recovery));
         assert!(mutation_requires_arm(&integration));
         assert!(mutation_requires_arm(&cancel));
         assert!(mutation_requires_arm(&doctor_turn));
+        assert!(mutation_requires_arm(&recovery));
         assert!(mutation_requires_hospital_arm(&integration));
         assert!(!mutation_requires_hospital_arm(&cancel));
         assert!(mutation_uses_px_guard(&cancel));
         assert!(mutation_uses_px_guard(&doctor_turn));
+        assert!(mutation_uses_px_preflight(&recovery));
+        assert!(mutation_uses_px_self_journal(&recovery));
+        assert!(!mutation_uses_px_guard(&recovery));
         assert!(!mutation_requires_arm(&remote));
         assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
         assert_eq!(mutation_confirmation_phrase(&integration), "REMOTE");
         assert_eq!(mutation_confirmation_phrase(&external), "EXTERNAL");
         assert_eq!(mutation_confirmation_phrase(&doctor_turn), "EXTERNAL");
+        assert_eq!(mutation_confirmation_phrase(&recovery), "REMOTE");
     }
 
     #[test]

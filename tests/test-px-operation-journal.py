@@ -83,6 +83,22 @@ def main():
         assert recovery["strategy"] == "EVIDENCE_ONLY"
         assert "not promised" in recovery["reason"]
 
+        evidence_preflight = payload(
+            run_px(
+                env,
+                "mutation-preflight",
+                "px.operation.recover.execute",
+                json.dumps({"operation_id": operation_id}),
+            )
+        )
+        assert evidence_preflight["allowed"] is False
+        assert evidence_preflight["frozenCommand"] == [
+            "operation",
+            "recover",
+            operation_id,
+            "--json",
+        ]
+
         finished = payload(
             run_px(
                 env,
@@ -227,6 +243,32 @@ def main():
             "--json",
         ]
         assert "requires live history and content validation" in create_recovery["reason"]
+
+        create_preflight = payload(
+            run_px(
+                env,
+                "mutation-preflight",
+                "px.operation.recover.execute",
+                json.dumps({"operation_id": create_id}),
+            )
+        )
+        assert create_preflight["allowed"] is True
+        assert create_preflight["frozenCommand"] == [
+            "operation",
+            "recover",
+            create_id,
+            "--json",
+        ]
+        assert "DELETE_CREATED_WORKFLOW" in create_preflight["summary"]
+        token = json.loads(create_preflight["token"])
+        assert token["operationId"] == create_id
+        assert token["actionId"] == "workflow.create"
+        assert token["strategy"] == "DELETE_CREATED_WORKFLOW"
+        assert token["repository"] == "owner/repo"
+        assert token["base"] == "main"
+        assert token["path"] == ".github/workflows/recoverable.yml"
+        assert token["blobSha"] == "blob-recoverable"
+        assert token["requiresLiveValidation"] is True
 
         invalid = run_px(
             env,
