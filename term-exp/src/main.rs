@@ -536,7 +536,7 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     }
 }
 
-fn draw(frame: &mut Frame, model: &Model) {
+fn draw(frame: &mut Frame, app: &App, model: &Model) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(FG)),
@@ -553,8 +553,14 @@ fn draw(frame: &mut Frame, model: &Model) {
         .split(area);
 
     draw_header(frame, rows[0], model);
-    draw_body(frame, rows[1], model);
-    draw_footer(frame, rows[2], model);
+
+    match app.mode {
+        Mode::Home => draw_body(frame, rows[1], model),
+        Mode::Leader => draw_leader(frame, rows[1], app, model),
+        Mode::Search => draw_search(frame, rows[1], app, model),
+    }
+
+    draw_footer(frame, rows[2], app, model);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
