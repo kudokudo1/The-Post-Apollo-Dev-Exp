@@ -87,6 +87,75 @@ struct RunRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct WorkflowRecord {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomRecord {
+    id: String,
+    #[serde(default)]
+    team: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    repository: String,
+    #[serde(default, rename = "doctorId")]
+    doctor_id: String,
+    #[serde(default, rename = "providerId")]
+    provider_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DoctorRecord {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderRecord {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    dialect: String,
+    #[serde(default)]
+    available: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionRecord {
+    id: String,
+    #[serde(default, rename = "roomId")]
+    room_id: String,
+    #[serde(default, rename = "doctorId")]
+    doctor_id: String,
+    #[serde(default, rename = "providerId")]
+    provider_id: String,
+    #[serde(default, rename = "workingDirectory")]
+    working_directory: String,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowTemplateRecord {
+    id: String,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolRegistry {
     version: u64,
     counts: ToolCounts,
@@ -653,33 +722,106 @@ fn repository_choices(model: &Model) -> Vec<ActionChoiceItem> {
         .collect()
 }
 
-fn selected_repository<'a>(action: &Action, values: &'a [String]) -> Option<&'a str> {
+fn selected_argument_value<'a>(
+    action: &Action,
+    values: &'a [String],
+    kind: &str,
+) -> Option<&'a str> {
     action
         .arguments
         .iter()
-        .position(|argument| argument.kind == "repository")
+        .position(|argument| argument.kind == kind)
         .and_then(|index| values.get(index))
         .map(String::as_str)
         .filter(|value| !value.is_empty())
 }
 
-fn run_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+fn repository_slug<'a>(model: &'a Model, value: &'a str) -> &'a str {
+    model
+        .repositories
+        .iter()
+        .find(|repository| repository.alias == value)
+        .map(|repository| repository.repository.as_str())
+        .unwrap_or(value)
+}
+
+fn load_choice_json<T>(
+    model: &Model,
+    args: &[String],
+    description: &str,
+) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let output = Command::new(&model.px_path)
-        .args(["runs", repository, "20"])
+        .args(args)
         .output()
-        .map_err(|error| format!("could not list workflow runs: {error}"))?;
+        .map_err(|error| format!("could not load {description}: {error}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if stderr.is_empty() {
-            format!("px runs {repository} failed")
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+
+        return Err(if detail.is_empty() {
+            format!("PX could not load {description}")
         } else {
-            stderr
+            detail
         });
     }
 
-    let runs: Vec<RunRecord> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("workflow run list returned invalid JSON: {error}"))?;
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("{description} returned invalid JSON: {error}"))
+}
+
+fn workflow_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<WorkflowRecord> = load_choice_json(
+        model,
+        &["workflows".to_owned(), repository.to_owned()],
+        "workflows",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|workflow| {
+            let value = if workflow.path.is_empty() {
+                workflow.name.clone()
+            } else {
+                workflow.path.clone()
+            };
+            let label = if workflow.name.is_empty() {
+                value.clone()
+            } else {
+                workflow.name
+            };
+            let detail = if workflow.state.is_empty() {
+                workflow.path
+            } else if workflow.path.is_empty() {
+                workflow.state
+            } else {
+                format!("{}  {}", workflow.path, workflow.state)
+            };
+
+            ActionChoiceItem {
+                value,
+                label,
+                detail,
+            }
+        })
+        .filter(|choice| !choice.value.is_empty())
+        .collect())
+}
+
+fn run_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let runs: Vec<RunRecord> = load_choice_json(
+        model,
+        &[
+            "runs".to_owned(),
+            repository.to_owned(),
+            "20".to_owned(),
+        ],
+        "workflow runs",
+    )?;
 
     Ok(runs
         .into_iter()
@@ -702,49 +844,244 @@ fn run_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>,
         .collect())
 }
 
+fn room_choices(
+    model: &Model,
+    repository: Option<&str>,
+) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<RoomRecord> = load_choice_json(
+        model,
+        &[
+            "hospital".to_owned(),
+            "rooms".to_owned(),
+            "--json".to_owned(),
+        ],
+        "Hospital rooms",
+    )?;
+    let repository = repository.map(|value| repository_slug(model, value));
+
+    Ok(rows
+        .into_iter()
+        .filter(|room| {
+            repository
+                .map(|wanted| room.repository.is_empty() || room.repository == wanted)
+                .unwrap_or(true)
+        })
+        .map(|room| {
+            let label = if room.team.is_empty() {
+                room.id.clone()
+            } else {
+                room.team.clone()
+            };
+            let mut details = Vec::new();
+
+            if !room.repository.is_empty() {
+                details.push(room.repository);
+            }
+            if !room.branch.is_empty() {
+                details.push(room.branch);
+            }
+            if !room.doctor_id.is_empty() {
+                details.push(format!("doctor {}", room.doctor_id));
+            }
+            if !room.provider_id.is_empty() {
+                details.push(format!("provider {}", room.provider_id));
+            }
+
+            ActionChoiceItem {
+                value: room.id,
+                label,
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
+fn doctor_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<DoctorRecord> = load_choice_json(
+        model,
+        &[
+            "hospital".to_owned(),
+            "doctors".to_owned(),
+            "--json".to_owned(),
+        ],
+        "Hospital doctors",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|doctor| {
+            let label = if doctor.name.is_empty() {
+                doctor.id.clone()
+            } else {
+                doctor.name
+            };
+            let detail = [doctor.role, doctor.status]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("  ");
+
+            ActionChoiceItem {
+                value: doctor.id,
+                label,
+                detail,
+            }
+        })
+        .collect())
+}
+
+fn provider_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<ProviderRecord> = load_choice_json(
+        model,
+        &[
+            "agent".to_owned(),
+            "providers".to_owned(),
+            "--json".to_owned(),
+        ],
+        "AI providers",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|provider| {
+            let label = if provider.name.is_empty() {
+                provider.id.clone()
+            } else {
+                provider.name
+            };
+            let availability = if provider.available {
+                "READY"
+            } else {
+                "UNAVAILABLE"
+            };
+            let detail = if provider.dialect.is_empty() {
+                availability.to_owned()
+            } else {
+                format!("{availability}  {}", provider.dialect)
+            };
+
+            ActionChoiceItem {
+                value: provider.id,
+                label,
+                detail,
+            }
+        })
+        .collect())
+}
+
+fn session_choices(
+    model: &Model,
+    room: Option<&str>,
+) -> Result<Vec<ActionChoiceItem>, String> {
+    let mut args = vec!["hospital".to_owned(), "sessions".to_owned()];
+
+    if let Some(room) = room.filter(|value| !value.is_empty()) {
+        args.extend(["--room-id".to_owned(), room.to_owned()]);
+    }
+
+    args.push("--json".to_owned());
+
+    let rows: Vec<SessionRecord> = load_choice_json(model, &args, "Doctor sessions")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|session| {
+            let mut details = Vec::new();
+
+            if !session.room_id.is_empty() {
+                details.push(format!("room {}", session.room_id));
+            }
+            if !session.doctor_id.is_empty() {
+                details.push(format!("doctor {}", session.doctor_id));
+            }
+            if !session.provider_id.is_empty() {
+                details.push(format!("provider {}", session.provider_id));
+            }
+            if !session.status.is_empty() {
+                details.push(session.status);
+            }
+            if !session.working_directory.is_empty() {
+                details.push(session.working_directory);
+            }
+
+            ActionChoiceItem {
+                value: session.id.clone(),
+                label: session.id,
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
+fn workflow_template_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<WorkflowTemplateRecord> = load_choice_json(
+        model,
+        &["templates".to_owned()],
+        "workflow templates",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|template| ActionChoiceItem {
+            value: template.id.clone(),
+            label: template.id,
+            detail: template.summary,
+        })
+        .collect())
+}
+
+fn known_value_choices(
+    model: &Model,
+    action: &Action,
+    values: &[String],
+    argument: &ActionArgument,
+) -> Result<Option<Vec<ActionChoiceItem>>, String> {
+    let repository = selected_argument_value(action, values, "repository");
+    let room = selected_argument_value(action, values, "room");
+
+    match argument.kind.as_str() {
+        "repository" => Ok(Some(repository_choices(model))),
+        "workflow" => {
+            let repository =
+                repository.ok_or_else(|| "select a repository first".to_owned())?;
+            workflow_choices(model, repository).map(Some)
+        }
+        "run" => {
+            let repository =
+                repository.ok_or_else(|| "select a repository first".to_owned())?;
+            run_choices(model, repository).map(Some)
+        }
+        "room" => room_choices(model, repository).map(Some),
+        "doctor" => doctor_choices(model).map(Some),
+        "provider" => provider_choices(model).map(Some),
+        "session" => session_choices(model, room).map(Some),
+        "workflow_template" => workflow_template_choices(model).map(Some),
+        _ => Ok(None),
+    }
+}
+
 fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
     let Some(argument) = action.arguments.get(app.prompt_index) else {
         return;
     };
 
-    match argument.kind.as_str() {
-        "repository" => {
-            let choices = repository_choices(model);
-            if choices.is_empty() {
-                app.open_prompt();
-                app.status = Some("No repositories are registered; type one manually".to_owned());
-            } else {
-                app.open_choice(choices);
-            }
+    match known_value_choices(model, action, &app.prompt_values, argument) {
+        Ok(Some(choices)) if !choices.is_empty() => app.open_choice(choices),
+        Ok(Some(_)) => {
+            app.open_prompt();
+            app.status = Some(format!(
+                "No known {} values were found; type one manually",
+                argument.kind
+            ));
         }
-        "run" => {
-            let Some(repository) =
-                selected_repository(action, &app.prompt_values).map(str::to_owned)
-            else {
-                app.open_prompt();
-                app.status = Some(
-                    "No repository is selected, so the run ID must be typed manually".to_owned(),
-                );
-                return;
-            };
-
-            match run_choices(model, &repository) {
-                Ok(choices) if !choices.is_empty() => app.open_choice(choices),
-                Ok(_) => {
-                    app.open_prompt();
-                    app.status = Some(format!(
-                        "No recent runs found for {repository}; type a run ID manually"
-                    ));
-                }
-                Err(error) => {
-                    app.open_prompt();
-                    app.status = Some(format!(
-                        "Could not load runs automatically ({error}); type a run ID manually"
-                    ));
-                }
-            }
+        Ok(None) => app.open_prompt(),
+        Err(error) => {
+            app.open_prompt();
+            app.status = Some(format!(
+                "Could not load {} choices ({error}); type one manually",
+                argument.kind
+            ));
         }
-        _ => app.open_prompt(),
     }
 }
 
@@ -1757,7 +2094,10 @@ mod tests {
         };
 
         let values = vec!["taskbars".to_owned(), String::new()];
-        assert_eq!(selected_repository(&action, &values), Some("taskbars"));
+        assert_eq!(
+            selected_argument_value(&action, &values, "repository"),
+            Some("taskbars")
+        );
     }
 
     #[test]
