@@ -99,8 +99,13 @@ Mutation handling is deliberately staged:
   execute. Verification only passes when exactly one new matching
   `workflow_dispatch` run appears; zero or multiple candidates are reported
   as failed/ambiguous rather than guessed;
-- workflow creation and workflow deletion remain preview-only until their own
-  PX guard and verification contracts are certified;
+- workflow deletion is `px-guarded`: PX canonicalizes the target ref, freezes
+  the exact workflow path, ref SHA, and workflow blob SHA, then supplies a delete
+  command carrying the expected blob SHA. Execution refuses if that workflow file
+  changed after confirmation, and verification requires the file to be absent on
+  an advanced target ref;
+- workflow creation remains preview-only until its own PX guard and verification
+  contract is certified;
 - after guarded remote execution, TERM EXP reports execution success separately
   from post-operation verification.
 
