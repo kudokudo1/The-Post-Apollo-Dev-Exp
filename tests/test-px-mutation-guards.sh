@@ -187,6 +187,22 @@ chmod +x "$tmp/actionlint"
 
 export PATH="$tmp:/usr/bin:/bin"
 export PX_REPO_REGISTRY="$tmp/repos.tsv"
+export PX_HOSPITAL_DATA_DIR="$tmp/hospital-data"
+
+doctor_bed="$tmp/doctor-bed"
+mkdir -p "$doctor_bed"
+
+"$ROOT/bin/px" hospital init --json >/dev/null
+"$ROOT/bin/px" hospital doctor-put doctor-ext \
+    --name "TERM EXP Doctor" --role DOCTOR --status ACTIVE --json >/dev/null
+"$ROOT/bin/px" hospital room-put room-ext \
+    --team EXT --branch main --bed-path "$doctor_bed" \
+    --doctor-id doctor-ext --provider-id mock --json >/dev/null
+"$ROOT/bin/px" hospital session-put session-ext \
+    --room-id room-ext --doctor-id doctor-ext --provider-id mock \
+    --status WAITING --json >/dev/null
+"$ROOT/bin/px" hospital session-runtime session-ext \
+    --working-directory "$doctor_bed" --status WAITING --json >/dev/null
 
 arguments='{"repository":"dev","run_id":"123"}'
 
@@ -440,5 +456,113 @@ jq -e '
   and (.frozenCommand | index("--script=tests/test-px-hospital-store.sh")) != null
   and (.token | fromjson | .scriptPath) == "tests/test-px-hospital-store.sh"
 ' <<<"$script_preflight" >/dev/null
+
+external_arguments='{"session_id":"session-ext","prompt":"Inspect the selected Room and report the next safe action."}'
+
+external_preflight="$("$ROOT/bin/px" mutation-preflight ai.turn "$external_arguments")"
+external_token="$(jq -r '.token' <<<"$external_preflight")"
+jq -e '
+  .allowed == true
+  and .frozenCommand == [
+    "agent",
+    "turn",
+    "session-ext",
+    "--prompt",
+    "Inspect the selected Room and report the next safe action.",
+    "--json"
+  ]
+  and (.token | fromjson | .roomId) == "room-ext"
+  and (.token | fromjson | .doctorId) == "doctor-ext"
+  and (.token | fromjson | .providerId) == "mock"
+  and (.token | fromjson | .baselineEventId) == 0
+  and (.summary | contains("MESSAGE DOCTOR"))
+' <<<"$external_preflight" >/dev/null
+
+"$ROOT/bin/px" hospital session-runtime session-ext \
+    --status OPERATING --active-pid 4242 --json >/dev/null
+external_busy="$("$ROOT/bin/px" mutation-preflight ai.turn "$external_arguments")"
+jq -e '
+  .allowed == false
+  and (.reason | contains("DOCTOR ALREADY OPERATING"))
+' <<<"$external_busy" >/dev/null
+
+"$ROOT/bin/px" hospital session-runtime session-ext \
+    --status WAITING --clear-active-pid --clear-turn-started --json >/dev/null
+external_preflight="$("$ROOT/bin/px" mutation-preflight ai.turn "$external_arguments")"
+external_token="$(jq -r '.token' <<<"$external_preflight")"
+
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.started --payload '{}' --json >/dev/null
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.completed --payload '{"exitCode":0}' --json >/dev/null
+
+external_verified="$("$ROOT/bin/px" mutation-verify ai.turn "$external_arguments" "$external_token")"
+jq -e '
+  .passed == true
+  and .target.session.status == "WAITING"
+  and .target.counts.started == 1
+  and .target.counts.completed == 1
+  and .target.counts.failed == 0
+  and .target.counts.cancelled == 0
+  and (.summary | contains("MESSAGE DOCTOR VERIFIED"))
+' <<<"$external_verified" >/dev/null
+
+ambiguous_preflight="$("$ROOT/bin/px" mutation-preflight ai.turn "$external_arguments")"
+ambiguous_token="$(jq -r '.token' <<<"$ambiguous_preflight")"
+for _ in 1 2; do
+    "$ROOT/bin/px" hospital event-append \
+        --session-id session-ext --event-type turn.started --payload '{}' --json >/dev/null
+    "$ROOT/bin/px" hospital event-append \
+        --session-id session-ext --event-type turn.completed --payload '{"exitCode":0}' --json >/dev/null
+done
+
+external_ambiguous="$("$ROOT/bin/px" mutation-verify ai.turn "$external_arguments" "$ambiguous_token")"
+jq -e '
+  .passed == false
+  and (.reason | contains("ACTIVITY IS AMBIGUOUS"))
+  and .target.counts.started == 2
+  and .target.counts.completed == 2
+' <<<"$external_ambiguous" >/dev/null
+
+report_arguments='{"session_id":"session-ext"}'
+report_preflight="$("$ROOT/bin/px" mutation-preflight ai.quick.report "$report_arguments")"
+report_token="$(jq -r '.token' <<<"$report_preflight")"
+jq -e '
+  .allowed == true
+  and .frozenCommand == ["agent","quick","session-ext","REPORT","--json"]
+  and (.summary | contains("QUICK REPORT"))
+' <<<"$report_preflight" >/dev/null
+
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.started --payload '{}' --json >/dev/null
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.completed --payload '{"exitCode":0}' --json >/dev/null
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type checkpoint.created --payload '{"checkpointId":"1"}' --json >/dev/null
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type room_report.created --payload '{"reportId":"1"}' --json >/dev/null
+
+report_verified="$("$ROOT/bin/px" mutation-verify ai.quick.report "$report_arguments" "$report_token")"
+jq -e '
+  .passed == true
+  and .target.counts.started == 1
+  and .target.counts.completed == 1
+  and .target.counts.checkpoints == 1
+  and .target.counts.reports == 1
+  and (.summary | contains("QUICK REPORT VERIFIED"))
+' <<<"$report_verified" >/dev/null
+
+report_missing_preflight="$("$ROOT/bin/px" mutation-preflight ai.quick.report "$report_arguments")"
+report_missing_token="$(jq -r '.token' <<<"$report_missing_preflight")"
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.started --payload '{}' --json >/dev/null
+"$ROOT/bin/px" hospital event-append \
+    --session-id session-ext --event-type turn.completed --payload '{"exitCode":0}' --json >/dev/null
+
+report_missing="$("$ROOT/bin/px" mutation-verify ai.quick.report "$report_arguments" "$report_missing_token")"
+jq -e '
+  .passed == false
+  and (.reason | contains("CHECKPOINT AND ROOM REPORT"))
+' <<<"$report_missing" >/dev/null
 
 printf 'PX guarded mutation self-test: PASS\n'
