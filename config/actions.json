@@ -154,6 +154,34 @@
       ]
     },
     {
+      "id": "repository.branches.list",
+      "title": "List Repository Branches",
+      "category": "GitHub",
+      "summary": "List known branches and their current heads for a repository.",
+      "command": [
+        "branches",
+        "{repository}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "branch",
+        "branches",
+        "ref",
+        "heads"
+      ]
+    },
+    {
       "id": "github.runs.list",
       "title": "List Workflow Runs",
       "category": "GitHub",
