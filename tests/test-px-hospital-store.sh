@@ -25,6 +25,21 @@ report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' 
 exact_report_json="$("$ROOT/bin/px" hospital room-report "$report_id" --json)"
 checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
 room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
+
+patient_chart_json="$(printf '%s' 'Taskbars keeps provider-independent Room identity.' | "$ROOT/bin/px" hospital chart-entry-add --scope PATIENT --patient-id patient-taskbars --entry-kind INVARIANT --title "Room identity" --priority 95 --author-role operator --author-id operator --source-type MANUAL --source-ref architecture-review --body-stdin --json)"
+patient_chart_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$patient_chart_json")"
+
+room_chart_old_json="$(printf '%s' 'Preserve the AppControl presentation shim during extraction.' | "$ROOT/bin/px" hospital chart-entry-add --scope ROOM --room-id T6 --entry-kind DECISION --title "Presentation shim" --priority 80 --author-role operator --author-id operator --source-type ROOM_REPORT --source-ref "$report_id" --source-room-id T6 --source-session-id session-t6-1 --source-message-id "$incoming_id" --source-checkpoint-id "$checkpoint_id" --source-report-id "$report_id" --body-stdin --json)"
+room_chart_old_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$room_chart_old_json")"
+
+room_chart_new_json="$(printf '%s' 'Move presentation ownership now; the compatibility shim is no longer required.' | "$ROOT/bin/px" hospital chart-entry-add --scope ROOM --room-id T6 --entry-kind DECISION --title "Presentation ownership" --priority 90 --author-role operator --author-id operator --source-type ROOM_REPORT --source-ref "$report_id" --source-room-id T6 --source-session-id session-t6-1 --source-report-id "$report_id" --supersedes-id "$room_chart_old_id" --body-stdin --json)"
+
+room_chart_old_after_json="$("$ROOT/bin/px" hospital chart-entry "$room_chart_old_id" --json)"
+patient_chart_active_json="$("$ROOT/bin/px" hospital chart-entries --scope PATIENT --patient-id patient-taskbars --status ACTIVE --json)"
+room_chart_active_json="$("$ROOT/bin/px" hospital chart-entries --scope ROOM --room-id T6 --status ACTIVE --json)"
+room_chart_all_json="$("$ROOT/bin/px" hospital chart-entries --scope ROOM --room-id T6 --status ALL --json)"
+patient_chart_resolved_json="$("$ROOT/bin/px" hospital chart-entry-status "$patient_chart_id" RESOLVED --json)"
+patient_chart_active_after_json="$("$ROOT/bin/px" hospital chart-entries --scope PATIENT --patient-id patient-taskbars --status ACTIVE --json)"
 "$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
 rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
 doctors_json="$("$ROOT/bin/px" hospital doctors --json)"
@@ -48,6 +63,15 @@ python3 - \
     "$report_json" \
     "$exact_report_json" \
     "$room_reports_json" \
+    "$patient_chart_json" \
+    "$room_chart_old_json" \
+    "$room_chart_new_json" \
+    "$room_chart_old_after_json" \
+    "$patient_chart_active_json" \
+    "$room_chart_active_json" \
+    "$room_chart_all_json" \
+    "$patient_chart_resolved_json" \
+    "$patient_chart_active_after_json" \
     "$rooms_json" \
     "$doctors_json" \
     "$sessions_json" \
@@ -73,15 +97,24 @@ checkpoints = json.loads(sys.argv[12])
 report = json.loads(sys.argv[13])
 exact_report = json.loads(sys.argv[14])
 room_reports = json.loads(sys.argv[15])
-rooms = json.loads(sys.argv[16])
-doctors = json.loads(sys.argv[17])
-sessions = json.loads(sys.argv[18])
-messages = json.loads(sys.argv[19])
-older = json.loads(sys.argv[20])
+patient_chart = json.loads(sys.argv[16])
+room_chart_old = json.loads(sys.argv[17])
+room_chart_new = json.loads(sys.argv[18])
+room_chart_old_after = json.loads(sys.argv[19])
+patient_chart_active = json.loads(sys.argv[20])
+room_chart_active = json.loads(sys.argv[21])
+room_chart_all = json.loads(sys.argv[22])
+patient_chart_resolved = json.loads(sys.argv[23])
+patient_chart_active_after = json.loads(sys.argv[24])
+rooms = json.loads(sys.argv[25])
+doctors = json.loads(sys.argv[26])
+sessions = json.loads(sys.argv[27])
+messages = json.loads(sys.argv[28])
+older = json.loads(sys.argv[29])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 7, payload
+    assert payload["schema_version"] == 8, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -91,6 +124,7 @@ for payload in (init, status):
         "session_events": 0,
         "room_checkpoints": 0,
         "room_reports": 0,
+        "chart_entries": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -158,6 +192,44 @@ assert exact_report == report, (exact_report, report)
 assert len(room_reports) == 1, room_reports
 assert room_reports[0]["id"] == report["id"], room_reports
 
+assert patient_chart["scope"] == "PATIENT", patient_chart
+assert patient_chart["patientId"] == "patient-taskbars", patient_chart
+assert patient_chart["roomId"] == "", patient_chart
+assert patient_chart["kind"] == "INVARIANT", patient_chart
+assert patient_chart["priority"] == 95, patient_chart
+assert patient_chart["status"] == "ACTIVE", patient_chart
+assert patient_chart["authorRole"] == "operator", patient_chart
+assert patient_chart["sourceType"] == "MANUAL", patient_chart
+assert patient_chart["sourceRef"] == "architecture-review", patient_chart
+
+assert room_chart_old["scope"] == "ROOM", room_chart_old
+assert room_chart_old["roomId"] == "T6", room_chart_old
+assert room_chart_old["patientId"] == "", room_chart_old
+assert room_chart_old["sourceRoomId"] == "T6", room_chart_old
+assert room_chart_old["sourceSessionId"] == "session-t6-1", room_chart_old
+assert room_chart_old["sourceMessageId"] == incoming["id"], room_chart_old
+assert room_chart_old["sourceCheckpointId"] == checkpoint["id"], room_chart_old
+assert room_chart_old["sourceReportId"] == report["id"], room_chart_old
+
+assert room_chart_new["status"] == "ACTIVE", room_chart_new
+assert room_chart_new["supersedesId"] == room_chart_old["id"], room_chart_new
+assert room_chart_new["priority"] == 90, room_chart_new
+
+assert room_chart_old_after["status"] == "SUPERSEDED", room_chart_old_after
+assert room_chart_old_after["supersededById"] == room_chart_new["id"], room_chart_old_after
+assert room_chart_old_after["body"] == room_chart_old["body"], room_chart_old_after
+
+assert [row["id"] for row in patient_chart_active] == [patient_chart["id"]], patient_chart_active
+assert [row["id"] for row in room_chart_active] == [room_chart_new["id"]], room_chart_active
+assert [row["id"] for row in room_chart_all] == [
+    room_chart_new["id"],
+    room_chart_old["id"],
+], room_chart_all
+
+assert patient_chart_resolved["status"] == "RESOLVED", patient_chart_resolved
+assert patient_chart_resolved["body"] == patient_chart["body"], patient_chart_resolved
+assert patient_chart_active_after == [], patient_chart_active_after
+
 assert len(rooms) == 2, rooms
 rooms_by_id = {row["id"]: row for row in rooms}
 assert rooms_by_id["T6"]["lastMessage"] == incoming["body"], rooms
@@ -184,7 +256,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("7",), version
+    assert version == ("8",), version
 
     tables = {
         row[0]
@@ -192,7 +264,7 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports", "chart_entries"):
         assert table in tables, (table, tables)
 
     room_columns = {
