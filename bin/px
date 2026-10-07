@@ -584,6 +584,73 @@ mutation_verify() {
                     target:$target
                 }'
             ;;
+        github.workflow.run)
+            need gh
+
+            local repository_key repo workflow_path workflow_name ref_sha
+            local before_ids current candidates candidate_count target
+            local passed="false" summary="" reason=""
+            local check
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "github.workflow.run verification requires repository"
+            [[ -n "$preflight_token" ]] || die "github.workflow.run verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            workflow_name="$(jq -r '.workflowName // ""' <<<"$preflight_token")"
+            ref_sha="$(jq -r '.refSha // ""' <<<"$preflight_token")"
+            before_ids="$(jq -c '.beforeRunIds // []' <<<"$preflight_token")"
+
+            [[ -n "$workflow_path" ]] || die "dispatch verification token has no workflow path"
+            [[ -n "$ref_sha" ]] || die "dispatch verification token has no ref SHA"
+
+            target='{}'
+
+            for check in 1 2 3 4 5; do
+                current="$(github_dispatch_runs_for "$repo" "$workflow_path" "$ref_sha")"
+                candidates="$(jq -c \
+                    --argjson before "$before_ids" \
+                    '[.[] | select((.databaseId as $id | $before | index($id)) == null)]' \
+                    <<<"$current")"
+                candidate_count="$(jq 'length' <<<"$candidates")"
+
+                if [[ "$candidate_count" -eq 1 ]]; then
+                    target="$(jq -c '.[0]' <<<"$candidates")"
+                    passed="true"
+                    summary="DISPATCH VERIFIED // $workflow_name // #$(jq -r '.databaseId' <<<"$target")"
+                    break
+                fi
+
+                if [[ "$candidate_count" -gt 1 ]]; then
+                    reason="DISPATCH VERIFICATION AMBIGUOUS // $candidate_count NEW MATCHING RUNS"
+                    summary="DISPATCH VERIFY FAILED // $workflow_name"
+                    break
+                fi
+
+                [[ "$check" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "$passed" != "true" && -z "$reason" ]]; then
+                reason="NO NEW MATCHING WORKFLOW_DISPATCH RUN APPEARED"
+                summary="DISPATCH VERIFY FAILED // $workflow_name"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$target" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
         *)
             die "no PX mutation verification policy for action: $action_id"
             ;;
