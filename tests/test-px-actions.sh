@@ -34,6 +34,7 @@ jq -e '
   and any(.actions[]; .id == "ai.session.status")
   and any(.actions[]; .id == "ai.session.cancel")
   and any(.actions[]; .id == "ai.quick.pause")
+  and any(.actions[]; .id == "px.tool.resolve")
 ' <<<"$registry" >/dev/null
 
 hospital="$("$ROOT/bin/px" actions hospital --json)"

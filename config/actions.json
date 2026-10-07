@@ -72,6 +72,38 @@
       ]
     },
     {
+      "id": "px.tool.resolve",
+      "title": "Resolve Tool",
+      "category": "PX",
+      "summary": "Resolve one command to the preferred host or container execution target using the PX backend policy.",
+      "command": [
+        "which",
+        "{tool}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "tool",
+          "required": true,
+          "kind": "command"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "tool",
+        "which",
+        "resolve",
+        "backend",
+        "environment",
+        "toolbox",
+        "terminal",
+        "command"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",
