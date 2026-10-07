@@ -1920,6 +1920,7 @@ def orchestrate_ready(args) -> dict:
     candidates = []
     queued = []
     skipped = []
+    ready_total = 0
 
     for room in rooms:
         room_id = str(room.get("id") or "")
@@ -1935,6 +1936,7 @@ def orchestrate_ready(args) -> dict:
         if not ready:
             continue
 
+        ready_total += len(ready)
         primary = ready[0]
         for extra in ready[1:]:
             queued.append({
@@ -2040,7 +2042,7 @@ def orchestrate_ready(args) -> dict:
     if args.dry_run:
         return {
             "dryRun": True,
-            "readyCount": len(candidates) + len(queued) + len(skipped),
+            "readyCount": ready_total,
             "startableCount": len(startable),
             "plan": plan,
             "started": [],
@@ -2138,7 +2140,7 @@ def orchestrate_ready(args) -> dict:
 
     return {
         "dryRun": False,
-        "readyCount": len(candidates) + len(queued) + len(skipped),
+        "readyCount": ready_total,
         "startableCount": len(startable),
         "plan": plan,
         "started": started,
