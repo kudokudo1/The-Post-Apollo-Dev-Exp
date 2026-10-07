@@ -882,6 +882,7 @@ def run_turn(args) -> dict:
             "operatorMessageId": str(operator_message.get("id") or ""),
             "assistantMessageId": "",
             "eventCount": 0,
+            "context": context_summary(context),
             "stderr": stderr_text.strip(),
             "cancelled": True,
         }
@@ -1411,10 +1412,7 @@ def run_report_feedback(args) -> dict:
         + "ORIGINAL DOCTOR NOTE\n"
         + str(report.get("body") or "")
         + "\n\n"
-        + "OPERATOR FEEDBACK\n"
-        + feedback
-        + "\n\n"
-        + "Address this feedback within the current Room assignment. "
+        + "Address the operator turn below within the current Room assignment. "
         + "If a correction is safe and within scope, make it and explain "
         + "what changed. Otherwise surface the blocker or decision needed."
     )
@@ -1430,13 +1428,14 @@ def run_report_feedback(args) -> dict:
 
     turn_args = argparse.Namespace(
         session_id=args.session_id,
-        prompt=report_context,
+        prompt=feedback,
         prompt_stdin=False,
         prompt_json_stdin=False,
         working_directory="",
         author_id=args.author_id,
         message_type="report_feedback",
         timeout=args.timeout,
+        supplemental_context=report_context,
     )
     result = run_turn(turn_args)
 
