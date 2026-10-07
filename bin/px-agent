@@ -1216,6 +1216,14 @@ def render_live_context(payload: dict) -> str:
         "- Never treat a saved Chart/Report Git claim as current truth.",
         "- Reacquire live state before consequential Git claims or edits.",
         "- Surface blockers, ambiguity, or authority boundaries to the operator.",
+        "",
+        "RICH CHAT OUTPUT",
+        "- Markdown tables, task lists, fenced code, and ordinary https links are supported.",
+        "- Link files as [OPEN FILE](hospital:file:relative/path.ext).",
+        "- Link the current Room diff as [OPEN DIFF](hospital:diff).",
+        "- Link Rooms as [ROOM](hospital:room:ROOM_ID).",
+        "- Link Room Reports as [REPORT](hospital:report:REPORT_ID).",
+        "- Prefer these links when a concrete artifact would help the operator act immediately.",
     ])
 
     return "\n".join(lines).strip()
