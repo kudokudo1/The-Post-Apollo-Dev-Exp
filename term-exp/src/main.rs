@@ -1109,6 +1109,8 @@ fn commit_choices(
 
     if let Some(reference) = reference.filter(|value| !value.is_empty()) {
         args.push(reference.to_owned());
+    } else {
+        args.push(String::new());
     }
 
     args.push("30".to_owned());
@@ -1200,7 +1202,19 @@ fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
     };
 
     match known_value_choices(model, action, &app.prompt_values, argument) {
-        Ok(Some(choices)) if !choices.is_empty() => app.open_choice(choices),
+        Ok(Some(mut choices)) if !choices.is_empty() => {
+            if !argument.required {
+                choices.insert(
+                    0,
+                    ActionChoiceItem {
+                        value: String::new(),
+                        label: "(default / none)".to_owned(),
+                        detail: "leave this optional value unset".to_owned(),
+                    },
+                );
+            }
+            app.open_choice(choices);
+        }
         Ok(Some(_)) => {
             app.open_prompt();
             app.status = Some(format!(
