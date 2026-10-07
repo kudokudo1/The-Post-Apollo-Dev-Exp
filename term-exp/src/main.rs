@@ -1058,4 +1058,42 @@ mod tests {
         assert_eq!(app.leader_selected, 3);
         assert_eq!(app.search_selected, 1);
     }
+
+
+    #[test]
+    fn specialist_allowlist_is_explicit() {
+        for name in ["lazygit", "nvim", "btop", "zellij", "fzf"] {
+            assert!(is_specialist_tool(name), "{name}");
+        }
+
+        assert!(!is_specialist_tool("git"));
+        assert!(!is_specialist_tool("rm"));
+    }
+
+    #[test]
+    fn resolver_payload_keeps_exact_invocation() {
+        let payload = r#"{
+            "status":"FOUND",
+            "selected":{
+                "name":"lazygit",
+                "backend":"toolbox",
+                "environment":"toolbox:fedora-toolbox-44",
+                "invocation":[
+                    "/usr/bin/toolbox",
+                    "run",
+                    "-c",
+                    "fedora-toolbox-44",
+                    "--",
+                    "/usr/bin/lazygit"
+                ]
+            }
+        }"#;
+
+        let result: ResolveResult = serde_json::from_str(payload).unwrap();
+        let selected = result.selected.unwrap();
+
+        assert_eq!(selected.name, "lazygit");
+        assert_eq!(selected.backend, "toolbox");
+        assert_eq!(selected.invocation.last().unwrap(), "/usr/bin/lazygit");
+    }
 }
