@@ -72,7 +72,7 @@ recovery_contract="$(jq -c '
 ' <<<"$registry")"
 [[ "$recovery_contract" == '{"read_non_none":0,"mutation_undeclared":0,"integrate":"EVIDENCE_ONLY"}' ]]
 
-guarded_remote_contract="$(jq -c '
+guarded_mutation_contract="$(jq -c '
   {
     ids: (
       [
@@ -85,12 +85,15 @@ guarded_remote_contract="$(jq -c '
     invalid: [
       .actions[]
       | select((.executionPolicy // "") == "px-guarded")
-      | select(.mutation != "remote" or .recovery != "EVIDENCE_ONLY")
+      | select(
+          ((.mutation != "remote") and (.mutation != "external"))
+          or .recovery != "EVIDENCE_ONLY"
+        )
       | .id
     ]
   }
 ' <<<"$registry")"
-[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun","github.workflow.run","workflow.create","workflow.delete"],"invalid":[]}' ]]
+[[ "$guarded_mutation_contract" == '{"ids":["ai.quick.checklist","ai.quick.continue","ai.quick.next","ai.quick.report","ai.turn","github.run.cancel","github.run.rerun","github.workflow.run","workflow.create","workflow.delete"],"invalid":[]}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
