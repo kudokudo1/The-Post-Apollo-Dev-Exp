@@ -104,6 +104,29 @@
       ]
     },
     {
+      "id": "px.term.open",
+      "title": "Open PX TERM EXP",
+      "category": "PX",
+      "summary": "Open the live terminal control surface backed by the current PX action and tool registries.",
+      "command": [
+        "term"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "cargo"
+      ],
+      "keywords": [
+        "terminal",
+        "tui",
+        "term",
+        "px",
+        "control",
+        "surface",
+        "ratatui"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",
