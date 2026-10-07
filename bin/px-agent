@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = ROOT / "config" / "agent-providers.json"
+PX = ROOT / "bin" / "px"
+
+
+def provider_config_path() -> Path:
+    override = os.environ.get("PX_AGENT_PROVIDER_CONFIG", "").strip()
+    return Path(override).expanduser() if override else DEFAULT_CONFIG
+
+
+def load_registry() -> dict:
+    path = provider_config_path()
+    try:
+        payload = json.loads(path.read_text())
+    except OSError as exc:
+        raise RuntimeError(f"cannot read provider registry {path}: {exc}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid provider registry {path}: {exc}")
+
+    providers = payload.get("providers")
+    if not isinstance(providers, dict):
+        raise RuntimeError("provider registry has no providers object")
+    return payload
+
+
+def provider_record(provider_id: str) -> dict:
+    registry = load_registry()
+    providers = registry["providers"]
+    record = providers.get(provider_id)
+    if not isinstance(record, dict):
+        raise RuntimeError(f"unknown agent provider: {provider_id}")
+    return record
+
+
+def resolve_command(command: str) -> str:
+    command = str(command or "").strip()
+    if not command:
+        raise RuntimeError("provider command is empty")
+
+    if "/" in command:
+        path = Path(command).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        raise RuntimeError(f"provider command is not executable: {path}")
+
+    resolved = shutil.which(command)
+    if not resolved:
+        raise RuntimeError(f"provider command is unavailable: {command}")
+    return resolved
+
+
+def px_hospital(*args: str, stdin_text: str | None = None):
+    proc = subprocess.run(
+        [str(PX), "hospital", *args, "--json"],
+        input=stdin_text,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(detail or f"px hospital exited {proc.returncode}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"px hospital returned invalid JSON: {exc}")
+
+
+def render_args(values, provider_session_id: str) -> list[str]:
+    result = []
+    for value in values:
+        result.append(
+            str(value).replace(
+                "{provider_session_id}",
+                provider_session_id,
+            )
+        )
+    return result
+
+
+def providers_payload() -> list[dict]:
+    registry = load_registry()
+    rows = []
+    for provider_id, record in sorted(registry["providers"].items()):
+        command = str(record.get("command") or "")
+        try:
+            endpoint = resolve_command(command)
+            available = True
+            error = ""
+        except RuntimeError as exc:
+            endpoint = ""
+            available = False
+            error = str(exc)
+
+        rows.append({
+            "id": provider_id,
+            "name": str(record.get("name") or provider_id).upper(),
+            "command": command,
+            "endpoint": endpoint,
+            "dialect": str(record.get("dialect") or ""),
+            "available": available,
+            "error": error,
+        })
+    return rows
+
+
+def create_session(args) -> dict:
+    provider_record(args.provider_id)
+    session_id = (
+        args.session_id.strip()
+        if args.session_id
+        else f"{args.room_id}-{uuid.uuid4()}"
+    )
+    px_hospital(
+        "session-put",
+        session_id,
+        "--room-id", args.room_id,
+        "--doctor-id", args.doctor_id,
+        "--provider-id", args.provider_id,
+        "--status", "IDLE",
+    )
+    return px_hospital(
+        "session-runtime",
+        session_id,
+        "--working-directory", str(Path(args.working_directory).expanduser()),
+        "--status", "IDLE",
+        "--clear-error",
+    )
+
+
+def parse_codex(events: list[dict]) -> tuple[str, str, list[dict]]:
+    provider_session_id = ""
+    assistant_parts = []
+    normalized = []
+
+    for event in events:
+        event_type = str(event.get("type") or "")
+        if event_type == "thread.started":
+            provider_session_id = str(event.get("thread_id") or "")
+        elif event_type == "item.completed":
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = str(item.get("text") or "")
+                if text:
+                    assistant_parts.append(text)
+
+        normalized.append({
+            "type": event_type or "provider.event",
+            "payload": event,
+        })
+
+    return provider_session_id, "\n".join(assistant_parts).strip(), normalized
+
+
+def parse_hermes(events: list[dict]) -> tuple[str, str, list[dict]]:
+    provider_session_id = ""
+    text_parts = []
+    final_text = ""
+    normalized = []
+
+    for event in events:
+        event_type = str(event.get("type") or "")
+
+        if event_type == "system" and event.get("subtype") == "init":
+            provider_session_id = str(event.get("session_id") or "")
+        elif event_type == "text":
+            text = str(event.get("text") or "")
+            if text:
+                text_parts.append(text)
+        elif event_type == "result":
+            provider_session_id = (
+                str(event.get("session_id") or "")
+                or provider_session_id
+            )
+            final_text = str(event.get("text") or "").strip()
+
+        normalized.append({
+            "type": event_type or "provider.event",
+            "payload": event,
+        })
+
+    assistant = final_text or "".join(text_parts).strip()
+    return provider_session_id, assistant, normalized
+
+
+def parse_jsonl(stdout: str, dialect: str):
+    events = []
+    for line_number, raw in enumerate(stdout.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"provider emitted invalid JSONL at line {line_number}: {exc}"
+            )
+        if not isinstance(event, dict):
+            raise RuntimeError(
+                f"provider JSONL event {line_number} is not an object"
+            )
+        events.append(event)
+
+    if dialect == "codex-jsonl":
+        return parse_codex(events)
+    if dialect == "hermes-stream-json":
+        return parse_hermes(events)
+    raise RuntimeError(f"unsupported provider dialect: {dialect}")
+
+
+def store_event(session_id: str, event_type: str, payload: dict) -> None:
+    px_hospital(
+        "event-append",
+        "--session-id", session_id,
+        "--event-type", event_type,
+        "--payload", json.dumps(payload, sort_keys=True),
+    )
+
+
+def run_turn(args) -> dict:
+    session = px_hospital("session", args.session_id)
+    provider_id = str(session.get("providerId") or "").strip()
+    if not provider_id:
+        raise RuntimeError("Hospital session has no provider")
+
+    record = provider_record(provider_id)
+    executable = resolve_command(str(record.get("command") or ""))
+    dialect = str(record.get("dialect") or "").strip()
+    cwd_text = (
+        args.working_directory
+        or str(session.get("workingDirectory") or "")
+    ).strip()
+    if not cwd_text:
+        raise RuntimeError("Hospital session has no working directory")
+
+    cwd = Path(cwd_text).expanduser()
+    if not cwd.is_dir():
+        raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
+
+    prompt = sys.stdin.read() if args.prompt_stdin else (args.prompt or "")
+    if not prompt.strip():
+        raise RuntimeError("agent turn prompt is empty")
+
+    provider_session_id = str(
+        session.get("providerSessionId") or ""
+    ).strip()
+    if provider_session_id:
+        template = record.get("resumeArgs")
+    else:
+        template = record.get("startArgs")
+
+    if not isinstance(template, list) or not template:
+        raise RuntimeError(
+            f"provider {provider_id} has no "
+            f"{'resumeArgs' if provider_session_id else 'startArgs'}"
+        )
+
+    command = [
+        executable,
+        *render_args(template, provider_session_id),
+    ]
+
+    px_hospital(
+        "session-runtime",
+        args.session_id,
+        "--working-directory", str(cwd),
+        "--status", "OPERATING",
+        "--clear-error",
+    )
+    px_hospital(
+        "message-append",
+        "--room-id", str(session["roomId"]),
+        "--session-id", args.session_id,
+        "--author-role", "operator",
+        "--author-id", args.author_id,
+        "--direction", "outgoing",
+        "--message-type", args.message_type,
+        "--body", prompt,
+    )
+    store_event(
+        args.session_id,
+        "turn.started",
+        {
+            "providerId": provider_id,
+            "resume": bool(provider_session_id),
+            "workingDirectory": str(cwd),
+        },
+    )
+
+    try:
+        proc = subprocess.run(
+            command,
+            input=prompt,
+            text=True,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=args.timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        px_hospital(
+            "session-runtime",
+            args.session_id,
+            "--status", "FAILED",
+            "--last-exit-code", "124",
+            "--last-error", f"provider turn timed out after {args.timeout}s",
+        )
+        store_event(
+            args.session_id,
+            "turn.failed",
+            {"reason": "timeout", "timeoutSeconds": args.timeout},
+        )
+        raise RuntimeError(
+            f"provider turn timed out after {args.timeout}s"
+        ) from exc
+
+    observed_id = ""
+    assistant = ""
+    normalized_events = []
+    parse_error = ""
+
+    try:
+        observed_id, assistant, normalized_events = parse_jsonl(
+            proc.stdout,
+            dialect,
+        )
+    except RuntimeError as exc:
+        parse_error = str(exc)
+
+    for event in normalized_events:
+        store_event(
+            args.session_id,
+            f"provider.{event['type']}",
+            event["payload"],
+        )
+
+    if provider_session_id and observed_id and observed_id != provider_session_id:
+        detail = (
+            "provider resumed with a different session id: "
+            f"expected {provider_session_id}, got {observed_id}"
+        )
+        px_hospital(
+            "session-runtime",
+            args.session_id,
+            "--status", "FAILED",
+            "--last-exit-code", str(proc.returncode),
+            "--last-error", detail,
+        )
+        store_event(
+            args.session_id,
+            "turn.failed",
+            {
+                "reason": "provider-session-mismatch",
+                "expected": provider_session_id,
+                "observed": observed_id,
+            },
+        )
+        raise RuntimeError(detail)
+
+    effective_id = observed_id or provider_session_id
+
+    if proc.returncode != 0 or parse_error or not assistant:
+        detail = (
+            parse_error
+            or proc.stderr.strip()
+            or (
+                "provider returned no assistant text"
+                if not assistant
+                else f"provider exited {proc.returncode}"
+            )
+        )
+        update_args = [
+            "session-runtime",
+            args.session_id,
+            "--status", "FAILED",
+            "--last-exit-code", str(proc.returncode),
+            "--last-error", detail,
+        ]
+        if effective_id:
+            update_args.extend([
+                "--provider-session-id",
+                effective_id,
+            ])
+        px_hospital(*update_args)
+        store_event(
+            args.session_id,
+            "turn.failed",
+            {
+                "reason": detail,
+                "exitCode": proc.returncode,
+                "stderr": proc.stderr[-4000:],
+            },
+        )
+        raise RuntimeError(detail)
+
+    px_hospital(
+        "message-append",
+        "--room-id", str(session["roomId"]),
+        "--session-id", args.session_id,
+        "--author-role", "doctor",
+        "--author-id", str(session.get("doctorId") or "doctor"),
+        "--direction", "incoming",
+        "--message-type", "chat",
+        "--body", assistant,
+    )
+
+    update_args = [
+        "session-runtime",
+        args.session_id,
+        "--working-directory", str(cwd),
+        "--status", "WAITING",
+        "--last-exit-code", str(proc.returncode),
+        "--clear-error",
+    ]
+    if effective_id:
+        update_args.extend([
+            "--provider-session-id",
+            effective_id,
+        ])
+    updated = px_hospital(*update_args)
+
+    store_event(
+        args.session_id,
+        "turn.completed",
+        {
+            "providerId": provider_id,
+            "providerSessionId": effective_id,
+            "exitCode": proc.returncode,
+        },
+    )
+
+    return {
+        "session": updated,
+        "providerId": provider_id,
+        "providerSessionId": effective_id,
+        "assistant": assistant,
+        "eventCount": len(normalized_events),
+        "stderr": proc.stderr.strip(),
+    }
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="px agent",
+        description="Post-Apollo normalized AI provider runtime",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    providers = sub.add_parser("providers")
+    providers.add_argument("--json", action="store_true")
+
+    create = sub.add_parser("session-create")
+    create.add_argument("--room-id", required=True)
+    create.add_argument("--doctor-id", required=True)
+    create.add_argument("--provider-id", required=True)
+    create.add_argument("--working-directory", required=True)
+    create.add_argument("--session-id", default="")
+    create.add_argument("--json", action="store_true")
+
+    turn = sub.add_parser("turn")
+    turn.add_argument("session_id")
+    prompt = turn.add_mutually_exclusive_group(required=True)
+    prompt.add_argument("--prompt")
+    prompt.add_argument("--prompt-stdin", action="store_true")
+    turn.add_argument("--working-directory", default="")
+    turn.add_argument("--author-id", default="operator")
+    turn.add_argument("--message-type", default="chat")
+    turn.add_argument("--timeout", type=int, default=1800)
+    turn.add_argument("--json", action="store_true")
+
+    return parser
+
+
+def emit(payload, as_json: bool):
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        if args.command == "providers":
+            emit(providers_payload(), args.json)
+        elif args.command == "session-create":
+            emit(create_session(args), args.json)
+        elif args.command == "turn":
+            emit(run_turn(args), args.json)
+        else:
+            raise RuntimeError(f"unsupported agent command: {args.command}")
+    except (OSError, RuntimeError) as exc:
+        print(f"px agent: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
