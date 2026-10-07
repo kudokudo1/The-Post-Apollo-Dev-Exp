@@ -10,7 +10,29 @@ export PX_HOSPITAL_DATA_DIR="$TMP/hospital-data"
 init_json="$("$ROOT/bin/px" hospital init --json)"
 status_json="$("$ROOT/bin/px" hospital status --json)"
 
-python3 - "$init_json" "$status_json" "$PX_HOSPITAL_DATA_DIR" <<'PY'
+patient_json="$("$ROOT/bin/px" hospital patient-put patient-taskbars kudokudo1/taskbars-post-apollo --label "TASKBARS" --json)"
+room_json="$("$ROOT/bin/px" hospital room-put T6 --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json)"
+session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --doctor-id doctor-t6 --provider-id codex --status IDLE --json)"
+outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
+incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
+rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
+sessions_json="$("$ROOT/bin/px" hospital sessions --room-id T6 --json)"
+messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
+older_json="$("$ROOT/bin/px" hospital messages T6 --limit 1 --before-id 2 --json)"
+
+python3 - \
+    "$init_json" \
+    "$status_json" \
+    "$PX_HOSPITAL_DATA_DIR" \
+    "$patient_json" \
+    "$room_json" \
+    "$session_json" \
+    "$outgoing_json" \
+    "$incoming_json" \
+    "$rooms_json" \
+    "$sessions_json" \
+    "$messages_json" \
+    "$older_json" <<'PY'
 import json
 import pathlib
 import sqlite3
@@ -19,6 +41,15 @@ import sys
 init = json.loads(sys.argv[1])
 status = json.loads(sys.argv[2])
 data_dir = pathlib.Path(sys.argv[3])
+patient = json.loads(sys.argv[4])
+room = json.loads(sys.argv[5])
+session = json.loads(sys.argv[6])
+outgoing = json.loads(sys.argv[7])
+incoming = json.loads(sys.argv[8])
+rooms = json.loads(sys.argv[9])
+sessions = json.loads(sys.argv[10])
+messages = json.loads(sys.argv[11])
+older = json.loads(sys.argv[12])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
@@ -35,6 +66,37 @@ artifacts = data_dir / "artifacts"
 
 assert db.is_file(), db
 assert artifacts.is_dir(), artifacts
+
+
+assert patient["patient_id"] == "patient-taskbars", patient
+assert patient["repository"] == "kudokudo1/taskbars-post-apollo", patient
+
+assert room["id"] == "T6", room
+assert room["displayNameInProfile"] == "T6", room
+assert room["nickname"] == "feature/application-audio", room
+assert room["doctorId"] == "doctor-t6", room
+
+assert session["id"] == "session-t6-1", session
+assert session["roomId"] == "T6", session
+assert session["providerId"] == "codex", session
+
+assert outgoing["direction"] == "outgoing", outgoing
+assert outgoing["body"] == "Inspect Application Audio ownership.", outgoing
+assert incoming["direction"] == "incoming", incoming
+assert incoming["body"] == "I found two remaining presentation bindings.", incoming
+
+assert len(rooms) == 1, rooms
+assert rooms[0]["id"] == "T6", rooms
+assert rooms[0]["lastMessage"] == incoming["body"], rooms
+
+assert len(sessions) == 1, sessions
+assert sessions[0]["id"] == "session-t6-1", sessions
+
+assert [row["direction"] for row in messages] == ["outgoing", "incoming"], messages
+assert [row["body"] for row in messages] == [outgoing["body"], incoming["body"]], messages
+
+assert len(older) == 1, older
+assert older[0]["id"] == outgoing["id"], older
 
 conn = sqlite3.connect(db)
 try:
