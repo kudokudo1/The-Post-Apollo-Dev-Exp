@@ -807,7 +807,12 @@
         {
           "name": "trigger",
           "required": false,
-          "kind": "enum"
+          "kind": "enum",
+          "choices": [
+            "manual",
+            "push",
+            "manual+push"
+          ]
         }
       ],
       "mutation": "remote",
