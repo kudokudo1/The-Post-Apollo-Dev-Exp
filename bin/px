@@ -365,6 +365,69 @@ mutation_verify() {
                     target:$target
                 }'
             ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json
+            local workflow="" status="" head_sha="" current_attempt=0
+            local original_attempt expected_workflow expected_head_sha
+            local summary="" reason="" passed="false"
+            local check
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun verification requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun verification requires run_id"
+            [[ -n "$preflight_token" ]] || die "github.run.rerun verification requires preflight token"
+
+            original_attempt="$(jq -r '.attempt // 0' <<<"$preflight_token")"
+            expected_workflow="$(jq -r '.workflow // ""' <<<"$preflight_token")"
+            expected_head_sha="$(jq -r '.headSha // ""' <<<"$preflight_token")"
+            repo="$(repo_for "$repository_key")"
+
+            for check in 1 2 3 4 5; do
+                run_json="$(github_run_guard_record "$repo" "$run_id")"
+                workflow="$(jq -r '.workflowName // ""' <<<"$run_json")"
+                status="$(jq -r '.status // ""' <<<"$run_json")"
+                head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+                current_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+                if [[ "$workflow" != "$expected_workflow"
+                        || "$head_sha" != "$expected_head_sha" ]]; then
+                    reason="RUN IDENTITY CHANGED DURING RERUN VERIFICATION"
+                    break
+                fi
+
+                if (( current_attempt > original_attempt )); then
+                    passed="true"
+                    summary="RERUN VERIFIED // $workflow // #$run_id // ATTEMPT $current_attempt // ${status^^}"
+                    break
+                fi
+
+                [[ "$check" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "$passed" != "true" && -z "$reason" ]]; then
+                reason="RUN ATTEMPT DID NOT ADVANCE // STILL $current_attempt"
+                summary="RERUN VERIFY FAILED // $workflow // #$run_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
         *)
             die "no PX mutation verification policy for action: $action_id"
             ;;
