@@ -33,6 +33,7 @@ export PX_REPO_REGISTRY="$tmp/repos.tsv"
 
 "$ROOT/bin/px" templates | grep -q '"id": "smoke"'
 "$ROOT/bin/px" templates | grep -q '"id": "shell-check"'
+"$ROOT/bin/px" templates | grep -q '"id": "script-test"'
 
 empty_workflows="$("$ROOT/bin/px" workflows owner/repo)"
 [[ "$empty_workflows" == "[]" ]]
@@ -47,6 +48,21 @@ push_preview="$("$ROOT/bin/px" create dev shell-check shell-syntax manual+push -
 grep -q '^  push:$' <<<"$push_preview"
 grep -q '^      - main$' <<<"$push_preview"
 grep -q "find . -type f -name '\\*.sh'" <<<"$push_preview"
+
+
+script_preview="$("$ROOT/bin/px" create dev script-test hospital-store manual --script=tests/test-px-hospital-store.sh --preview --json)"
+jq -e '
+  .template == "script-test" and
+  .slug == "hospital-store" and
+  .script == "tests/test-px-hospital-store.sh" and
+  (.yaml | contains("run: bash \"tests/test-px-hospital-store.sh\""))
+' <<<"$script_preview" >/dev/null
+
+if "$ROOT/bin/px" create dev script-test bad-script manual --script=../outside.sh --preview >/dev/null 2>&1; then
+    printf 'unsafe script path unexpectedly succeeded\n' >&2
+    exit 1
+fi
+
 
 direct_preview="$("$ROOT/bin/px" create owner/repo smoke direct-repo manual --preview --json)"
 jq -e '
