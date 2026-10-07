@@ -69,38 +69,71 @@ Find Anything now labels results by role:
   interactive app.
 
 Read-only PX actions are executable in TERM EXP. Actions with no arguments run
-immediately and render their output in-app. Actions with arguments open a
-typed input sequence first; for example, Inspect Workflow Run asks for the
-repository and run ID before calling PX.
+immediately and render their output in-app. Actions with arguments pass through
+the same argument resolver used by mutation previews.
 
-Mutation actions remain locked until explicit mutation/confirmation policy is
-implemented.
+Mutation handling is deliberately staged:
+
+- `read` actions execute immediately after argument resolution;
+- `local` mutations resolve all arguments, freeze the exact PX command, show a
+  preview, then require a second confirmation screen and the word `LOCAL`;
+- `remote` and `external` mutations can resolve and preview their exact frozen
+  targets, but execution remains locked until their stronger policy and
+  verification lanes are certified.
+
+Changing UI selection after a preview cannot silently retarget a pending
+mutation because execution uses the frozen command shown in the preview.
 
 ## Known-value arguments
 
 TERM EXP should not make the operator memorize identifiers that PX already
-knows.
+knows. The action registry declares argument kinds; the resolver asks PX for
+the corresponding authoritative values only when that argument is reached.
 
-Structured action arguments therefore prefer selectors over free typing:
+Current known-value selectors include:
 
-- `repository` reads the live PX repository registry and presents aliases plus
-  full GitHub repository names;
-- `run` uses the selected repository to load recent workflow runs and presents
-  workflow name, run ID, status, conclusion, branch, and creation time.
+- repositories from `px repos --json`;
+- workflows and workflow runs scoped by repository;
+- repository branches/refs and recent commits;
+- Hospital Rooms, Doctors, sessions, checkpoints, Doctor Notes, and Room Chart
+  entries;
+- AI providers;
+- workflow templates;
+- executable command names from the PX tool registry;
+- finite `enum` values declared directly in the action registry.
 
-Free typing remains only as a fallback when PX cannot discover a known value or
-for genuinely open-ended argument kinds.
+Selectors are searchable. Optional known values include a deliberate
+`(default / none)` entry so converting a field into a selector never makes an
+optional argument mandatory.
 
-For example, Inspect Workflow Run now follows:
+Dependencies remain contextual. Examples include:
+
+```text
+repository -> workflow
+repository -> run
+repository -> branch/ref -> commit
+repository -> Room
+Room       -> session
+Room       -> report
+Room       -> checkpoint
+Room       -> Chart entry
+```
+
+Free typing remains the correct UI for genuinely open-ended values such as
+prompts and paths. Typed integer and slug values are validated before PX is
+invoked. If known-value discovery fails, TERM EXP falls back to typing rather
+than making the whole action unusable.
+
+For example, Inspect Workflow Run is:
 
 ```text
 Inspect Workflow Run
   -> choose repository
-  -> choose recent run
+  -> choose/search recent run
   -> inspect
 ```
 
-instead of requiring the operator to remember either identifier.
+No repository alias or run ID has to be remembered.
 
 ## Architecture
 
@@ -111,7 +144,12 @@ PX // TERM EXP
       |      semantic control plane
       |
       +-- px tools --json
-             ordinary executable universe
+      |      ordinary executable universe
+      |
+      +-- contextual PX contracts
+             repos / workflows / runs / branches / commits
+             Hospital Rooms / Doctors / sessions / reports / Chart
+             AI providers / workflow templates
 ```
 
 TERM EXP is therefore a frontend to current PX. It does not recreate the old
