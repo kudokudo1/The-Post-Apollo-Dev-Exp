@@ -428,18 +428,35 @@ assert (
     == "mock-provider-session"
 ), feedback
 assert feedback["result"]["session"]["status"] == "WAITING", feedback
-assert "REPORT FEEDBACK // ROOM REPORT" in feedback["result"]["assistant"], feedback
-assert "The VERIFY section missed the regression test." in feedback["result"]["assistant"], feedback
+assert feedback["result"]["assistant"] == (
+    "MOCK: The VERIFY section missed the regression test. "
+    "Fix that and re-check the Room."
+), feedback
 
 assert feedback_messages[-2]["direction"] == "outgoing", feedback_messages
 assert feedback_messages[-2]["messageType"] == "report_feedback", feedback_messages
-assert "OPERATOR FEEDBACK" in feedback_messages[-2]["body"], feedback_messages
+assert feedback_messages[-2]["body"] == (
+    "The VERIFY section missed the regression test. "
+    "Fix that and re-check the Room."
+), feedback_messages
 assert feedback_messages[-1]["direction"] == "incoming", feedback_messages
-assert "REPORT FEEDBACK // ROOM REPORT" in feedback_messages[-1]["body"], feedback_messages
+assert feedback_messages[-1]["body"] == feedback["result"]["assistant"], feedback_messages
 
 feedback_types = [row["type"] for row in feedback_events]
 assert "room_report.feedback.started" in feedback_types, feedback_types
 assert "room_report.feedback.completed" in feedback_types, feedback_types
+assert "turn.context" in feedback_types, feedback_types
+
+feedback_provider_system = [
+    row["payload"]
+    for row in feedback_events
+    if row["type"] == "provider.system"
+]
+assert any(
+    row.get("supplemental_context") is True
+    and row.get("report_feedback_context") is True
+    for row in feedback_provider_system
+), feedback_provider_system
 
 assert len(checkpoints) == 1, checkpoints
 assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
