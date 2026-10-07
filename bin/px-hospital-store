@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS room_reports (
     bed_path TEXT NOT NULL DEFAULT '',
     branch TEXT NOT NULL DEFAULT '',
     head_sha TEXT NOT NULL DEFAULT '',
+    git_evidence_status TEXT NOT NULL DEFAULT 'UNAVAILABLE',
     dirty INTEGER NOT NULL DEFAULT 0,
     changed_files_json TEXT NOT NULL DEFAULT '[]',
     changed_file_count INTEGER NOT NULL DEFAULT 0,
@@ -1068,6 +1069,9 @@ def normalize_room_report(row: sqlite3.Row) -> dict:
         "bedPath": str(row["bed_path"] or ""),
         "branch": str(row["branch"] or ""),
         "headSha": str(row["head_sha"] or ""),
+        "gitEvidenceStatus": str(
+            row["git_evidence_status"] or "UNAVAILABLE"
+        ),
         "dirty": bool(int(row["dirty"] or 0)),
         "changedFiles": [str(value) for value in changed_files],
         "changedFileCount": int(row["changed_file_count"] or 0),
@@ -1200,10 +1204,11 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
         INSERT INTO room_reports(
             room_id, session_id, checkpoint_id, source_message_id,
             doctor_id, provider_id, assignment_id, report_kind, title,
-            body_md, repository, bed_path, branch, head_sha, dirty,
-            changed_files_json, changed_file_count, insertions, deletions
+            body_md, repository, bed_path, branch, head_sha,
+            git_evidence_status, dirty, changed_files_json,
+            changed_file_count, insertions, deletions
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             args.room_id,
@@ -1220,6 +1225,7 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
             bed_path,
             args.branch or "",
             args.head_sha or "",
+            args.git_evidence_status or "UNAVAILABLE",
             1 if args.dirty else 0,
             json.dumps(changed_files, sort_keys=True),
             len(changed_files),
@@ -1555,6 +1561,11 @@ def build_parser() -> argparse.ArgumentParser:
     room_report.add_argument("--bed-path", default="")
     room_report.add_argument("--branch", default="")
     room_report.add_argument("--head-sha", default="")
+    room_report.add_argument(
+        "--git-evidence-status",
+        default="UNAVAILABLE",
+        choices=("VERIFIED", "UNAVAILABLE"),
+    )
     room_report.add_argument("--dirty", action="store_true")
     room_report.add_argument("--changed-files-json", default="[]")
     room_report.add_argument("--insertions", type=int, default=0)
