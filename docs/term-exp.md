@@ -216,9 +216,10 @@ Recovery classes describe guarantees, not wishes:
 - `CONTENT_RECOVERABLE` — reserved for operations that can prove content-level
   recovery.
 
-Even a recoverable class does not make an executor magically available. PX
-recovery facts explicitly report `automaticRecoveryAvailable: false` until an
-operation-specific recovery implementation is registered and certified.
+A recoverable class does not by itself make recovery safe to execute. PX
+recovery facts distinguish an available executor from automatic recovery.
+`automaticRecoveryAvailable: false` remains valid when a certified executor
+still requires live stale-state validation before it can act.
 
 ```text
 confirm frozen target
@@ -258,4 +259,25 @@ Rust-side discovery, backend, or semantic action registries.
 
 ## Recovery planning
 
-Workflow creation is `CONTENT_RECOVERABLE` after successful verification. PX records a concrete `DELETE_CREATED_WORKFLOW` plan from the exact durable YAML and remote identity, but automatic execution remains disabled until a stale-state-checking recovery executor is certified.
+Workflow creation is `CONTENT_RECOVERABLE` after successful verification. PX
+records a concrete `DELETE_CREATED_WORKFLOW` plan from the exact durable YAML,
+installed path/base, install commit, verified remote blob SHA, verified base SHA,
+and expected YAML hash.
+
+The workflow-creation recovery executor is available through:
+
+```text
+px operation recover <operation-id> --json
+```
+
+It is deliberately not classified as automatic recovery. Before deleting
+anything, PX requires the recorded workflow blob and bytes to remain unchanged,
+requires both the verified post-create head and install commit to remain in the
+current base history, and refuses missing or diverged targets. A second identity
+check runs after the recovery journal starts so a target that changes in the
+pre-execution race window is also refused.
+
+When those checks pass, PX journals a new `EVIDENCE_ONLY` remote recovery
+operation, deletes only the recorded blob, then verifies that the file is absent
+and the base advanced through the delete commit before reporting recovery as
+passed.
