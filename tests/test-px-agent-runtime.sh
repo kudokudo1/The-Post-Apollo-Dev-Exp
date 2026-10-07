@@ -89,7 +89,7 @@ assert created["workingDirectory"] == str(bed), created
 assert created["providerSessionId"] == "", created
 assert created["status"] == "IDLE", created
 
-assert turn_one["assistant"] == "MOCK: first task", turn_one
+assert turn_one["assistant"] == "MOCK: first task\nwith detail", turn_one
 assert turn_one["providerSessionId"] == "mock-provider-session", turn_one
 assert turn_two["assistant"] == "MOCK: second task", turn_two
 assert turn_two["providerSessionId"] == "mock-provider-session", turn_two
@@ -107,8 +107,8 @@ assert [row["direction"] for row in messages] == [
     "incoming",
 ], messages
 assert [row["body"] for row in messages] == [
-    "first task",
-    "MOCK: first task",
+    "first task\nwith detail",
+    "MOCK: first task\nwith detail",
     "second task",
     "MOCK: second task",
 ], messages
