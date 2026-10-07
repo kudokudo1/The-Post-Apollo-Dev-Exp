@@ -105,6 +105,20 @@ struct SearchItem {
     score: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct ResolveResult {
+    status: String,
+    selected: Option<ResolvedTool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolvedTool {
+    name: String,
+    backend: String,
+    environment: String,
+    invocation: Vec<String>,
+}
+
 struct TerminalGuard {
     terminal: PxTerminal,
 }
