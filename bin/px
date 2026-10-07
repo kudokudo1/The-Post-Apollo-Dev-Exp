@@ -1367,6 +1367,7 @@ Usage:
   px integrate <repo> <team> <branch> <room-head> <base> <base-head> <local-path>
   px verify <repo> <team> <base> <expected-base-head> <expected-room-head>
   px actions [query] [--json]
+  px tools [query] [--json]
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
   px delete-workflow <repo> <workflow-path> [ref]
@@ -1387,6 +1388,8 @@ Examples:
   px room taskbars T6 prepare
   px actions --json
   px actions hospital
+  px tools --json
+  px tools lazy
   px templates
   px create dev smoke my-first-action
   px create dev shell-check shell-syntax manual --preview
@@ -1521,6 +1524,11 @@ case "$cmd" in
 
     actions)
         actions "$@"
+        ;;
+
+    tools)
+        need python3
+        python3 "$ROOT/bin/px-tools" "$@"
         ;;
 
     templates)
