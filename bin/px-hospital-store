@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -116,6 +116,31 @@ ALTER TABLE rooms
     ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
 """
 
+
+SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS assignments (
+    assignment_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    goal_md TEXT NOT NULL DEFAULT '',
+    constraints_md TEXT NOT NULL DEFAULT '',
+    definition_done_md TEXT NOT NULL DEFAULT '',
+    checklist_json TEXT NOT NULL DEFAULT '[]',
+    open_questions_md TEXT NOT NULL DEFAULT '',
+    authority_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_room
+    ON assignments(room_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_status
+    ON assignments(status, updated_at DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -208,12 +233,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 4
 
+    if version < 5:
+        conn.executescript(SCHEMA_V5)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("5",),
+        )
+        conn.commit()
+        version = 5
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events"):
+    for table in ("patients", "rooms", "doctors", "assignments", "sessions", "messages", "session_events"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -240,6 +274,7 @@ def emit(payload: dict, as_json: bool) -> None:
         f"patients={counts['patients']} "
         f"rooms={counts['rooms']} "
         f"doctors={counts['doctors']} "
+        f"assignments={counts['assignments']} "
         f"sessions={counts['sessions']} "
         f"messages={counts['messages']} "
         f"events={counts['session_events']}"
@@ -251,6 +286,166 @@ def emit_data(payload, as_json: bool) -> None:
         print(json.dumps(payload, sort_keys=True))
     else:
         print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def parse_json_field(value: str, fallback):
+    try:
+        parsed = json.loads(str(value or ""))
+    except json.JSONDecodeError:
+        return fallback
+    return parsed
+
+
+def normalize_assignment(row: sqlite3.Row) -> dict:
+    return {
+        "id": str(row["assignment_id"]),
+        "roomId": str(row["room_id"]),
+        "title": str(row["title"] or ""),
+        "goal": str(row["goal_md"] or ""),
+        "constraints": str(row["constraints_md"] or ""),
+        "definitionOfDone": str(row["definition_done_md"] or ""),
+        "checklist": parse_json_field(row["checklist_json"], []),
+        "openQuestions": str(row["open_questions_md"] or ""),
+        "authority": parse_json_field(row["authority_json"], {}),
+        "status": str(row["status"] or "DRAFT"),
+        "createdAt": str(row["created_at"] or ""),
+        "updatedAt": str(row["updated_at"] or ""),
+    }
+
+
+def assignment_record(conn: sqlite3.Connection, assignment_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM assignments WHERE assignment_id = ?",
+        (assignment_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"unknown Hospital assignment: {assignment_id}"
+        )
+    return normalize_assignment(row)
+
+
+def assignment_put(conn: sqlite3.Connection, args) -> dict:
+    room = conn.execute(
+        "SELECT 1 FROM rooms WHERE room_id = ?",
+        (args.room_id,),
+    ).fetchone()
+    if room is None:
+        raise RuntimeError(f"unknown Hospital room: {args.room_id}")
+
+    try:
+        checklist = json.loads(args.checklist)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"assignment checklist is not valid JSON: {exc}")
+    if not isinstance(checklist, list):
+        raise RuntimeError("assignment checklist must be a JSON array")
+
+    try:
+        authority = json.loads(args.authority)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"assignment authority is not valid JSON: {exc}")
+    if not isinstance(authority, dict):
+        raise RuntimeError("assignment authority must be a JSON object")
+
+    conn.execute(
+        """
+        INSERT INTO assignments(
+            assignment_id, room_id, title, goal_md, constraints_md,
+            definition_done_md, checklist_json, open_questions_md,
+            authority_json, status
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(assignment_id) DO UPDATE SET
+            room_id = excluded.room_id,
+            title = excluded.title,
+            goal_md = excluded.goal_md,
+            constraints_md = excluded.constraints_md,
+            definition_done_md = excluded.definition_done_md,
+            checklist_json = excluded.checklist_json,
+            open_questions_md = excluded.open_questions_md,
+            authority_json = excluded.authority_json,
+            status = excluded.status,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            args.assignment_id,
+            args.room_id,
+            args.title or "",
+            args.goal or "",
+            args.constraints or "",
+            args.definition_done or "",
+            json.dumps(checklist, sort_keys=True),
+            args.open_questions or "",
+            json.dumps(authority, sort_keys=True),
+            args.status,
+        ),
+    )
+
+    if args.set_current:
+        conn.execute(
+            """
+            UPDATE rooms
+            SET current_assignment_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE room_id = ?
+            """,
+            (args.assignment_id, args.room_id),
+        )
+
+    conn.commit()
+    return assignment_record(conn, args.assignment_id)
+
+
+def assignments_list(
+    conn: sqlite3.Connection,
+    room_id: str | None,
+    status: str | None,
+) -> list:
+    clauses = []
+    values = []
+
+    if room_id:
+        clauses.append("room_id = ?")
+        values.append(room_id)
+
+    if status:
+        clauses.append("status = ?")
+        values.append(status)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"""
+        SELECT * FROM assignments
+        {where}
+        ORDER BY updated_at DESC, assignment_id ASC
+        """,
+        values,
+    ).fetchall()
+    return [normalize_assignment(row) for row in rows]
+
+
+def assignment_state(conn: sqlite3.Connection, args) -> dict:
+    assignment = assignment_record(conn, args.assignment_id)
+    conn.execute(
+        """
+        UPDATE assignments
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE assignment_id = ?
+        """,
+        (args.status, args.assignment_id),
+    )
+
+    if args.set_current:
+        conn.execute(
+            """
+            UPDATE rooms
+            SET current_assignment_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE room_id = ?
+            """,
+            (args.assignment_id, assignment["roomId"]),
+        )
+
+    conn.commit()
+    return assignment_record(conn, args.assignment_id)
 
 
 def normalize_doctor(row: sqlite3.Row) -> dict:
@@ -888,6 +1083,48 @@ def build_parser() -> argparse.ArgumentParser:
         command = sub.add_parser(name)
         command.add_argument("--json", action="store_true")
 
+    assignment = sub.add_parser("assignment-put")
+    assignment.add_argument("assignment_id")
+    assignment.add_argument("--room-id", required=True)
+    assignment.add_argument("--title", default="")
+    assignment.add_argument("--goal", default="")
+    assignment.add_argument("--constraints", default="")
+    assignment.add_argument("--definition-done", default="")
+    assignment.add_argument("--checklist", default="[]")
+    assignment.add_argument("--open-questions", default="")
+    assignment.add_argument("--authority", default="{}")
+    assignment.add_argument(
+        "--status",
+        default="DRAFT",
+        choices=(
+            "DRAFT", "READY", "QUEUED", "RUNNING",
+            "BLOCKED", "REVIEW", "COMPLETE", "CANCELLED",
+        ),
+    )
+    assignment.add_argument("--set-current", action="store_true")
+    assignment.add_argument("--json", action="store_true")
+
+    assignment_get = sub.add_parser("assignment")
+    assignment_get.add_argument("assignment_id")
+    assignment_get.add_argument("--json", action="store_true")
+
+    assignments = sub.add_parser("assignments")
+    assignments.add_argument("--room-id", default="")
+    assignments.add_argument("--status", default="")
+    assignments.add_argument("--json", action="store_true")
+
+    assignment_status = sub.add_parser("assignment-state")
+    assignment_status.add_argument("assignment_id")
+    assignment_status.add_argument(
+        "status",
+        choices=(
+            "DRAFT", "READY", "QUEUED", "RUNNING",
+            "BLOCKED", "REVIEW", "COMPLETE", "CANCELLED",
+        ),
+    )
+    assignment_status.add_argument("--set-current", action="store_true")
+    assignment_status.add_argument("--json", action="store_true")
+
     doctor = sub.add_parser("doctor-put")
     doctor.add_argument("doctor_id")
     doctor.add_argument("--name", default="")
@@ -1025,6 +1262,24 @@ def main() -> int:
 
             if args.command in ("init", "status"):
                 emit(database_status(conn), args.json)
+            elif args.command == "assignment-put":
+                emit_data(assignment_put(conn, args), args.json)
+            elif args.command == "assignment":
+                emit_data(
+                    assignment_record(conn, args.assignment_id),
+                    args.json,
+                )
+            elif args.command == "assignments":
+                emit_data(
+                    assignments_list(
+                        conn,
+                        args.room_id or None,
+                        args.status or None,
+                    ),
+                    args.json,
+                )
+            elif args.command == "assignment-state":
+                emit_data(assignment_state(conn, args), args.json)
             elif args.command == "doctor-put":
                 emit_data(doctor_put(conn, args), args.json)
             elif args.command == "doctor":
