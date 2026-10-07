@@ -1,22 +1,11 @@
-name: PX Smoke Test
+name: PX / SMOKE
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - bin/px
-      - bin/px-hospital-store
-      - bin/px-agent
       - config/repos.tsv
-      - config/agent-providers.json
-      - docs/control-plane.md
-      - docs/workflow-factory.md
-      - tests/test-px-factory.sh
-      - tests/test-px-runs.sh
-      - tests/test-px-delete-workflow.sh
-      - tests/test-px-hospital-store.sh
-      - tests/test-px-agent-runtime.sh
-      - tests/fixtures/mock-hermes-agent.py
       - .github/workflows/px-smoke.yml
   push:
     branches:
@@ -28,18 +17,7 @@ on:
       - automation/px-empty-workflows-v0
     paths:
       - bin/px
-      - bin/px-hospital-store
-      - bin/px-agent
       - config/repos.tsv
-      - config/agent-providers.json
-      - docs/control-plane.md
-      - docs/workflow-factory.md
-      - tests/test-px-factory.sh
-      - tests/test-px-runs.sh
-      - tests/test-px-delete-workflow.sh
-      - tests/test-px-hospital-store.sh
-      - tests/test-px-agent-runtime.sh
-      - tests/fixtures/mock-hermes-agent.py
       - .github/workflows/px-smoke.yml
 
 permissions:
@@ -47,7 +25,7 @@ permissions:
 
 jobs:
   smoke:
-    name: PX control-bus smoke test
+    name: PX is alive
     runs-on: ubuntu-latest
 
     steps:
@@ -55,37 +33,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate PX shell syntax
-        run: |
-          bash -n bin/px
-          bash -n tests/test-px-factory.sh
-          bash -n tests/test-px-runs.sh
-          bash -n tests/test-px-delete-workflow.sh
-          bash -n tests/test-px-hospital-store.sh
-          bash -n tests/test-px-agent-runtime.sh
-          python3 -m py_compile bin/px-hospital-store
-          python3 -m py_compile bin/px-agent
-          python3 -m py_compile tests/fixtures/mock-hermes-agent.py
+        run: bash -n bin/px
 
-      - name: Exercise local PX commands
+      - name: Exercise fundamental PX commands
         run: |
           ./bin/px repos
           ./bin/px --help
           ./bin/px templates
-
-      - name: Test workflow factory
-        run: ./tests/test-px-factory.sh
-
-      - name: Test exact-SHA run evidence
-        run: bash ./tests/test-px-runs.sh
-
-      - name: Test guarded workflow deletion
-        run: bash ./tests/test-px-delete-workflow.sh
-
-      - name: Test Hospital durable state store
-        run: bash ./tests/test-px-hospital-store.sh
-
-      - name: Test supervised Hospital agent runtime
-        run: bash ./tests/test-px-agent-runtime.sh
 
       - name: Report execution identity
         run: |

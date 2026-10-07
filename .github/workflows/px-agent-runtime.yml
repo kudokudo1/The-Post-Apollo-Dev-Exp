@@ -1,0 +1,46 @@
+name: PX / AGENT RUNTIME
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - bin/px
+      - bin/px-hospital-store
+      - bin/px-agent
+      - config/agent-providers.json
+      - tests/test-px-agent-runtime.sh
+      - tests/fixtures/mock-hermes-agent.py
+      - .github/workflows/px-agent-runtime.yml
+  push:
+    branches:
+      - main
+    paths:
+      - bin/px
+      - bin/px-hospital-store
+      - bin/px-agent
+      - config/agent-providers.json
+      - tests/test-px-agent-runtime.sh
+      - tests/fixtures/mock-hermes-agent.py
+      - .github/workflows/px-agent-runtime.yml
+
+permissions:
+  contents: read
+
+jobs:
+  agent-runtime:
+    name: Supervised Hospital agent runtime
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate agent runtime syntax
+        run: |
+          bash -n tests/test-px-agent-runtime.sh
+          python3 -m py_compile bin/px-hospital-store
+          python3 -m py_compile bin/px-agent
+          python3 -m py_compile tests/fixtures/mock-hermes-agent.py
+
+      - name: Test supervised Hospital agent runtime
+        run: bash ./tests/test-px-agent-runtime.sh

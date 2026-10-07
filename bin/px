@@ -118,11 +118,25 @@ EOF
     esac
 }
 
+validate_script_path() {
+    local script_path="$1"
+
+    [[ -n "$script_path" ]] || die "script path required for script-test"
+    [[ "$script_path" != /* ]] || die "script path must be repository-relative"
+    [[ "$script_path" =~ ^[A-Za-z0-9._/-]+$ ]] \
+        || die "script path contains unsupported characters"
+    [[ "/$script_path/" != *"/../"* ]] \
+        || die "script path may not traverse outside the repository"
+    [[ "$script_path" != ".." ]] \
+        || die "script path may not traverse outside the repository"
+}
+
 render_workflow() {
     local template="$1"
     local slug="$2"
     local trigger="$3"
     local base="$4"
+    local script_path="${5:-}"
     local title="${slug//-/ }"
 
     printf 'name: "PX / %s"\n\n' "$title"
@@ -181,6 +195,27 @@ jobs:
             echo "bash -n $script"
             bash -n "$script"
           done
+EOF
+            ;;
+        script-test)
+            validate_script_path "$script_path"
+            cat <<EOF
+
+permissions:
+  contents: read
+
+jobs:
+  script-test:
+    name: Script test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run $script_path
+        shell: bash
+        run: bash "$script_path"
 EOF
             ;;
         *)
@@ -276,6 +311,7 @@ create_workflow() {
     local trigger="manual"
     local mode="--preview"
     local format="human"
+    local script_path=""
     local repo base tmp workflow_path arg
     local validation_ok=true
 
@@ -295,11 +331,20 @@ create_workflow() {
             --json)
                 format="json"
                 ;;
+            --script=*)
+                script_path="${arg#--script=}"
+                ;;
             *)
                 die "unknown create option: $arg"
                 ;;
         esac
     done
+
+    if [[ "$template" == "script-test" ]]; then
+        validate_script_path "$script_path"
+    elif [[ -n "$script_path" ]]; then
+        die "--script is only valid with script-test"
+    fi
 
     need gh
     if [[ "$format" == "json" ]]; then
@@ -313,7 +358,7 @@ create_workflow() {
 
     tmp="$(mktemp)"
     trap 'rm -f "$tmp"' RETURN
-    render_workflow "$template" "$slug" "$trigger" "$base" > "$tmp"
+    render_workflow "$template" "$slug" "$trigger" "$base" "$script_path" > "$tmp"
 
     if ! validate_workflow "$tmp"; then
         validation_ok=false
@@ -344,6 +389,7 @@ create_workflow() {
             --arg template "$template" \
             --arg slug "$slug" \
             --arg trigger "$trigger" \
+            --arg script "$script_path" \
             --arg path "$workflow_path" \
             --arg mode "${mode#--}" \
             --arg validation_status "$VALIDATION_STATUS" \
@@ -361,6 +407,7 @@ create_workflow() {
                 template: $template,
                 slug: $slug,
                 trigger: $trigger,
+                script: (if $script == "" then null else $script end),
                 path: $path,
                 mode: $mode,
                 validation: {
@@ -390,6 +437,7 @@ create_workflow() {
     printf 'template: %s\n' "$template"
     printf 'slug: %s\n' "$slug"
     printf 'trigger: %s\n' "$trigger"
+    [[ -n "$script_path" ]] && printf 'script: %s\n' "$script_path"
     printf 'path: %s\n' "$workflow_path"
     printf '\n--- YAML ---\n'
     cat "$tmp"
@@ -410,8 +458,13 @@ create_workflow() {
         printf 'commit: %s\n' "$INSTALL_COMMIT_SHA"
     else
         printf '\npreview only: no repository changes made\n'
-        printf 'install with: px create %s %s %s %s --install\n' \
-            "$alias" "$template" "$slug" "$trigger"
+        if [[ -n "$script_path" ]]; then
+            printf 'install with: px create %s %s %s %s --script=%s --install\n' \
+                "$alias" "$template" "$slug" "$trigger" "$script_path"
+        else
+            printf 'install with: px create %s %s %s %s --install\n' \
+                "$alias" "$template" "$slug" "$trigger"
+        fi
     fi
 }
 
@@ -1191,6 +1244,12 @@ templates() {
     "id": "shell-check",
     "summary": "Run bash -n against every .sh file in the repository.",
     "mutates_repository": false
+  },
+  {
+    "id": "script-test",
+    "summary": "Run one repository-relative test script as its own workflow.",
+    "mutates_repository": false,
+    "requires_script": true
   }
 ]
 EOF
