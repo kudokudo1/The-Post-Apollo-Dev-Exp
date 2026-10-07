@@ -28,6 +28,7 @@ jq -e '
       and ((.choices // []) | type == "array")
     )
     and (.mutation | IN("read", "local", "remote", "external"))
+    and ((.executionPolicy // "") | IN("", "px-guarded"))
     and (.recovery | IN("NONE", "EVIDENCE_ONLY", "REF_RECOVERABLE", "CONTENT_RECOVERABLE"))
     and (.requires | type == "array")
     and (.keywords | type == "array")
@@ -70,6 +71,26 @@ recovery_contract="$(jq -c '
   }
 ' <<<"$registry")"
 [[ "$recovery_contract" == '{"read_non_none":0,"mutation_undeclared":0,"integrate":"EVIDENCE_ONLY"}' ]]
+
+guarded_remote_contract="$(jq -c '
+  {
+    guarded: [
+      .actions[]
+      | select((.executionPolicy // "") == "px-guarded")
+      | {id, mutation, recovery}
+    ],
+    cancel: (
+      .actions[]
+      | select(.id == "github.run.cancel")
+      | {
+          policy: (.executionPolicy // ""),
+          mutation,
+          recovery
+        }
+    )
+  }
+' <<<"$registry")"
+[[ "$guarded_remote_contract" == '{"guarded":[{"id":"github.run.cancel","mutation":"remote","recovery":"EVIDENCE_ONLY"}],"cancel":{"policy":"px-guarded","mutation":"remote","recovery":"EVIDENCE_ONLY"}}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
