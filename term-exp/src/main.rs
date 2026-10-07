@@ -419,6 +419,136 @@ fn launch_specialist(
     Ok(())
 }
 
+fn action_by_id<'a>(model: &'a Model, id: &str) -> Option<&'a Action> {
+    model.actions.actions.iter().find(|action| action.id == id)
+}
+
+fn expand_action_command(action: &Action, values: &[String]) -> Result<Vec<String>, String> {
+    let mut by_name = BTreeMap::<&str, &str>::new();
+
+    for (argument, value) in action.arguments.iter().zip(values.iter()) {
+        by_name.insert(argument.name.as_str(), value.as_str());
+    }
+
+    let mut command = Vec::new();
+
+    for token in &action.command {
+        if let Some(name) = token
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+        {
+            let optional = name.ends_with('?');
+            let name = name.trim_end_matches('?');
+            let value = by_name.get(name).copied().unwrap_or("");
+
+            if value.is_empty() {
+                if optional {
+                    continue;
+                }
+
+                return Err(format!("missing required argument: {name}"));
+            }
+
+            command.push(value.to_owned());
+        } else {
+            command.push(token.clone());
+        }
+    }
+
+    Ok(command)
+}
+
+fn display_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout_text = String::from_utf8_lossy(stdout).trim().to_owned();
+    let stderr_text = String::from_utf8_lossy(stderr).trim().to_owned();
+
+    let mut sections = Vec::new();
+
+    if !stdout_text.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout_text) {
+            sections.push(
+                serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| stdout_text.clone()),
+            );
+        } else {
+            sections.push(stdout_text);
+        }
+    }
+
+    if !stderr_text.is_empty() {
+        sections.push(format!("STDERR\n{stderr_text}"));
+    }
+
+    if sections.is_empty() {
+        "(command completed with no output)".to_owned()
+    } else {
+        sections.join("\n\n")
+    }
+}
+
+fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[String]) {
+    if action.mutation != "read" {
+        app.status = Some(format!(
+            "{} is a {} action; TERM EXP will not execute it without a mutation policy",
+            action.title, action.mutation
+        ));
+        return;
+    }
+
+    let args = match expand_action_command(action, values) {
+        Ok(args) => args,
+        Err(error) => {
+            app.status = Some(error);
+            return;
+        }
+    };
+
+    let output = match Command::new(&model.px_path).args(&args).output() {
+        Ok(output) => output,
+        Err(error) => {
+            app.open_output(
+                format!("{} // ERROR", action.title),
+                format!("could not launch PX action: {error}"),
+            );
+            return;
+        }
+    };
+
+    let mut text = display_output(&output.stdout, &output.stderr);
+
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "signal".to_owned());
+        text = format!("EXIT {code}\n\n{text}");
+    }
+
+    app.open_output(action.title.clone(), text);
+}
+
+fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
+    let Some(action) = action_by_id(model, action_id) else {
+        app.status = Some(format!("Action disappeared: {action_id}"));
+        return;
+    };
+
+    if action.mutation != "read" {
+        app.status = Some(format!(
+            "{} is a {} action; execution stays locked until mutation controls land",
+            action.title, action.mutation
+        ));
+        return;
+    }
+
+    if action.arguments.is_empty() {
+        run_read_action(app, model, action, &[]);
+    } else {
+        app.begin_action_prompt(action.id.clone(), action.arguments.len());
+    }
+}
+
 fn resolve_px_path() -> PathBuf {
     if let Ok(root) = env::var("PX_RUNTIME_ROOT") {
         let candidate = Path::new(&root).join("bin").join("px");
