@@ -720,7 +720,15 @@ fn draw_representative_actions(frame: &mut Frame, area: Rect, model: &Model) {
     );
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, model: &Model) {
+fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let default = match app.mode {
+        Mode::Home => "SPACE commands   / find anything   q quit",
+        Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
+        Mode::Search => "type to search   Up/Down move   Enter select   Esc back",
+    };
+    let message = app.status.as_deref().unwrap_or(default);
+    let message_color = if app.status.is_some() { ORANGE } else { FG };
+
     let line = Line::from(vec![
         Span::styled(
             " LIVE ",
@@ -731,18 +739,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         Span::styled(
             format!(
-                " action schema v{} · tool schema v{} · loaded {} tool records ",
-                model.actions.version,
-                model.tools.version,
-                model.tools.tools.len()
+                " a{} t{} ",
+                model.actions.actions.len(),
+                model.tools.counts.total
             ),
-            Style::default().fg(FG),
+            Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            "  SPACE + / navigation is the next lane  ",
-            Style::default().fg(ORANGE),
-        ),
-        Span::styled("q / Esc quit", Style::default().fg(CYAN)),
+        Span::styled(message, Style::default().fg(message_color)),
     ]);
 
     frame.render_widget(
