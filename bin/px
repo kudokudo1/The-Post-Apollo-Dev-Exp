@@ -422,7 +422,7 @@ execute_operation_recovery() {
 
     recovery_record="$(python3 "$ROOT/bin/px-operation-store" start \
         --action-id "px.operation.recover.workflow.create" \
-        --owner-pid "$" \
+        --owner-pid "$BASHPID" \
         --title "Recover Workflow Creation" \
         --mutation remote \
         --recovery EVIDENCE_ONLY \
