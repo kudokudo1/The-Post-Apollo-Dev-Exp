@@ -73,10 +73,10 @@ def px_hospital(*args: str, stdin_text: str | None = None):
         check=False,
     )
     if proc.returncode != 0:
-        detail = proc.stderr_text.strip() or proc.stdout_text.strip()
+        detail = stderr_text.strip() or stdout_text.strip()
         raise RuntimeError(detail or f"px hospital exited {proc.returncode}")
     try:
-        return json.loads(proc.stdout_text)
+        return json.loads(stdout_text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"px hospital returned invalid JSON: {exc}")
 
@@ -125,7 +125,7 @@ def probe_hermes_capabilities(executable: str, record: dict) -> dict:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"cannot inspect Hermes CLI capabilities: {exc}")
 
-    help_text = (proc.stdout_text + "\n" + proc.stderr_text).lower()
+    help_text = (stdout_text + "\n" + stderr_text).lower()
     if proc.returncode != 0 and not help_text.strip():
         raise RuntimeError(
             f"Hermes CLI capability probe exited {proc.returncode}"
@@ -620,9 +620,6 @@ def run_turn(args) -> dict:
             f"provider turn timed out after {args.timeout}s"
         ) from exc
 
-    proc.stdout_text_text = stdout_text
-    proc.stderr_text_text = stderr_text
-
     current_session = px_hospital("session", args.session_id)
     if str(current_session.get("status") or "").upper() == "PAUSED":
         return {
@@ -643,12 +640,12 @@ def run_turn(args) -> dict:
     try:
         if effective_dialect == "hermes-text":
             observed_id, assistant, normalized_events = parse_hermes_text(
-                proc.stdout_text,
-                proc.stderr_text,
+                stdout_text,
+                stderr_text,
             )
         else:
             observed_id, assistant, normalized_events = parse_jsonl(
-                proc.stdout_text,
+                stdout_text,
                 effective_dialect,
             )
     except RuntimeError as exc:
@@ -691,7 +688,7 @@ def run_turn(args) -> dict:
     if proc.returncode != 0 or parse_error or not assistant:
         detail = (
             parse_error
-            or proc.stderr_text.strip()
+            or stderr_text.strip()
             or (
                 "provider returned no assistant text"
                 if not assistant
@@ -719,7 +716,7 @@ def run_turn(args) -> dict:
             {
                 "reason": detail,
                 "exitCode": proc.returncode,
-                "stderr": proc.stderr_text[-4000:],
+                "stderr": stderr_text[-4000:],
             },
         )
         raise RuntimeError(detail)
@@ -769,7 +766,7 @@ def run_turn(args) -> dict:
         "providerSessionId": effective_id,
         "assistant": assistant,
         "eventCount": len(normalized_events),
-        "stderr": proc.stderr_text.strip(),
+        "stderr": stderr_text.strip(),
     }
 
 
