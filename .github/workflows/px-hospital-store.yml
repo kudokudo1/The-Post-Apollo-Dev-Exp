@@ -1,0 +1,38 @@
+name: PX / HOSPITAL STORE
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - bin/px
+      - bin/px-hospital-store
+      - tests/test-px-hospital-store.sh
+      - .github/workflows/px-hospital-store.yml
+  push:
+    branches:
+      - main
+    paths:
+      - bin/px
+      - bin/px-hospital-store
+      - tests/test-px-hospital-store.sh
+      - .github/workflows/px-hospital-store.yml
+
+permissions:
+  contents: read
+
+jobs:
+  hospital-store:
+    name: Hospital durable state store
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Hospital store syntax
+        run: |
+          bash -n tests/test-px-hospital-store.sh
+          python3 -m py_compile bin/px-hospital-store
+
+      - name: Test Hospital durable state store
+        run: bash ./tests/test-px-hospital-store.sh
