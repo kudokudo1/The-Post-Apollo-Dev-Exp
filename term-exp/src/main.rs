@@ -623,6 +623,132 @@ fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[Stri
     app.open_output(action.title.clone(), text);
 }
 
+fn repository_choices(model: &Model) -> Vec<ActionChoiceItem> {
+    model
+        .repositories
+        .iter()
+        .map(|repository| ActionChoiceItem {
+            value: repository.alias.clone(),
+            label: repository.alias.clone(),
+            detail: repository.repository.clone(),
+        })
+        .collect()
+}
+
+fn selected_repository<'a>(action: &Action, values: &'a [String]) -> Option<&'a str> {
+    action
+        .arguments
+        .iter()
+        .position(|argument| argument.kind == "repository")
+        .and_then(|index| values.get(index))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn run_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let output = Command::new(&model.px_path)
+        .args(["runs", repository, "20"])
+        .output()
+        .map_err(|error| format!("could not list workflow runs: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("px runs {repository} failed")
+        } else {
+            stderr
+        });
+    }
+
+    let runs: Vec<RunRecord> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("workflow run list returned invalid JSON: {error}"))?;
+
+    Ok(runs
+        .into_iter()
+        .map(|run| {
+            let workflow = run
+                .workflow_name
+                .unwrap_or_else(|| format!("Run {}", run.database_id));
+            let conclusion = run.conclusion.unwrap_or_else(|| "-".to_owned());
+            let branch = run.head_branch.unwrap_or_else(|| "-".to_owned());
+
+            ActionChoiceItem {
+                value: run.database_id.to_string(),
+                label: workflow,
+                detail: format!(
+                    "#{}  {} / {}  {}  {}",
+                    run.database_id, run.status, conclusion, branch, run.created_at
+                ),
+            }
+        })
+        .collect())
+}
+
+fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        return;
+    };
+
+    match argument.kind.as_str() {
+        "repository" => {
+            let choices = repository_choices(model);
+            if choices.is_empty() {
+                app.open_prompt();
+                app.status = Some("No repositories are registered; type one manually".to_owned());
+            } else {
+                app.open_choice(choices);
+            }
+        }
+        "run" => {
+            let Some(repository) = selected_repository(action, &app.prompt_values) else {
+                app.open_prompt();
+                app.status = Some(
+                    "No repository is selected, so the run ID must be typed manually".to_owned(),
+                );
+                return;
+            };
+
+            match run_choices(model, repository) {
+                Ok(choices) if !choices.is_empty() => app.open_choice(choices),
+                Ok(_) => {
+                    app.open_prompt();
+                    app.status = Some(format!(
+                        "No recent runs found for {repository}; type a run ID manually"
+                    ));
+                }
+                Err(error) => {
+                    app.open_prompt();
+                    app.status = Some(format!(
+                        "Could not load runs automatically ({error}); type a run ID manually"
+                    ));
+                }
+            }
+        }
+        _ => app.open_prompt(),
+    }
+}
+
+fn commit_argument_value(
+    app: &mut App,
+    model: &Model,
+    action: &Action,
+    value: String,
+) {
+    if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
+        *slot = value;
+    }
+
+    if app.prompt_index + 1 < action.arguments.len() {
+        app.prompt_index += 1;
+        app.prompt_buffer.clear();
+        app.status = None;
+        prepare_current_argument(app, model, action);
+    } else {
+        let values = app.prompt_values.clone();
+        run_read_action(app, model, action, &values);
+    }
+}
+
 fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
     let Some(action) = action_by_id(model, action_id) else {
         app.status = Some(format!("Action disappeared: {action_id}"));
