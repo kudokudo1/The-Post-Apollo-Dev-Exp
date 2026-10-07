@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -111,6 +111,11 @@ CREATE INDEX IF NOT EXISTS idx_doctors_status
     ON doctors(status, updated_at DESC);
 """
 
+SCHEMA_V4 = """
+ALTER TABLE rooms
+    ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -193,6 +198,15 @@ def migrate(conn: sqlite3.Connection) -> int:
         )
         conn.commit()
         version = 3
+
+    if version < 4:
+        conn.executescript(SCHEMA_V4)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("4",),
+        )
+        conn.commit()
+        version = 4
 
     return version
 
@@ -342,6 +356,14 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
     if not patient_id:
         raise RuntimeError("Hospital room bind requires a patient identity")
 
+    existing = conn.execute(
+        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        (args.room_id,),
+    ).fetchone()
+    provider_id = str(args.provider_id or "").strip()
+    if not provider_id and existing is not None:
+        provider_id = str(existing["provider_id"] or "")
+
     conn.execute(
         """
         INSERT INTO patients(patient_id, repository, label)
@@ -364,15 +386,16 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
         """
         INSERT INTO rooms(
             room_id, patient_id, team, branch, bed_path, doctor_id,
-            current_assignment_id
+            provider_id, current_assignment_id
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(room_id) DO UPDATE SET
             patient_id = excluded.patient_id,
             team = excluded.team,
             branch = excluded.branch,
             bed_path = excluded.bed_path,
             doctor_id = excluded.doctor_id,
+            provider_id = excluded.provider_id,
             current_assignment_id = excluded.current_assignment_id,
             updated_at = CURRENT_TIMESTAMP
         """,
@@ -383,6 +406,7 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
             args.branch or "",
             args.bed_path or "",
             args.doctor_id or "",
+            provider_id,
             args.assignment_id or "",
         ),
     )
@@ -394,19 +418,28 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
 def room_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
 
+    existing = conn.execute(
+        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        (args.room_id,),
+    ).fetchone()
+    provider_id = str(args.provider_id or "").strip()
+    if not provider_id and existing is not None:
+        provider_id = str(existing["provider_id"] or "")
+
     conn.execute(
         """
         INSERT INTO rooms(
             room_id, patient_id, team, branch, bed_path, doctor_id,
-            current_assignment_id
+            provider_id, current_assignment_id
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(room_id) DO UPDATE SET
             patient_id = excluded.patient_id,
             team = excluded.team,
             branch = excluded.branch,
             bed_path = excluded.bed_path,
             doctor_id = excluded.doctor_id,
+            provider_id = excluded.provider_id,
             current_assignment_id = excluded.current_assignment_id,
             updated_at = CURRENT_TIMESTAMP
         """,
@@ -417,6 +450,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
             args.branch or "",
             args.bed_path or "",
             args.doctor_id or "",
+            provider_id,
             args.assignment_id or "",
         ),
     )
@@ -465,6 +499,7 @@ def normalize_room(row: sqlite3.Row) -> dict:
         "branch": branch,
         "bedPath": str(row["bed_path"] or ""),
         "doctorId": str(row["doctor_id"] or ""),
+        "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["current_assignment_id"] or ""),
         "createdAt": str(row["created_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
@@ -524,6 +559,16 @@ def session_put(conn: sqlite3.Connection, args) -> dict:
             args.status,
         ),
     )
+    if args.provider_id:
+        conn.execute(
+            """
+            UPDATE rooms
+            SET provider_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE room_id = ?
+            """,
+            (args.provider_id, args.room_id),
+        )
+
     conn.commit()
     row = conn.execute(
         "SELECT * FROM sessions WHERE session_id = ?",
@@ -877,6 +922,7 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--branch", default="")
     bind.add_argument("--bed-path", default="")
     bind.add_argument("--doctor-id", default="")
+    bind.add_argument("--provider-id", default="")
     bind.add_argument("--assignment-id", default="")
     bind.add_argument("--json", action="store_true")
 
@@ -887,6 +933,7 @@ def build_parser() -> argparse.ArgumentParser:
     room.add_argument("--branch", default="")
     room.add_argument("--bed-path", default="")
     room.add_argument("--doctor-id", default="")
+    room.add_argument("--provider-id", default="")
     room.add_argument("--assignment-id", default="")
     room.add_argument("--json", action="store_true")
 

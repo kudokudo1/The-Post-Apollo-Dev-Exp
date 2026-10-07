@@ -13,10 +13,11 @@ status_json="$("$ROOT/bin/px" hospital status --json)"
 doctor_json="$("$ROOT/bin/px" hospital doctor-put doctor-t6 --name "T6 DOCTOR" --role "APPLICATION AUDIO DOCTOR" --status ACTIVE --json)"
 patient_json="$("$ROOT/bin/px" hospital patient-put patient-taskbars kudokudo1/taskbars-post-apollo --label "TASKBARS" --json)"
 room_json="$("$ROOT/bin/px" hospital room-put T6 --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json)"
-bind_json="$("$ROOT/bin/px" hospital room-bind T7 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --patient-label "TASKBARS" --team T7 --branch feature/desktop-identity --bed-path "$TMP/t7-bed" --doctor-id doctor-t7 --json)"
+bind_json="$("$ROOT/bin/px" hospital room-bind T7 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --patient-label "TASKBARS" --team T7 --branch feature/desktop-identity --bed-path "$TMP/t7-bed" --doctor-id doctor-t7 --provider-id hermes --json)"
 session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --doctor-id doctor-t6 --provider-id codex --status IDLE --json)"
 outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
 incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
+"$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
 rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
 doctors_json="$("$ROOT/bin/px" hospital doctors --json)"
 sessions_json="$("$ROOT/bin/px" hospital sessions --room-id T6 --json)"
@@ -62,7 +63,7 @@ older = json.loads(sys.argv[15])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 3, payload
+    assert payload["schema_version"] == 4, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -110,7 +111,9 @@ assert incoming["body"] == "I found two remaining presentation bindings.", incom
 assert len(rooms) == 2, rooms
 rooms_by_id = {row["id"]: row for row in rooms}
 assert rooms_by_id["T6"]["lastMessage"] == incoming["body"], rooms
+assert rooms_by_id["T6"]["providerId"] == "codex", rooms
 assert rooms_by_id["T7"]["doctorId"] == "doctor-t7", rooms
+assert rooms_by_id["T7"]["providerId"] == "hermes", rooms
 
 assert len(doctors) == 2, doctors
 doctors_by_id = {row["id"]: row for row in doctors}
@@ -131,7 +134,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("3",), version
+    assert version == ("4",), version
 
     tables = {
         row[0]
@@ -141,6 +144,12 @@ try:
     }
     for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events"):
         assert table in tables, (table, tables)
+
+    room_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(rooms)")
+    }
+    assert "provider_id" in room_columns, room_columns
 
     session_columns = {
         row[1]
