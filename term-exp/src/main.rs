@@ -179,6 +179,17 @@ struct BranchRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct CommitRecord {
+    sha: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    author: String,
+    #[serde(default)]
+    date: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolRegistry {
     version: u64,
     counts: ToolCounts,
@@ -1089,6 +1100,47 @@ fn branch_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceIte
         .collect())
 }
 
+fn commit_choices(
+    model: &Model,
+    repository: &str,
+    reference: Option<&str>,
+) -> Result<Vec<ActionChoiceItem>, String> {
+    let mut args = vec!["commits".to_owned(), repository.to_owned()];
+
+    if let Some(reference) = reference.filter(|value| !value.is_empty()) {
+        args.push(reference.to_owned());
+    }
+
+    args.push("30".to_owned());
+
+    let rows: Vec<CommitRecord> = load_choice_json(model, &args, "repository commits")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|commit| {
+            let short: String = commit.sha.chars().take(8).collect();
+            let mut details = Vec::new();
+
+            if !commit.author.is_empty() {
+                details.push(commit.author);
+            }
+            if !commit.date.is_empty() {
+                details.push(commit.date);
+            }
+
+            ActionChoiceItem {
+                value: commit.sha,
+                label: if commit.message.is_empty() {
+                    short
+                } else {
+                    format!("{short}  {}", commit.message)
+                },
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
 fn known_value_choices(
     model: &Model,
     action: &Action,
@@ -1097,6 +1149,8 @@ fn known_value_choices(
 ) -> Result<Option<Vec<ActionChoiceItem>>, String> {
     let repository = selected_argument_value(action, values, "repository");
     let room = selected_argument_value(action, values, "room");
+    let reference = selected_argument_value(action, values, "branch")
+        .or_else(|| selected_argument_value(action, values, "ref"));
 
     match argument.kind.as_str() {
         "repository" => Ok(Some(repository_choices(model))),
@@ -1119,6 +1173,11 @@ fn known_value_choices(
             let repository =
                 repository.ok_or_else(|| "select a repository first".to_owned())?;
             branch_choices(model, repository).map(Some)
+        }
+        "commit" => {
+            let repository =
+                repository.ok_or_else(|| "select a repository first".to_owned())?;
+            commit_choices(model, repository, reference).map(Some)
         }
         "enum" if !argument.choices.is_empty() => Ok(Some(
             argument
