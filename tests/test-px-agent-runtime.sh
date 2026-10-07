@@ -52,8 +52,12 @@ export PX_AGENT_PROVIDER_CONFIG="$TMP/providers.json"
 "$ROOT/bin/px" hospital init --json >/dev/null
 "$ROOT/bin/px" hospital room-bind T6     --repository kudokudo1/taskbars-post-apollo     --patient-id patient-taskbars     --patient-label TASKBARS     --team T6     --branch feature/application-audio     --bed-path "$BED"     --doctor-id doctor-t6     --json >/dev/null
 
+patient_chart_json="$(printf '%s' 'Provider identity must never replace Room identity.' | "$ROOT/bin/px" hospital chart-entry-add --scope PATIENT --patient-id patient-taskbars --entry-kind INVARIANT --title "Room identity" --priority 95 --author-role operator --author-id operator --body-stdin --json)"
+room_chart_json="$(printf '%s' 'Keep Application Audio work inside the T6 Bed and preserve supervised checkpoints.' | "$ROOT/bin/px" hospital chart-entry-add --scope ROOM --room-id T6 --entry-kind CONSTRAINT --title "T6 scope" --priority 90 --author-role operator --author-id operator --body-stdin --json)"
+
 providers_json="$("$ROOT/bin/px" agent providers --json)"
 created_json="$("$ROOT/bin/px" agent session-create     --room-id T6     --doctor-id doctor-t6     --provider-id mock     --working-directory "$BED"     --session-id session-t6-agent     --json)"
+context_json="$("$ROOT/bin/px" agent context session-t6-agent --json)"
 
 turn_one_frame="$(python3 -c 'import json; print(json.dumps({"prompt": "first task\nwith detail"}))')"
 turn_one_json="$(printf '%s\n' "$turn_one_frame" | "$ROOT/bin/px" agent turn session-t6-agent --prompt-json-stdin --timeout 30 --json)"
@@ -64,19 +68,22 @@ session_json="$("$ROOT/bin/px" hospital session session-t6-agent --json)"
 messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 200 --json)"
 
-python3 -     "$providers_json"     "$created_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED" <<'PY'
+python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED" <<'PY'
 import json
 import pathlib
 import sys
 
 providers = json.loads(sys.argv[1])
 created = json.loads(sys.argv[2])
-turn_one = json.loads(sys.argv[3])
-turn_two = json.loads(sys.argv[4])
-session = json.loads(sys.argv[5])
-messages = json.loads(sys.argv[6])
-events = json.loads(sys.argv[7])
-bed = pathlib.Path(sys.argv[8])
+context = json.loads(sys.argv[3])
+patient_chart = json.loads(sys.argv[4])
+room_chart = json.loads(sys.argv[5])
+turn_one = json.loads(sys.argv[6])
+turn_two = json.loads(sys.argv[7])
+session = json.loads(sys.argv[8])
+messages = json.loads(sys.argv[9])
+events = json.loads(sys.argv[10])
+bed = pathlib.Path(sys.argv[11])
 
 assert providers == [
     {
@@ -97,10 +104,36 @@ assert created["workingDirectory"] == str(bed), created
 assert created["providerSessionId"] == "", created
 assert created["status"] == "IDLE", created
 
+assert context["version"] == 1, context
+assert context["session"]["id"] == "session-t6-agent", context
+assert context["room"]["id"] == "T6", context
+assert context["room"]["patientId"] == "patient-taskbars", context
+assert context["room"]["repository"] == "kudokudo1/taskbars-post-apollo", context
+assert context["git"]["status"] == "VERIFIED", context
+assert context["git"]["dirty"] is False, context
+assert len(context["git"]["headSha"]) == 40, context
+assert [row["id"] for row in context["patientChart"]] == [patient_chart["id"]], context
+assert [row["id"] for row in context["roomChart"]] == [room_chart["id"]], context
+assert context["recentMessages"] == [], context
+assert "HOSPITAL LIVE CONTEXT // GENERATED" in context["renderedText"], context
+assert "Provider identity must never replace Room identity." in context["renderedText"], context
+assert "Keep Application Audio work inside the T6 Bed" in context["renderedText"], context
+
 assert turn_one["assistant"] == "MOCK: first task\nwith detail", turn_one
 assert turn_one["providerSessionId"] == "mock-provider-session", turn_one
 assert turn_two["assistant"] == "MOCK: second task", turn_two
 assert turn_two["providerSessionId"] == "mock-provider-session", turn_two
+
+assert turn_one["context"]["patientChartEntryIds"] == [patient_chart["id"]], turn_one
+assert turn_one["context"]["roomChartEntryIds"] == [room_chart["id"]], turn_one
+assert turn_one["context"]["recentMessageIds"] == [], turn_one
+assert turn_one["context"]["gitEvidenceStatus"] == "VERIFIED", turn_one
+assert len(turn_one["context"]["gitHeadSha"]) == 40, turn_one
+
+assert turn_two["context"]["patientChartEntryIds"] == [patient_chart["id"]], turn_two
+assert turn_two["context"]["roomChartEntryIds"] == [room_chart["id"]], turn_two
+assert len(turn_two["context"]["recentMessageIds"]) == 2, turn_two
+assert turn_two["context"]["gitEvidenceStatus"] == "VERIFIED", turn_two
 
 assert session["providerSessionId"] == "mock-provider-session", session
 assert session["workingDirectory"] == str(bed), session
@@ -122,11 +155,24 @@ assert [row["body"] for row in messages] == [
 ], messages
 
 types = [row["type"] for row in events]
+assert types.count("turn.context") == 2, types
 assert types.count("turn.started") == 2, types
 assert types.count("turn.completed") == 2, types
 assert types.count("provider.system") == 2, types
 assert types.count("provider.text") == 2, types
 assert types.count("provider.result") == 2, types
+
+context_events = [row for row in events if row["type"] == "turn.context"]
+assert context_events[0]["payload"]["patientChartEntryIds"] == [patient_chart["id"]], context_events
+assert context_events[0]["payload"]["roomChartEntryIds"] == [room_chart["id"]], context_events
+assert context_events[0]["payload"]["recentMessageIds"] == [], context_events
+assert len(context_events[1]["payload"]["recentMessageIds"]) == 2, context_events
+
+provider_system = [row["payload"] for row in events if row["type"] == "provider.system"]
+assert all(row["hospital_context"] is True for row in provider_system), provider_system
+assert all(row["patient_chart"] is True for row in provider_system), provider_system
+assert all(row["room_chart"] is True for row in provider_system), provider_system
+assert all(row["recent_transcript"] is True for row in provider_system), provider_system
 PY
 
 CANCEL_BED="$TMP/t8-bed"
