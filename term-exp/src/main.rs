@@ -64,6 +64,8 @@ struct ActionArgument {
     kind: String,
     #[serde(default)]
     choices: Vec<String>,
+    #[serde(default, rename = "dependsOn")]
+    depends_on: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,20 +734,6 @@ fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[Stri
     app.open_output(action.title.clone(), text);
 }
 
-fn selected_argument_value<'a>(
-    action: &Action,
-    values: &'a [String],
-    kind: &str,
-) -> Option<&'a str> {
-    action
-        .arguments
-        .iter()
-        .position(|argument| argument.kind == kind)
-        .and_then(|index| values.get(index))
-        .map(String::as_str)
-        .filter(|value| !value.is_empty())
-}
-
 fn selected_argument_named<'a>(
     action: &Action,
     values: &'a [String],
@@ -760,16 +748,31 @@ fn selected_argument_named<'a>(
         .filter(|value| !value.is_empty())
 }
 
+fn argument_dependency_values(
+    action: &Action,
+    values: &[String],
+    argument: &ActionArgument,
+) -> BTreeMap<String, String> {
+    argument
+        .depends_on
+        .iter()
+        .filter_map(|(role, argument_name)| {
+            selected_argument_named(action, values, argument_name)
+                .map(|value| (role.clone(), value.to_owned()))
+        })
+        .collect()
+}
+
 fn known_value_choices(
     model: &Model,
     action: &Action,
     values: &[String],
     argument: &ActionArgument,
 ) -> Result<Option<Vec<ActionChoiceItem>>, String> {
-    let repository = selected_argument_value(action, values, "repository");
-    let room = selected_argument_value(action, values, "room");
-    let reference = selected_argument_value(action, values, "branch")
-        .or_else(|| selected_argument_value(action, values, "ref"));
+    let dependencies = argument_dependency_values(action, values, argument);
+    let repository = dependencies.get("repository").map(String::as_str);
+    let room = dependencies.get("room").map(String::as_str);
+    let reference = dependencies.get("reference").map(String::as_str);
 
     match argument.kind.as_str() {
         "repository" => resolver::repository_choices(&model.px_path).map(Some),
@@ -2460,18 +2463,21 @@ mod tests {
                     required: true,
                     kind: "repository".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "run_id".to_owned(),
                     required: true,
                     kind: "run".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "optional".to_owned(),
                     required: false,
                     kind: "text".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
             ],
             mutation: "read".to_owned(),
@@ -2487,7 +2493,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_repository_comes_from_structured_argument_value() {
+    fn dependency_values_follow_declared_argument_names() {
+        let mut run_dependencies = BTreeMap::new();
+        run_dependencies.insert("repository".to_owned(), "target_repo".to_owned());
+
         let action = Action {
             id: "inspect".to_owned(),
             title: "Inspect".to_owned(),
@@ -2495,21 +2504,23 @@ mod tests {
             summary: String::new(),
             command: vec![
                 "inspect".to_owned(),
-                "{repository}".to_owned(),
+                "{target_repo}".to_owned(),
                 "{run_id}".to_owned(),
             ],
             arguments: vec![
                 ActionArgument {
-                    name: "repository".to_owned(),
+                    name: "target_repo".to_owned(),
                     required: true,
                     kind: "repository".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "run_id".to_owned(),
                     required: true,
                     kind: "run".to_owned(),
                     choices: Vec::new(),
+                    depends_on: run_dependencies,
                 },
             ],
             mutation: "read".to_owned(),
@@ -2518,8 +2529,11 @@ mod tests {
         };
 
         let values = vec!["taskbars".to_owned(), String::new()];
+        let dependencies =
+            argument_dependency_values(&action, &values, &action.arguments[1]);
+
         assert_eq!(
-            selected_argument_value(&action, &values, "repository"),
+            dependencies.get("repository").map(String::as_str),
             Some("taskbars")
         );
     }
@@ -2531,12 +2545,14 @@ mod tests {
             required: false,
             kind: "integer".to_owned(),
             choices: Vec::new(),
+            depends_on: BTreeMap::new(),
         };
         let slug = ActionArgument {
             name: "slug".to_owned(),
             required: true,
             kind: "slug".to_owned(),
             choices: Vec::new(),
+            depends_on: BTreeMap::new(),
         };
 
         assert!(validate_typed_argument(&integer, "20").is_ok());
@@ -2601,42 +2617,49 @@ mod tests {
                     required: true,
                     kind: "repository".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "team".to_owned(),
                     required: true,
                     kind: "room".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "branch".to_owned(),
                     required: true,
                     kind: "branch".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "room_head".to_owned(),
                     required: true,
                     kind: "commit".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "base".to_owned(),
                     required: true,
                     kind: "branch".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "base_head".to_owned(),
                     required: true,
                     kind: "commit".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "local_path".to_owned(),
                     required: true,
                     kind: "path".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
             ],
             mutation: "remote".to_owned(),
@@ -2749,12 +2772,14 @@ mod tests {
                     required: true,
                     kind: "session".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
                 ActionArgument {
                     name: "reason".to_owned(),
                     required: false,
                     kind: "text".to_owned(),
                     choices: Vec::new(),
+                    depends_on: BTreeMap::new(),
                 },
             ],
             mutation: "local".to_owned(),

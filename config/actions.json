@@ -293,7 +293,10 @@
         {
           "name": "ref",
           "required": false,
-          "kind": "ref"
+          "kind": "ref",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -335,7 +338,10 @@
         {
           "name": "sha",
           "required": false,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -370,7 +376,10 @@
         {
           "name": "run_id",
           "required": true,
-          "kind": "run"
+          "kind": "run",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -405,7 +414,10 @@
         {
           "name": "run_id",
           "required": true,
-          "kind": "run"
+          "kind": "run",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -440,12 +452,18 @@
         {
           "name": "workflow",
           "required": true,
-          "kind": "workflow"
+          "kind": "workflow",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "ref",
           "required": false,
-          "kind": "ref"
+          "kind": "ref",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "remote",
@@ -480,7 +498,10 @@
         {
           "name": "run_id",
           "required": true,
-          "kind": "run"
+          "kind": "run",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -515,7 +536,10 @@
         {
           "name": "run_id",
           "required": true,
-          "kind": "run"
+          "kind": "run",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "remote",
@@ -549,7 +573,10 @@
         {
           "name": "run_id",
           "required": true,
-          "kind": "run"
+          "kind": "run",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "remote",
@@ -614,7 +641,10 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -651,7 +681,10 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -688,7 +721,10 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -724,7 +760,10 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "read",
@@ -765,27 +804,44 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "branch",
           "required": true,
-          "kind": "branch"
+          "kind": "branch",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "room_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "branch"
+          }
         },
         {
           "name": "base",
           "required": true,
-          "kind": "branch"
+          "kind": "branch",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "base_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "base"
+          }
         },
         {
           "name": "local_path",
@@ -832,27 +888,44 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "branch",
           "required": true,
-          "kind": "branch"
+          "kind": "branch",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "room_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "branch"
+          }
         },
         {
           "name": "base",
           "required": true,
-          "kind": "branch"
+          "kind": "branch",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "base_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "base"
+          }
         },
         {
           "name": "local_path",
@@ -897,22 +970,36 @@
         {
           "name": "team",
           "required": true,
-          "kind": "room"
+          "kind": "room",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "base",
           "required": true,
-          "kind": "branch"
+          "kind": "branch",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "expected_base_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "base"
+          }
         },
         {
           "name": "expected_room_head",
           "required": true,
-          "kind": "commit"
+          "kind": "commit",
+          "dependsOn": {
+            "repository": "repository",
+            "reference": "base"
+          }
         }
       ],
       "mutation": "read",
@@ -1023,12 +1110,18 @@
         {
           "name": "workflow_path",
           "required": true,
-          "kind": "workflow"
+          "kind": "workflow",
+          "dependsOn": {
+            "repository": "repository"
+          }
         },
         {
           "name": "ref",
           "required": false,
-          "kind": "ref"
+          "kind": "ref",
+          "dependsOn": {
+            "repository": "repository"
+          }
         }
       ],
       "mutation": "remote",
@@ -1129,7 +1222,10 @@
         {
           "name": "report",
           "required": true,
-          "kind": "report"
+          "kind": "report",
+          "dependsOn": {
+            "room": "room"
+          }
         }
       ],
       "mutation": "read",
@@ -1202,7 +1298,10 @@
         {
           "name": "chart_entry",
           "required": true,
-          "kind": "chart_entry"
+          "kind": "chart_entry",
+          "dependsOn": {
+            "room": "room"
+          }
         }
       ],
       "mutation": "read",

@@ -80,6 +80,31 @@ trigger_choices="$(jq -c '
 ' <<<"$registry")"
 [[ "$trigger_choices" == '["manual","push","manual+push"]' ]]
 
+
+jq -e '
+  (
+    .actions[]
+    | select(.id == "github.run.inspect")
+    | .arguments[]
+    | select(.name == "run_id")
+    | .dependsOn.repository
+  ) == "repository"
+  and (
+    .actions[]
+    | select(.id == "hospital.integration.integrate")
+    | .arguments[]
+    | select(.name == "room_head")
+    | .dependsOn.reference
+  ) == "branch"
+  and (
+    .actions[]
+    | select(.id == "hospital.integration.integrate")
+    | .arguments[]
+    | select(.name == "base_head")
+    | .dependsOn.reference
+  ) == "base"
+' <<<"$registry" >/dev/null
+
 repos="$("$ROOT/bin/px" repos --json)"
 jq -e '
   .version == 1
