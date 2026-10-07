@@ -208,6 +208,8 @@ def main():
         )
         assert create_recovery["recovery"] == "CONTENT_RECOVERABLE"
         assert create_recovery["automaticRecoveryAvailable"] is False
+        assert create_recovery["executorAvailable"] is True
+        assert create_recovery["requiresLiveValidation"] is True
         assert create_recovery["planAvailable"] is True
         assert create_recovery["strategy"] == "DELETE_CREATED_WORKFLOW"
         assert create_recovery["plan"]["repository"] == "owner/repo"
@@ -218,7 +220,13 @@ def main():
         )
         assert create_recovery["plan"]["yaml"] == yaml_text
         assert create_recovery["plan"]["remoteBlobSha"] == "blob-recoverable"
-        assert "executor is not registered yet" in create_recovery["reason"]
+        assert create_recovery["executionCommand"] == [
+            "operation",
+            "recover",
+            create_id,
+            "--json",
+        ]
+        assert "requires live history and content validation" in create_recovery["reason"]
 
         invalid = run_px(
             env,
