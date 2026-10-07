@@ -1091,6 +1091,115 @@ def run_quick(args) -> dict:
     return payload
 
 
+def run_report_feedback(args) -> dict:
+    session = px_hospital("session", args.session_id)
+    report = px_hospital("room-report", str(args.report_id))
+
+    session_room = str(session.get("roomId") or "")
+    report_room = str(report.get("roomId") or "")
+    report_session = str(report.get("sessionId") or "")
+
+    if report_room != session_room:
+        raise RuntimeError(
+            f"Hospital Room Report {args.report_id} belongs to "
+            f"{report_room}, not {session_room}"
+        )
+
+    if report_session and report_session != args.session_id:
+        raise RuntimeError(
+            f"Hospital Room Report {args.report_id} belongs to "
+            f"persistent session {report_session}, not {args.session_id}"
+        )
+
+    if args.feedback_stdin:
+        feedback = sys.stdin.read()
+    else:
+        feedback = args.feedback or ""
+
+    feedback = feedback.strip()
+    if not feedback:
+        raise RuntimeError("Room Report feedback is empty")
+
+    changed_files = report.get("changedFiles")
+    if not isinstance(changed_files, list):
+        changed_files = []
+
+    report_context = (
+        "REPORT FEEDBACK // ROOM REPORT "
+        + str(report.get("id") or args.report_id)
+        + "\n"
+        + "The operator is responding to a prior Doctor Note from this "
+        + "persistent Room session. Treat its saved Git evidence as historical "
+        + "provenance, not as current truth. Reacquire live Git state before "
+        + "making new Git claims or edits.\n\n"
+        + "REPORT TITLE: "
+        + str(report.get("title") or "DOCTOR NOTE")
+        + "\n"
+        + "REPORT CREATED: "
+        + str(report.get("createdAt") or "")
+        + "\n"
+        + "REPORT BRANCH: "
+        + str(report.get("branch") or "")
+        + "\n"
+        + "REPORT HEAD: "
+        + str(report.get("headSha") or "")
+        + "\n"
+        + "REPORT GIT EVIDENCE: "
+        + str(report.get("gitEvidenceStatus") or "UNAVAILABLE")
+        + "\n"
+        + "REPORT CHANGED FILES: "
+        + ", ".join(str(value) for value in changed_files)
+        + "\n\n"
+        + "ORIGINAL DOCTOR NOTE\n"
+        + str(report.get("body") or "")
+        + "\n\n"
+        + "OPERATOR FEEDBACK\n"
+        + feedback
+        + "\n\n"
+        + "Address this feedback within the current Room assignment. "
+        + "If a correction is safe and within scope, make it and explain "
+        + "what changed. Otherwise surface the blocker or decision needed."
+    )
+
+    store_event(
+        args.session_id,
+        "room_report.feedback.started",
+        {
+            "reportId": str(report.get("id") or args.report_id),
+            "sourceMessageId": str(report.get("sourceMessageId") or ""),
+        },
+    )
+
+    turn_args = argparse.Namespace(
+        session_id=args.session_id,
+        prompt=report_context,
+        prompt_stdin=False,
+        prompt_json_stdin=False,
+        working_directory="",
+        author_id=args.author_id,
+        message_type="report_feedback",
+        timeout=args.timeout,
+    )
+    result = run_turn(turn_args)
+
+    store_event(
+        args.session_id,
+        "room_report.feedback.completed",
+        {
+            "reportId": str(report.get("id") or args.report_id),
+            "assistantMessageId": str(
+                result.get("assistantMessageId") or ""
+            ),
+        },
+    )
+
+    return {
+        "report": report,
+        "feedback": feedback,
+        "result": result,
+    }
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="px agent",
@@ -1137,6 +1246,21 @@ def build_parser():
     quick.add_argument("--timeout", type=int, default=1800)
     quick.add_argument("--json", action="store_true")
 
+    report_feedback = sub.add_parser("report-feedback")
+    report_feedback.add_argument("session_id")
+    report_feedback.add_argument("report_id", type=int)
+    report_feedback_input = report_feedback.add_mutually_exclusive_group(
+        required=True
+    )
+    report_feedback_input.add_argument("--feedback")
+    report_feedback_input.add_argument(
+        "--feedback-stdin",
+        action="store_true",
+    )
+    report_feedback.add_argument("--author-id", default="operator")
+    report_feedback.add_argument("--timeout", type=int, default=1800)
+    report_feedback.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -1162,6 +1286,8 @@ def main() -> int:
             emit(cancel_session(args), args.json)
         elif args.command == "quick":
             emit(run_quick(args), args.json)
+        elif args.command == "report-feedback":
+            emit(run_report_feedback(args), args.json)
         else:
             raise RuntimeError(f"unsupported agent command: {args.command}")
     except (OSError, RuntimeError) as exc:
