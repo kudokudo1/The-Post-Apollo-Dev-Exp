@@ -753,16 +753,7 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
                 }
             }
 
-            let searchable = format!(
-                "{} {} {} {}",
-                action.id, action.title, action.category, action.summary
-            );
-
-            let score = if query.is_empty() {
-                Some(1000)
-            } else {
-                fuzzy_score(query, &searchable).map(|score| score + 1000)
-            };
+            let score = action_search_score(action, query);
 
             if let Some(score) = score {
                 items.push(SearchItem {
