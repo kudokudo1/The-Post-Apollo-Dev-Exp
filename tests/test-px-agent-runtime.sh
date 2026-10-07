@@ -151,6 +151,11 @@ assert "Application Audio ownership regression sentinel" in context["renderedTex
 assert "HOSPITAL LIVE CONTEXT // GENERATED" in context["renderedText"], context
 assert "Provider identity must never replace Room identity." in context["renderedText"], context
 assert "Keep Application Audio work inside the T6 Bed" in context["renderedText"], context
+assert "RICH CHAT OUTPUT" in context["renderedText"], context
+assert "hospital:file:relative/path.ext" in context["renderedText"], context
+assert "hospital:diff" in context["renderedText"], context
+assert "hospital:room:ROOM_ID" in context["renderedText"], context
+assert "hospital:report:REPORT_ID" in context["renderedText"], context
 
 assert turn_one["assistant"] == "MOCK: first task\nwith detail", turn_one
 assert turn_one["providerSessionId"] == "mock-provider-session", turn_one
