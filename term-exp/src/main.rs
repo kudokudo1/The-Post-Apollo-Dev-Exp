@@ -383,18 +383,7 @@ fn handle_key(
                             return Ok(());
                         }
 
-                        if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
-                            *slot = value;
-                        }
-
-                        if app.prompt_index + 1 < action.arguments.len() {
-                            app.prompt_index += 1;
-                            app.prompt_buffer.clear();
-                            app.status = None;
-                        } else {
-                            let values = app.prompt_values.clone();
-                            run_read_action(app, model, action, &values);
-                        }
+                        commit_argument_value(app, model, action, value);
                     }
                 }
                 KeyCode::Char(character)
@@ -403,6 +392,35 @@ fn handle_key(
                 {
                     app.prompt_buffer.push(character);
                     app.status = None;
+                }
+                _ => {}
+            }
+        }
+
+        Mode::ActionChoice => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.back_to_search();
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                return Ok(());
+            };
+
+            match key.code {
+                KeyCode::Esc => app.back_to_search(),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    App::next(&mut app.choice_selected, app.choice_items.len())
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    App::previous(&mut app.choice_selected, app.choice_items.len())
+                }
+                KeyCode::Enter => {
+                    if let Some(choice) = app.choice_items.get(app.choice_selected) {
+                        let value = choice.value.clone();
+                        commit_argument_value(app, model, action, value);
+                    }
                 }
                 _ => {}
             }
