@@ -5,6 +5,8 @@ pub enum Mode {
     Search,
     ActionPrompt,
     ActionChoice,
+    MutationPreview,
+    MutationConfirm,
     Output,
 }
 
@@ -41,6 +43,9 @@ pub struct App {
     pub choice_items: Vec<ActionChoiceItem>,
     pub choice_query: String,
 
+    pub mutation_args: Vec<String>,
+    pub mutation_confirm_buffer: String,
+
     pub output_title: String,
     pub output_text: String,
     pub output_scroll: u16,
@@ -65,6 +70,9 @@ impl App {
             choice_selected: 0,
             choice_items: Vec::new(),
             choice_query: String::new(),
+
+            mutation_args: Vec::new(),
+            mutation_confirm_buffer: String::new(),
 
             output_title: String::new(),
             output_text: String::new(),
@@ -114,6 +122,8 @@ impl App {
         self.choice_selected = 0;
         self.choice_items.clear();
         self.choice_query.clear();
+        self.mutation_args.clear();
+        self.mutation_confirm_buffer.clear();
     }
 
     pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
@@ -124,6 +134,8 @@ impl App {
         self.choice_selected = 0;
         self.choice_items.clear();
         self.choice_query.clear();
+        self.mutation_args.clear();
+        self.mutation_confirm_buffer.clear();
         self.status = None;
     }
 
@@ -142,6 +154,19 @@ impl App {
         self.choice_selected = 0;
         self.choice_items.clear();
         self.choice_query.clear();
+        self.status = None;
+    }
+
+    pub fn open_mutation_preview(&mut self, args: Vec<String>) {
+        self.mode = Mode::MutationPreview;
+        self.mutation_args = args;
+        self.mutation_confirm_buffer.clear();
+        self.status = None;
+    }
+
+    pub fn open_mutation_confirm(&mut self) {
+        self.mode = Mode::MutationConfirm;
+        self.mutation_confirm_buffer.clear();
         self.status = None;
     }
 
@@ -164,6 +189,8 @@ impl App {
         self.choice_selected = 0;
         self.choice_items.clear();
         self.choice_query.clear();
+        self.mutation_args.clear();
+        self.mutation_confirm_buffer.clear();
         self.output_title.clear();
         self.output_text.clear();
         self.output_scroll = 0;
