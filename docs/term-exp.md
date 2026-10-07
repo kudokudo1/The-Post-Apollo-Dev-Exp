@@ -93,9 +93,14 @@ Mutation handling is deliberately staged:
   PX freezes the run identity plus its current attempt number, TERM EXP
   revalidates that exact attempt before execution, and post-op verification
   requires the same run to advance to a higher attempt;
-- other GitHub remote actions such as workflow dispatch, workflow creation, and
-  workflow deletion remain preview-only until their own PX guard and
-  verification contracts are certified;
+- GitHub workflow dispatch is `px-guarded`: PX resolves an omitted ref to an
+  explicit ref, freezes its commit SHA plus the workflow file blob and the
+  pre-dispatch run set, and supplies the canonical command TERM EXP will
+  execute. Verification only passes when exactly one new matching
+  `workflow_dispatch` run appears; zero or multiple candidates are reported
+  as failed/ambiguous rather than guessed;
+- workflow creation and workflow deletion remain preview-only until their own
+  PX guard and verification contracts are certified;
 - after guarded remote execution, TERM EXP reports execution success separately
   from post-operation verification.
 
