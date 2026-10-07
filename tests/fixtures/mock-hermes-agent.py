@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -34,7 +35,45 @@ if "FORCE_SESSION_MISMATCH" in operator_prompt:
 if "SLOW_TURN" in operator_prompt:
     time.sleep(30)
 
-if operator_prompt.startswith("QUICK // SUGGEST MEMORY"):
+if operator_prompt == "AUTHORITY_PROBE":
+    def probe(command):
+        proc = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        return {
+            "returncode": proc.returncode,
+            "stdout": proc.stdout.strip(),
+            "stderr": proc.stderr.strip(),
+        }
+
+    reply = json.dumps(
+        {
+            "authority": os.environ.get(
+                "POST_APOLLO_HOSPITAL_AUTHORITY",
+                "",
+            ),
+            "permissions": os.environ.get(
+                "POST_APOLLO_HOSPITAL_PERMISSIONS",
+                "",
+            ),
+            "denied": os.environ.get(
+                "POST_APOLLO_HOSPITAL_DENIED",
+                "",
+            ),
+            "git_status": probe(["git", "status", "--short"]),
+            "git_commit": probe(
+                ["git", "commit", "--allow-empty", "-m", "forbidden"]
+            ),
+            "git_push": probe(["git", "push"]),
+            "px_integrate": probe(["px", "integrate"]),
+        },
+        sort_keys=True,
+    )
+elif operator_prompt.startswith("QUICK // SUGGEST MEMORY"):
     reply = (
         "MEMORY_SUGGESTION\n"
         "SCOPE: ROOM\n"
