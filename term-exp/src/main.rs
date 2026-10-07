@@ -45,6 +45,19 @@ struct Action {
     title: String,
     category: String,
     summary: String,
+    command: Vec<String>,
+    #[serde(default)]
+    arguments: Vec<ActionArgument>,
+    mutation: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActionArgument {
+    name: String,
+    required: bool,
+    kind: String,
 }
 
 #[derive(Debug, Deserialize)]
