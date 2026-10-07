@@ -470,6 +470,239 @@ def cancel_session(args) -> dict:
     }
 
 
+CONTEXT_VERSION = 1
+PATIENT_CHART_LIMIT = 8
+ROOM_CHART_LIMIT = 12
+RECENT_MESSAGE_LIMIT = 8
+CONTEXT_ITEM_TEXT_LIMIT = 1200
+
+
+def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def live_context_payload(
+    session_id: str,
+    working_directory: str = "",
+) -> dict:
+    session = px_hospital("session", session_id)
+    room_id = str(session.get("roomId") or "")
+    room = px_hospital("room", room_id)
+    patient_id = str(room.get("patientId") or "")
+    cwd_text = (
+        str(working_directory or "").strip()
+        or str(session.get("workingDirectory") or "").strip()
+        or str(room.get("bedPath") or "").strip()
+    )
+
+    if patient_id:
+        patient_chart = px_hospital(
+            "chart-entries",
+            "--scope", "PATIENT",
+            "--patient-id", patient_id,
+            "--status", "ACTIVE",
+            "--limit", str(PATIENT_CHART_LIMIT),
+        )
+    else:
+        patient_chart = []
+
+    room_chart = px_hospital(
+        "chart-entries",
+        "--scope", "ROOM",
+        "--room-id", room_id,
+        "--status", "ACTIVE",
+        "--limit", str(ROOM_CHART_LIMIT),
+    )
+
+    recent_messages = px_hospital(
+        "messages",
+        room_id,
+        "--limit", str(RECENT_MESSAGE_LIMIT),
+    )
+
+    git_evidence = collect_git_report_evidence(cwd_text)
+
+    return {
+        "version": CONTEXT_VERSION,
+        "generatedAt": now_iso(),
+        "session": {
+            "id": str(session.get("id") or session_id),
+            "roomId": room_id,
+            "doctorId": str(session.get("doctorId") or ""),
+            "providerId": str(session.get("providerId") or ""),
+            "providerSessionId": str(
+                session.get("providerSessionId") or ""
+            ),
+            "status": str(session.get("status") or ""),
+            "workingDirectory": cwd_text,
+        },
+        "room": {
+            "id": room_id,
+            "team": str(room.get("team") or ""),
+            "branch": str(room.get("branch") or ""),
+            "patientId": patient_id,
+            "patientLabel": str(room.get("patientLabel") or ""),
+            "repository": str(room.get("repository") or ""),
+            "assignmentId": str(room.get("assignmentId") or ""),
+        },
+        "git": git_evidence,
+        "patientChart": patient_chart,
+        "roomChart": room_chart,
+        "recentMessages": recent_messages,
+    }
+
+
+def render_chart_context(title: str, entries: list) -> list[str]:
+    lines = [title]
+    if not entries:
+        lines.append("- NONE")
+        return lines
+
+    for entry in entries:
+        entry_id = str(entry.get("id") or "?")
+        priority = int(entry.get("priority") or 0)
+        kind = str(entry.get("kind") or "NOTE")
+        label = str(entry.get("title") or "").strip()
+        body = clip_context_text(entry.get("body") or "")
+        prefix = f"- [#{entry_id} P{priority} {kind}]"
+        if label:
+            prefix += " " + label
+        lines.append(prefix)
+        if body:
+            lines.append("  " + body.replace("\n", "\n  "))
+    return lines
+
+
+def render_live_context(payload: dict) -> str:
+    session = payload.get("session") or {}
+    room = payload.get("room") or {}
+    git = payload.get("git") or {}
+    recent = payload.get("recentMessages") or []
+
+    lines = [
+        "HOSPITAL LIVE CONTEXT // GENERATED",
+        (
+            "This block is runtime context, not an operator message. "
+            "Fresh Git evidence overrides historical Chart or Report claims."
+        ),
+        "",
+        "IDENTITY",
+        "ROOM: " + str(room.get("id") or ""),
+        "TEAM: " + str(room.get("team") or ""),
+        "PATIENT: " + str(room.get("patientId") or ""),
+        "REPOSITORY: " + str(room.get("repository") or ""),
+        "DOCTOR: " + str(session.get("doctorId") or ""),
+        "PROVIDER: " + str(session.get("providerId") or ""),
+        "ASSIGNMENT: " + str(room.get("assignmentId") or ""),
+        "BED: " + str(session.get("workingDirectory") or ""),
+        "",
+        "LIVE GIT",
+        "EVIDENCE: " + str(git.get("status") or "UNAVAILABLE"),
+        "BRANCH: " + str(git.get("branch") or ""),
+        "HEAD: " + str(git.get("headSha") or ""),
+        "DIRTY: " + ("YES" if git.get("dirty") else "NO"),
+        (
+            "CHANGED FILES: "
+            + ", ".join(
+                str(value)
+                for value in (git.get("changedFiles") or [])
+            )
+        ),
+        (
+            "DIFF STAT: +"
+            + str(int(git.get("insertions") or 0))
+            + " / -"
+            + str(int(git.get("deletions") or 0))
+        ),
+        "",
+    ]
+
+    lines.extend(
+        render_chart_context(
+            "PATIENT CHART // ACTIVE",
+            payload.get("patientChart") or [],
+        )
+    )
+    lines.append("")
+    lines.extend(
+        render_chart_context(
+            "ROOM CHART // ACTIVE",
+            payload.get("roomChart") or [],
+        )
+    )
+    lines.extend(["", "RECENT CANONICAL TRANSCRIPT"])
+
+    if recent:
+        for message in recent:
+            role = str(message.get("authorRole") or "unknown").upper()
+            message_id = str(message.get("id") or "?")
+            body = clip_context_text(message.get("body") or "")
+            lines.append(f"- [#{message_id} {role}] {body}")
+    else:
+        lines.append("- NONE")
+
+    lines.extend([
+        "",
+        "AUTHORITY",
+        "- Supervised operation: stay within the current Room assignment.",
+        "- Never treat a saved Chart/Report Git claim as current truth.",
+        "- Reacquire live state before consequential Git claims or edits.",
+        "- Surface blockers, ambiguity, or authority boundaries to the operator.",
+    ])
+
+    return "\n".join(lines).strip()
+
+
+def context_summary(payload: dict) -> dict:
+    git = payload.get("git") or {}
+    return {
+        "version": int(payload.get("version") or CONTEXT_VERSION),
+        "patientChartEntryIds": [
+            str(row.get("id") or "")
+            for row in (payload.get("patientChart") or [])
+            if row.get("id")
+        ],
+        "roomChartEntryIds": [
+            str(row.get("id") or "")
+            for row in (payload.get("roomChart") or [])
+            if row.get("id")
+        ],
+        "recentMessageIds": [
+            str(row.get("id") or "")
+            for row in (payload.get("recentMessages") or [])
+            if row.get("id")
+        ],
+        "gitEvidenceStatus": str(git.get("status") or "UNAVAILABLE"),
+        "gitBranch": str(git.get("branch") or ""),
+        "gitHeadSha": str(git.get("headSha") or ""),
+        "gitDirty": bool(git.get("dirty")),
+    }
+
+
+def provider_prompt_for_turn(
+    prompt: str,
+    context: dict,
+    supplemental_context: str = "",
+) -> str:
+    parts = [render_live_context(context)]
+    supplemental = str(supplemental_context or "").strip()
+    if supplemental:
+        parts.extend([
+            "",
+            "SUPPLEMENTAL TURN CONTEXT",
+            supplemental,
+        ])
+    parts.extend([
+        "",
+        "OPERATOR TURN",
+        str(prompt or "").strip(),
+    ])
+    return "\n".join(parts).strip()
+
+
 def run_turn(args) -> dict:
     session = px_hospital("session", args.session_id)
     provider_id = str(session.get("providerId") or "").strip()
@@ -510,7 +743,19 @@ def run_turn(args) -> dict:
         session.get("providerSessionId") or ""
     ).strip()
 
-    provider_input = prompt
+    context = live_context_payload(
+        args.session_id,
+        str(cwd),
+    )
+    supplemental_context = str(
+        getattr(args, "supplemental_context", "") or ""
+    )
+    provider_prompt = provider_prompt_for_turn(
+        prompt,
+        context,
+        supplemental_context,
+    )
+    provider_input = provider_prompt
     effective_dialect = dialect
 
     if dialect == "hermes-auto":
@@ -518,7 +763,7 @@ def run_turn(args) -> dict:
             executable,
             record,
             provider_session_id,
-            prompt,
+            provider_prompt,
         )
     else:
         if provider_session_id:
@@ -550,11 +795,17 @@ def run_turn(args) -> dict:
     )
     store_event(
         args.session_id,
+        "turn.context",
+        context_summary(context),
+    )
+    store_event(
+        args.session_id,
         "turn.started",
         {
             "providerId": provider_id,
             "resume": bool(provider_session_id),
             "workingDirectory": str(cwd),
+            "contextVersion": CONTEXT_VERSION,
         },
     )
 
@@ -771,6 +1022,7 @@ def run_turn(args) -> dict:
         "operatorMessageId": str(operator_message.get("id") or ""),
         "assistantMessageId": str(doctor_message.get("id") or ""),
         "eventCount": len(normalized_events),
+        "context": context_summary(context),
         "stderr": stderr_text.strip(),
     }
 
@@ -1236,6 +1488,10 @@ def build_parser():
     turn.add_argument("--timeout", type=int, default=1800)
     turn.add_argument("--json", action="store_true")
 
+    context = sub.add_parser("context")
+    context.add_argument("session_id")
+    context.add_argument("--json", action="store_true")
+
     status = sub.add_parser("status")
     status.add_argument("session_id")
     status.add_argument("--json", action="store_true")
@@ -1286,6 +1542,10 @@ def main() -> int:
             emit(create_session(args), args.json)
         elif args.command == "turn":
             emit(run_turn(args), args.json)
+        elif args.command == "context":
+            payload = live_context_payload(args.session_id)
+            payload["renderedText"] = render_live_context(payload)
+            emit(payload, args.json)
         elif args.command == "status":
             emit(status_payload(args.session_id), args.json)
         elif args.command == "cancel":
