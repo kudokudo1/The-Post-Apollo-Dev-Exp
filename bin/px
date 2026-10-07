@@ -117,6 +117,31 @@ branches_for() {
     '
 }
 
+commits_for() {
+    local repo="$1"
+    local ref="${2:-}"
+    local limit="${3:-20}"
+    local endpoint="repos/$repo/commits?per_page=$limit"
+
+    need jq
+
+    if [[ -n "$ref" ]]; then
+        endpoint+="&sha=$(jq -rn --arg value "$ref" '$value | @uri')"
+    fi
+
+    gh api "$endpoint" --jq '
+        [
+            .[]
+            | {
+                sha: .sha,
+                message: ((.commit.message // "") | split("\n")[0]),
+                author: (.commit.author.name // ""),
+                date: (.commit.author.date // "")
+            }
+        ]
+    '
+}
+
 validate_slug() {
     local slug="$1"
     [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -1392,6 +1417,7 @@ Usage:
   px doctor
   px workflows <repo>
   px branches <repo>
+  px commits <repo> [ref] [limit]
   px runs <repo> [limit] [sha]
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
@@ -1424,6 +1450,7 @@ Workflow factory:
 Examples:
   px workflows dev
   px branches dev
+  px commits dev main 20
   px inspect dev 123456789
   px logs dev 123456789
   px run dev px-smoke.yml
@@ -1499,6 +1526,12 @@ case "$cmd" in
         need gh
         repo="$(repo_for "${1:-}")"
         branches_for "$repo"
+        ;;
+
+    commits)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        commits_for "$repo" "${2:-}" "${3:-20}"
         ;;
 
     runs)
