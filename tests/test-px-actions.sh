@@ -20,15 +20,26 @@ jq -e '
     and (.summary | type == "string" and length > 0)
     and (.command | type == "array" and length > 0)
     and (.arguments | type == "array")
+    and all(
+      .arguments[];
+      (.name | type == "string" and length > 0)
+      and (.required | type == "boolean")
+      and (.kind | type == "string" and length > 0)
+      and ((.choices // []) | type == "array")
+    )
     and (.mutation | IN("read", "local", "remote", "external"))
     and (.requires | type == "array")
     and (.keywords | type == "array")
   )
   and any(.actions[]; .id == "github.workflow.run")
+  and any(.actions[]; .id == "repository.branches.list")
+  and any(.actions[]; .id == "repository.commits.list")
   and any(.actions[]; .id == "repository.audit")
   and any(.actions[]; .id == "hospital.room.status")
   and any(.actions[]; .id == "hospital.integration.integrate")
   and any(.actions[]; .id == "hospital.store.status")
+  and any(.actions[]; .id == "hospital.room.report.view")
+  and any(.actions[]; .id == "hospital.room.chart.view")
   and any(.actions[]; .id == "ai.providers.list")
   and any(.actions[]; .id == "ai.turn")
   and any(.actions[]; .id == "ai.session.status")
@@ -37,6 +48,16 @@ jq -e '
   and any(.actions[]; .id == "px.tool.resolve")
   and any(.actions[]; .id == "px.term.open")
 ' <<<"$registry" >/dev/null
+
+
+trigger_choices="$(jq -c '
+  .actions[]
+  | select(.id == "workflow.create")
+  | .arguments[]
+  | select(.name == "trigger")
+  | .choices
+' <<<"$registry")"
+[[ "$trigger_choices" == '["manual","push","manual+push"]' ]]
 
 repos="$("$ROOT/bin/px" repos --json)"
 jq -e '
