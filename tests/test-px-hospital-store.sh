@@ -21,6 +21,8 @@ checkpoint_json="$(printf '%s' 'Checkpoint: presentation ownership narrowed.' | 
 checkpoint_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$checkpoint_json")"
 incoming_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$incoming_json")"
 report_json="$(printf '%s' 'Doctor note body.' | "$ROOT/bin/px" hospital room-report-append --room-id T6 --session-id session-t6-1 --checkpoint-id "$checkpoint_id" --source-message-id "$incoming_id" --report-kind DOCTOR_NOTE --title "T6 Doctor Note" --branch feature/application-audio --head-sha abc123 --git-evidence-status VERIFIED --dirty --changed-files-json '["widgets/AppControlW.qml"]' --insertions 12 --deletions 3 --body-stdin --json)"
+report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$report_json")"
+exact_report_json="$("$ROOT/bin/px" hospital room-report "$report_id" --json)"
 checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
 room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
 "$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
@@ -44,6 +46,7 @@ python3 - \
     "$checkpoint_json" \
     "$checkpoints_json" \
     "$report_json" \
+    "$exact_report_json" \
     "$room_reports_json" \
     "$rooms_json" \
     "$doctors_json" \
@@ -68,12 +71,13 @@ incoming = json.loads(sys.argv[10])
 checkpoint = json.loads(sys.argv[11])
 checkpoints = json.loads(sys.argv[12])
 report = json.loads(sys.argv[13])
-room_reports = json.loads(sys.argv[14])
-rooms = json.loads(sys.argv[15])
-doctors = json.loads(sys.argv[16])
-sessions = json.loads(sys.argv[17])
-messages = json.loads(sys.argv[18])
-older = json.loads(sys.argv[19])
+exact_report = json.loads(sys.argv[14])
+room_reports = json.loads(sys.argv[15])
+rooms = json.loads(sys.argv[16])
+doctors = json.loads(sys.argv[17])
+sessions = json.loads(sys.argv[18])
+messages = json.loads(sys.argv[19])
+older = json.loads(sys.argv[20])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
@@ -150,6 +154,7 @@ assert report["changedFiles"] == ["widgets/AppControlW.qml"], report
 assert report["changedFileCount"] == 1, report
 assert report["insertions"] == 12, report
 assert report["deletions"] == 3, report
+assert exact_report == report, (exact_report, report)
 assert len(room_reports) == 1, room_reports
 assert room_reports[0]["id"] == report["id"], room_reports
 
