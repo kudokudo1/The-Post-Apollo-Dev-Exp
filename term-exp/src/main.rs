@@ -1,3 +1,6 @@
+mod app;
+
+use app::{App, Mode, SearchScope};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -85,21 +88,6 @@ struct Model {
     actions: ActionRegistry,
     tools: ToolRegistry,
     px_path: PathBuf,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Mode {
-    Home,
-    Leader,
-    Search,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum SearchScope {
-    All,
-    Actions,
-    Category(String),
-    Tools,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
