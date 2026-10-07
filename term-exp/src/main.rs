@@ -742,6 +742,44 @@ fn draw_leader(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let input = Paragraph::new(format!(" / {}", app.query))
+        .block(panel(" FIND ANYTHING ", CYAN));
+    frame.render_widget(input, rows[0]);
+
+    let results = search_results(model, &app.search_scope, &app.query);
+    let items: Vec<ListItem> = results
+        .iter()
+        .map(|item| {
+            let kind = match item.kind {
+                SearchKind::Action => "ACTION",
+                SearchKind::Tool => "TOOL",
+            };
+            ListItem::new(vec![
+                Line::from(format!("{kind:<8} {}", item.title)),
+                Line::from(format!("  {}", item.subtitle)),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" RESULTS ", MAGENTA))
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().fg(BG).bg(ORANGE));
+
+    let mut state = ListState::default();
+    if !results.is_empty() {
+        state.select(Some(app.search_selected.min(results.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, rows[1], &mut state);
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let default = match app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
