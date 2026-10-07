@@ -414,15 +414,16 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
         """
         INSERT INTO rooms(
             room_id, patient_id, team, branch, bed_path, doctor_id,
-            current_assignment_id
+            provider_id, current_assignment_id
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(room_id) DO UPDATE SET
             patient_id = excluded.patient_id,
             team = excluded.team,
             branch = excluded.branch,
             bed_path = excluded.bed_path,
             doctor_id = excluded.doctor_id,
+            provider_id = excluded.provider_id,
             current_assignment_id = excluded.current_assignment_id,
             updated_at = CURRENT_TIMESTAMP
         """,
@@ -433,6 +434,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
             args.branch or "",
             args.bed_path or "",
             args.doctor_id or "",
+            args.provider_id or "",
             args.assignment_id or "",
         ),
     )
