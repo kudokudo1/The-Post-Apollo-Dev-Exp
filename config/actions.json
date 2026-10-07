@@ -41,6 +41,37 @@
       ]
     },
     {
+      "id": "px.tools.list",
+      "title": "Discover Tools",
+      "category": "PX",
+      "summary": "Discover executable tools across the host and configured Toolbox without inheriting shared-home wrappers into the Toolbox scan.",
+      "command": [
+        "tools",
+        "{query?}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "query",
+          "required": false,
+          "kind": "text"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "tools",
+        "commands",
+        "path",
+        "toolbox",
+        "terminal",
+        "discovery",
+        "environment"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",
