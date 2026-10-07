@@ -183,6 +183,23 @@ struct CommitRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct OperationRecord {
+    id: String,
+    #[serde(default, rename = "actionId")]
+    action_id: String,
+    #[serde(default)]
+    mutation: String,
+    #[serde(default)]
+    recovery: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default, rename = "verificationStatus")]
+    verification_status: String,
+    #[serde(default, rename = "startedAt")]
+    started_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolChoiceRegistry {
     #[serde(default)]
     tools: Vec<ToolChoiceRecord>,
@@ -752,6 +769,54 @@ pub(crate) fn commit_choices(
         .collect())
 }
 
+
+pub(crate) fn operation_choices(px_path: &Path) -> Result<Vec<ActionChoiceItem>, String> {
+    let rows: Vec<OperationRecord> = load_choice_json(
+        px_path,
+        &[
+            "operations".to_owned(),
+            "--limit".to_owned(),
+            "100".to_owned(),
+            "--json".to_owned(),
+        ],
+        "PX operation journal",
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|operation| {
+            let mut details = Vec::new();
+
+            if !operation.status.is_empty() {
+                details.push(operation.status);
+            }
+            if !operation.mutation.is_empty() {
+                details.push(operation.mutation.to_uppercase());
+            }
+            if !operation.recovery.is_empty() {
+                details.push(operation.recovery);
+            }
+            if !operation.verification_status.is_empty()
+                && operation.verification_status != "NOT_RUN"
+            {
+                details.push(format!("VERIFY {}", operation.verification_status));
+            }
+            if !operation.started_at.is_empty() {
+                details.push(operation.started_at);
+            }
+
+            ActionChoiceItem {
+                value: operation.id.clone(),
+                label: if operation.action_id.is_empty() {
+                    operation.id
+                } else {
+                    format!("{}  {}", operation.id, operation.action_id)
+                },
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
 
 pub(crate) fn command_choices(px_path: &Path) -> Result<Vec<ActionChoiceItem>, String> {
     let registry: ToolChoiceRegistry = load_choice_json(
