@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+
+SCHEMA_V1 = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS patients (
+    patient_id TEXT PRIMARY KEY,
+    repository TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rooms (
+    room_id TEXT PRIMARY KEY,
+    patient_id TEXT,
+    team TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    bed_path TEXT NOT NULL DEFAULT '',
+    doctor_id TEXT NOT NULL DEFAULT '',
+    current_assignment_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    doctor_id TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'IDLE',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TEXT,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    session_id TEXT,
+    author_role TEXT NOT NULL,
+    author_id TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'chat',
+    body_md TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_room
+    ON sessions(room_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_room
+    ON messages(room_id, message_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session
+    ON messages(session_id, message_id DESC);
+"""
+
+def hospital_data_dir() -> Path:
+    override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser() / "post-apollo" / "hospital"
+
+    return Path.home() / ".local" / "share" / "post-apollo" / "hospital"
+
+def hospital_db_path() -> Path:
+    override = os.environ.get("PX_HOSPITAL_DB", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return hospital_data_dir() / "hospital.db"
+
+def artifact_dir() -> Path:
+    return hospital_data_dir() / "artifacts"
+
+def connect() -> sqlite3.Connection:
+    db_path = hospital_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_dir().mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+def current_schema_version(conn: sqlite3.Connection) -> int:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta "
+        "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    row = conn.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        raise RuntimeError("invalid Hospital schema version")
+
+def migrate(conn: sqlite3.Connection) -> int:
+    version = current_schema_version(conn)
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Hospital database schema {version} is newer than PX supports "
+            f"({SCHEMA_VERSION})"
+        )
+
+    if version < 1:
+        conn.executescript(SCHEMA_V1)
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            ("1",),
+        )
+        conn.commit()
+        version = 1
+
+    return version
+
+def database_status(conn: sqlite3.Connection) -> dict:
+    version = migrate(conn)
+    counts = {}
+    for table in ("patients", "rooms", "sessions", "messages"):
+        row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+        counts[table] = int(row["count"])
+
+    return {
+        "status": "READY",
+        "schema_version": version,
+        "database": str(hospital_db_path()),
+        "artifacts": str(artifact_dir()),
+        "counts": counts,
+    }
+
+def emit(payload: dict, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+        return
+
+    print(f"status: {payload['status']}")
+    print(f"schema: {payload['schema_version']}")
+    print(f"database: {payload['database']}")
+    print(f"artifacts: {payload['artifacts']}")
+    counts = payload["counts"]
+    print(
+        "records: "
+        f"patients={counts['patients']} "
+        f"rooms={counts['rooms']} "
+        f"sessions={counts['sessions']} "
+        f"messages={counts['messages']}"
+    )
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="px hospital",
+        description="Post-Apollo Hospital durable state store",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    for name in ("init", "status"):
+        command = sub.add_parser(name)
+        command.add_argument("--json", action="store_true")
+
+    return parser
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    try:
+        with connect() as conn:
+            payload = database_status(conn)
+            emit(payload, args.json)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"px hospital: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
