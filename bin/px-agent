@@ -125,7 +125,7 @@ def probe_hermes_capabilities(executable: str, record: dict) -> dict:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"cannot inspect Hermes CLI capabilities: {exc}")
 
-    help_text = (stdout_text + "\n" + stderr_text).lower()
+    help_text = (proc.stdout + "\n" + proc.stderr).lower()
     if proc.returncode != 0 and not help_text.strip():
         raise RuntimeError(
             f"Hermes CLI capability probe exited {proc.returncode}"
