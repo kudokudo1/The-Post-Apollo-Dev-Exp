@@ -18,7 +18,11 @@ session_json="$("$ROOT/bin/px" hospital session-put session-t6-1 --room-id T6 --
 outgoing_json="$("$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role operator --author-id operator --direction outgoing --body "Inspect Application Audio ownership." --json)"
 incoming_json="$(printf '%s' 'I found two remaining presentation bindings.' | "$ROOT/bin/px" hospital message-append --room-id T6 --session-id session-t6-1 --author-role doctor --author-id doctor-t6 --direction incoming --body-stdin --json)"
 checkpoint_json="$(printf '%s' 'Checkpoint: presentation ownership narrowed.' | "$ROOT/bin/px" hospital checkpoint-append --room-id T6 --session-id session-t6-1 --checkpoint-kind MANUAL --body-stdin --json)"
+checkpoint_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$checkpoint_json")"
+incoming_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$incoming_json")"
+report_json="$(printf '%s' 'Doctor note body.' | "$ROOT/bin/px" hospital room-report-append --room-id T6 --session-id session-t6-1 --checkpoint-id "$checkpoint_id" --source-message-id "$incoming_id" --report-kind DOCTOR_NOTE --title "T6 Doctor Note" --branch feature/application-audio --head-sha abc123 --git-evidence-status VERIFIED --dirty --changed-files-json '["widgets/AppControlW.qml"]' --insertions 12 --deletions 3 --body-stdin --json)"
 checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
+room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
 "$ROOT/bin/px" hospital room-bind T6 --repository kudokudo1/taskbars-post-apollo --patient-id patient-taskbars --team T6 --branch feature/application-audio --bed-path "$TMP/t6-bed" --doctor-id doctor-t6 --json >/dev/null
 rooms_json="$("$ROOT/bin/px" hospital rooms --json)"
 doctors_json="$("$ROOT/bin/px" hospital doctors --json)"
@@ -39,6 +43,8 @@ python3 - \
     "$incoming_json" \
     "$checkpoint_json" \
     "$checkpoints_json" \
+    "$report_json" \
+    "$room_reports_json" \
     "$rooms_json" \
     "$doctors_json" \
     "$sessions_json" \
@@ -61,15 +67,17 @@ outgoing = json.loads(sys.argv[9])
 incoming = json.loads(sys.argv[10])
 checkpoint = json.loads(sys.argv[11])
 checkpoints = json.loads(sys.argv[12])
-rooms = json.loads(sys.argv[13])
-doctors = json.loads(sys.argv[14])
-sessions = json.loads(sys.argv[15])
-messages = json.loads(sys.argv[16])
-older = json.loads(sys.argv[17])
+report = json.loads(sys.argv[13])
+room_reports = json.loads(sys.argv[14])
+rooms = json.loads(sys.argv[15])
+doctors = json.loads(sys.argv[16])
+sessions = json.loads(sys.argv[17])
+messages = json.loads(sys.argv[18])
+older = json.loads(sys.argv[19])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 6, payload
+    assert payload["schema_version"] == 7, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -78,6 +86,7 @@ for payload in (init, status):
         "messages": 0,
         "session_events": 0,
         "room_checkpoints": 0,
+        "room_reports": 0,
     }, payload
 
 db = data_dir / "hospital.db"
@@ -124,6 +133,26 @@ assert checkpoint["body"] == "Checkpoint: presentation ownership narrowed.", che
 assert len(checkpoints) == 1, checkpoints
 assert checkpoints[0]["id"] == checkpoint["id"], checkpoints
 
+assert report["roomId"] == "T6", report
+assert report["sessionId"] == "session-t6-1", report
+assert report["checkpointId"] == checkpoint["id"], report
+assert report["sourceMessageId"] == incoming["id"], report
+assert report["doctorId"] == "doctor-t6", report
+assert report["providerId"] == "codex", report
+assert report["kind"] == "DOCTOR_NOTE", report
+assert report["title"] == "T6 Doctor Note", report
+assert report["repository"] == "kudokudo1/taskbars-post-apollo", report
+assert report["branch"] == "feature/application-audio", report
+assert report["headSha"] == "abc123", report
+assert report["gitEvidenceStatus"] == "VERIFIED", report
+assert report["dirty"] is True, report
+assert report["changedFiles"] == ["widgets/AppControlW.qml"], report
+assert report["changedFileCount"] == 1, report
+assert report["insertions"] == 12, report
+assert report["deletions"] == 3, report
+assert len(room_reports) == 1, room_reports
+assert room_reports[0]["id"] == report["id"], room_reports
+
 assert len(rooms) == 2, rooms
 rooms_by_id = {row["id"]: row for row in rooms}
 assert rooms_by_id["T6"]["lastMessage"] == incoming["body"], rooms
@@ -150,7 +179,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("6",), version
+    assert version == ("7",), version
 
     tables = {
         row[0]
@@ -158,7 +187,7 @@ try:
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports"):
         assert table in tables, (table, tables)
 
     room_columns = {

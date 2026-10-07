@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -148,6 +148,43 @@ CREATE INDEX IF NOT EXISTS idx_room_checkpoints_session
     ON room_checkpoints(session_id, checkpoint_id DESC);
 """
 
+SCHEMA_V7 = """
+CREATE TABLE IF NOT EXISTS room_reports (
+    report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    session_id TEXT,
+    checkpoint_id INTEGER,
+    source_message_id INTEGER,
+    doctor_id TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    assignment_id TEXT NOT NULL DEFAULT '',
+    report_kind TEXT NOT NULL DEFAULT 'DOCTOR_NOTE',
+    title TEXT NOT NULL DEFAULT '',
+    body_md TEXT NOT NULL,
+    repository TEXT NOT NULL DEFAULT '',
+    bed_path TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    head_sha TEXT NOT NULL DEFAULT '',
+    git_evidence_status TEXT NOT NULL DEFAULT 'UNAVAILABLE',
+    dirty INTEGER NOT NULL DEFAULT 0,
+    changed_files_json TEXT NOT NULL DEFAULT '[]',
+    changed_file_count INTEGER NOT NULL DEFAULT 0,
+    insertions INTEGER NOT NULL DEFAULT 0,
+    deletions INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (checkpoint_id) REFERENCES room_checkpoints(checkpoint_id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_reports_room
+    ON room_reports(room_id, report_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_room_reports_session
+    ON room_reports(session_id, report_id DESC);
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -258,12 +295,21 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 6
 
+    if version < 7:
+        conn.executescript(SCHEMA_V7)
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("7",),
+        )
+        conn.commit()
+        version = 7
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
     version = migrate(conn)
     counts = {}
-    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints"):
+    for table in ("patients", "rooms", "doctors", "sessions", "messages", "session_events", "room_checkpoints", "room_reports"):
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
         counts[table] = int(row["count"])
 
@@ -988,6 +1034,261 @@ def checkpoints_list(
     return [normalize_checkpoint(row) for row in rows]
 
 
+def normalize_room_report(row: sqlite3.Row) -> dict:
+    try:
+        changed_files = json.loads(
+            str(row["changed_files_json"] or "[]")
+        )
+    except json.JSONDecodeError:
+        changed_files = []
+
+    if not isinstance(changed_files, list):
+        changed_files = []
+
+    return {
+        "id": str(row["report_id"]),
+        "roomId": str(row["room_id"]),
+        "sessionId": str(row["session_id"] or ""),
+        "checkpointId": (
+            str(row["checkpoint_id"])
+            if row["checkpoint_id"] is not None
+            else ""
+        ),
+        "sourceMessageId": (
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else ""
+        ),
+        "doctorId": str(row["doctor_id"] or ""),
+        "providerId": str(row["provider_id"] or ""),
+        "assignmentId": str(row["assignment_id"] or ""),
+        "kind": str(row["report_kind"] or "DOCTOR_NOTE"),
+        "title": str(row["title"] or ""),
+        "body": str(row["body_md"] or ""),
+        "repository": str(row["repository"] or ""),
+        "bedPath": str(row["bed_path"] or ""),
+        "branch": str(row["branch"] or ""),
+        "headSha": str(row["head_sha"] or ""),
+        "gitEvidenceStatus": str(
+            row["git_evidence_status"] or "UNAVAILABLE"
+        ),
+        "dirty": bool(int(row["dirty"] or 0)),
+        "changedFiles": [str(value) for value in changed_files],
+        "changedFileCount": int(row["changed_file_count"] or 0),
+        "insertions": int(row["insertions"] or 0),
+        "deletions": int(row["deletions"] or 0),
+        "createdAt": str(row["created_at"] or ""),
+    }
+
+
+def room_report_append(conn: sqlite3.Connection, args) -> dict:
+    room = conn.execute(
+        """
+        SELECT
+            r.current_assignment_id,
+            r.bed_path,
+            p.repository
+        FROM rooms r
+        LEFT JOIN patients p ON p.patient_id = r.patient_id
+        WHERE r.room_id = ?
+        """,
+        (args.room_id,),
+    ).fetchone()
+    if room is None:
+        raise RuntimeError(f"unknown Hospital room: {args.room_id}")
+
+    session = None
+    if args.session_id:
+        session = conn.execute(
+            """
+            SELECT room_id, doctor_id, provider_id
+            FROM sessions
+            WHERE session_id = ?
+            """,
+            (args.session_id,),
+        ).fetchone()
+        if session is None:
+            raise RuntimeError(
+                f"unknown Hospital session: {args.session_id}"
+            )
+        if str(session["room_id"]) != args.room_id:
+            raise RuntimeError(
+                f"Hospital session {args.session_id} belongs to "
+                f"{session['room_id']}, not {args.room_id}"
+            )
+
+    checkpoint_id = args.checkpoint_id
+    if checkpoint_id is not None:
+        checkpoint = conn.execute(
+            """
+            SELECT room_id, session_id
+            FROM room_checkpoints
+            WHERE checkpoint_id = ?
+            """,
+            (checkpoint_id,),
+        ).fetchone()
+        if checkpoint is None:
+            raise RuntimeError(
+                f"unknown Hospital checkpoint: {checkpoint_id}"
+            )
+        if str(checkpoint["room_id"]) != args.room_id:
+            raise RuntimeError(
+                "Hospital Room Report checkpoint belongs to another Room"
+            )
+        if args.session_id and str(checkpoint["session_id"] or "") != args.session_id:
+            raise RuntimeError(
+                "Hospital Room Report checkpoint belongs to another session"
+            )
+
+    source_message_id = args.source_message_id
+    if source_message_id is not None:
+        message = conn.execute(
+            """
+            SELECT room_id, session_id
+            FROM messages
+            WHERE message_id = ?
+            """,
+            (source_message_id,),
+        ).fetchone()
+        if message is None:
+            raise RuntimeError(
+                f"unknown Hospital source message: {source_message_id}"
+            )
+        if str(message["room_id"]) != args.room_id:
+            raise RuntimeError(
+                "Hospital Room Report source message belongs to another Room"
+            )
+        if args.session_id and str(message["session_id"] or "") != args.session_id:
+            raise RuntimeError(
+                "Hospital Room Report source message belongs to another session"
+            )
+
+    if args.body_stdin:
+        body = sys.stdin.read()
+    else:
+        body = args.body or ""
+
+    if not body.strip():
+        raise RuntimeError("Hospital Room Report body is empty")
+
+    try:
+        changed_files = json.loads(args.changed_files_json or "[]")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Hospital Room Report changed-files JSON is invalid: {exc}"
+        )
+
+    if not isinstance(changed_files, list):
+        raise RuntimeError(
+            "Hospital Room Report changed-files JSON must be an array"
+        )
+
+    changed_files = [str(value) for value in changed_files]
+    doctor_id = (
+        args.doctor_id
+        or (str(session["doctor_id"] or "") if session else "")
+    )
+    provider_id = (
+        args.provider_id
+        or (str(session["provider_id"] or "") if session else "")
+    )
+    assignment_id = (
+        args.assignment_id
+        or str(room["current_assignment_id"] or "")
+    )
+    repository = args.repository or str(room["repository"] or "")
+    bed_path = args.bed_path or str(room["bed_path"] or "")
+
+    cur = conn.execute(
+        """
+        INSERT INTO room_reports(
+            room_id, session_id, checkpoint_id, source_message_id,
+            doctor_id, provider_id, assignment_id, report_kind, title,
+            body_md, repository, bed_path, branch, head_sha,
+            git_evidence_status, dirty, changed_files_json,
+            changed_file_count, insertions, deletions
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            args.room_id,
+            args.session_id or None,
+            checkpoint_id,
+            source_message_id,
+            doctor_id,
+            provider_id,
+            assignment_id,
+            args.report_kind,
+            args.title or "",
+            body,
+            repository,
+            bed_path,
+            args.branch or "",
+            args.head_sha or "",
+            args.git_evidence_status or "UNAVAILABLE",
+            1 if args.dirty else 0,
+            json.dumps(changed_files, sort_keys=True),
+            len(changed_files),
+            max(0, int(args.insertions or 0)),
+            max(0, int(args.deletions or 0)),
+        ),
+    )
+    conn.execute(
+        "UPDATE rooms SET updated_at = CURRENT_TIMESTAMP WHERE room_id = ?",
+        (args.room_id,),
+    )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT * FROM room_reports WHERE report_id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return normalize_room_report(row)
+
+
+def room_reports_list(
+    conn: sqlite3.Connection,
+    room_id: str,
+    limit: int,
+    before_id: int | None,
+) -> list:
+    exists = conn.execute(
+        "SELECT 1 FROM rooms WHERE room_id = ?",
+        (room_id,),
+    ).fetchone()
+    if exists is None:
+        raise RuntimeError(f"unknown Hospital room: {room_id}")
+
+    if limit < 1 or limit > 500:
+        raise RuntimeError(
+            "Hospital Room Report limit must be between 1 and 500"
+        )
+
+    if before_id is None:
+        rows = conn.execute(
+            """
+            SELECT * FROM room_reports
+            WHERE room_id = ?
+            ORDER BY report_id DESC
+            LIMIT ?
+            """,
+            (room_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM room_reports
+            WHERE room_id = ? AND report_id < ?
+            ORDER BY report_id DESC
+            LIMIT ?
+            """,
+            (room_id, before_id, limit),
+        ).fetchall()
+
+    rows = list(reversed(rows))
+    return [normalize_room_report(row) for row in rows]
+
+
 def sessions_list(conn: sqlite3.Connection, room_id: str | None) -> list:
     if room_id:
         rows = conn.execute(
@@ -1243,6 +1544,43 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--before-id", type=int)
     events.add_argument("--json", action="store_true")
 
+    room_report = sub.add_parser("room-report-append")
+    room_report.add_argument("--room-id", required=True)
+    room_report.add_argument("--session-id", default="")
+    room_report.add_argument("--checkpoint-id", type=int)
+    room_report.add_argument("--source-message-id", type=int)
+    room_report.add_argument("--doctor-id", default="")
+    room_report.add_argument("--provider-id", default="")
+    room_report.add_argument("--assignment-id", default="")
+    room_report.add_argument(
+        "--report-kind",
+        default="DOCTOR_NOTE",
+    )
+    room_report.add_argument("--title", default="")
+    room_report.add_argument("--repository", default="")
+    room_report.add_argument("--bed-path", default="")
+    room_report.add_argument("--branch", default="")
+    room_report.add_argument("--head-sha", default="")
+    room_report.add_argument(
+        "--git-evidence-status",
+        default="UNAVAILABLE",
+        choices=("VERIFIED", "UNAVAILABLE"),
+    )
+    room_report.add_argument("--dirty", action="store_true")
+    room_report.add_argument("--changed-files-json", default="[]")
+    room_report.add_argument("--insertions", type=int, default=0)
+    room_report.add_argument("--deletions", type=int, default=0)
+    report_body = room_report.add_mutually_exclusive_group(required=True)
+    report_body.add_argument("--body")
+    report_body.add_argument("--body-stdin", action="store_true")
+    room_report.add_argument("--json", action="store_true")
+
+    room_reports = sub.add_parser("room-reports")
+    room_reports.add_argument("room_id")
+    room_reports.add_argument("--limit", type=int, default=50)
+    room_reports.add_argument("--before-id", type=int)
+    room_reports.add_argument("--json", action="store_true")
+
     checkpoint = sub.add_parser("checkpoint-append")
     checkpoint.add_argument("--room-id", required=True)
     checkpoint.add_argument("--session-id", default="")
@@ -1338,6 +1676,18 @@ def main() -> int:
                     events_list(
                         conn,
                         args.session_id,
+                        args.limit,
+                        args.before_id,
+                    ),
+                    args.json,
+                )
+            elif args.command == "room-report-append":
+                emit_data(room_report_append(conn, args), args.json)
+            elif args.command == "room-reports":
+                emit_data(
+                    room_reports_list(
+                        conn,
+                        args.room_id,
                         args.limit,
                         args.before_id,
                     ),

@@ -9,6 +9,13 @@ export PX_HOSPITAL_DATA_DIR="$TMP/hospital-data"
 BED="$TMP/t6-bed"
 mkdir -p "$BED"
 
+git -C "$BED" init -q
+git -C "$BED" config user.email "hospital-test@example.invalid"
+git -C "$BED" config user.name "Hospital Test"
+printf 'base\n' >"$BED/tracked.txt"
+git -C "$BED" add tracked.txt
+git -C "$BED" commit -qm "baseline"
+
 cat > "$TMP/providers.json" <<EOF
 {
   "version": 1,
@@ -213,17 +220,22 @@ assert any(row["type"] == "turn.cancelled" for row in events), events
 PY
 
 quick_status_json="$("$ROOT/bin/px" agent quick session-t6-agent STATUS --json)"
+printf 'change\n' >>"$BED/tracked.txt"
 quick_report_json="$("$ROOT/bin/px" agent quick session-t6-agent REPORT --timeout 30 --json)"
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
 quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
+quick_room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
+quick_events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 300 --json)"
 
 python3 - \
     "$quick_status_json" \
     "$quick_report_json" \
     "$quick_pause_json" \
     "$quick_continue_json" \
-    "$quick_checkpoints_json" <<'PY'
+    "$quick_checkpoints_json" \
+    "$quick_room_reports_json" \
+    "$quick_events_json" <<'PY'
 import json
 import sys
 
@@ -232,6 +244,8 @@ report = json.loads(sys.argv[2])
 pause = json.loads(sys.argv[3])
 continue_result = json.loads(sys.argv[4])
 checkpoints = json.loads(sys.argv[5])
+room_reports = json.loads(sys.argv[6])
+events = json.loads(sys.argv[7])
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
@@ -249,10 +263,48 @@ assert (
 ), report
 assert report["checkpoint"]["body"] == report["result"]["assistant"], report
 
+for heading in (
+    "## IMPLEMENTATION",
+    "## HOW TO USE",
+    "## VERIFY",
+    "## WATCH OUT FOR",
+    "## CHECKLIST",
+    "## NEXT",
+    "## DECISIONS",
+):
+    assert heading in report["result"]["assistant"], (heading, report)
+
+room_report = report["roomReport"]
+assert room_report["roomId"] == "T6", room_report
+assert room_report["sessionId"] == "session-t6-agent", room_report
+assert room_report["checkpointId"] == report["checkpoint"]["id"], room_report
+assert room_report["sourceMessageId"] == report["result"]["assistantMessageId"], room_report
+assert room_report["providerId"] == "mock", room_report
+assert room_report["kind"] == "DOCTOR_NOTE", room_report
+assert room_report["repository"] == "kudokudo1/taskbars-post-apollo", room_report
+assert room_report["gitEvidenceStatus"] == "VERIFIED", room_report
+assert room_report["dirty"] is True, room_report
+assert room_report["changedFiles"] == ["tracked.txt"], room_report
+assert room_report["changedFileCount"] == 1, room_report
+assert room_report["insertions"] == 1, room_report
+assert room_report["deletions"] == 0, room_report
+assert len(room_report["headSha"]) == 40, room_report
+assert room_report["branch"], room_report
+
+assert report["gitEvidence"]["status"] == "VERIFIED", report
+assert report["gitEvidence"]["changedFiles"] == ["tracked.txt"], report
+assert report["gitEvidence"]["insertions"] == 1, report
+
 assert len(checkpoints) == 1, checkpoints
 assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
 assert checkpoints[0]["sessionId"] == "session-t6-agent", checkpoints
 assert checkpoints[0]["providerId"] == "mock", checkpoints
+
+assert len(room_reports) == 1, room_reports
+assert room_reports[0]["id"] == room_report["id"], room_reports
+
+types = [row["type"] for row in events]
+assert "room_report.created" in types, types
 
 assert pause["command"] == "PAUSE", pause
 assert pause["result"]["paused"] is True, pause

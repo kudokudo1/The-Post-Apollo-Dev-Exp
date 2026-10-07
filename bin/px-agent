@@ -775,6 +775,109 @@ def run_turn(args) -> dict:
     }
 
 
+def git_capture(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+
+def collect_git_report_evidence(cwd_text: str) -> dict:
+    cwd = Path(str(cwd_text or "")).expanduser()
+
+    unavailable = {
+        "status": "UNAVAILABLE",
+        "branch": "",
+        "headSha": "",
+        "dirty": False,
+        "changedFiles": [],
+        "insertions": 0,
+        "deletions": 0,
+    }
+
+    if not cwd.is_dir():
+        return unavailable
+
+    try:
+        inside = git_capture(cwd, "rev-parse", "--is-inside-work-tree")
+    except (OSError, subprocess.TimeoutExpired):
+        return unavailable
+
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return unavailable
+
+    try:
+        head = git_capture(cwd, "rev-parse", "HEAD")
+        branch = git_capture(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+        tracked = subprocess.run(
+            ["git", "diff", "--name-only", "-z", "HEAD"],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+        )
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+        )
+        numstat = git_capture(cwd, "diff", "--numstat", "HEAD")
+    except (OSError, subprocess.TimeoutExpired):
+        return unavailable
+
+    if (
+        head.returncode != 0
+        or branch.returncode != 0
+        or tracked.returncode != 0
+        or untracked.returncode != 0
+        or numstat.returncode != 0
+    ):
+        return unavailable
+
+    tracked_files = [
+        value.decode("utf-8", errors="replace")
+        for value in tracked.stdout.split(b"\0")
+        if value
+    ]
+    untracked_files = [
+        value.decode("utf-8", errors="replace")
+        for value in untracked.stdout.split(b"\0")
+        if value
+    ]
+    changed_files = sorted(set(tracked_files + untracked_files))
+
+    insertions = 0
+    deletions = 0
+    for raw in numstat.stdout.splitlines():
+        parts = raw.split("\t", 2)
+        if len(parts) < 2:
+            continue
+        added, removed = parts[0], parts[1]
+        if added.isdigit():
+            insertions += int(added)
+        if removed.isdigit():
+            deletions += int(removed)
+
+    return {
+        "status": "VERIFIED",
+        "branch": branch.stdout.strip(),
+        "headSha": head.stdout.strip(),
+        "dirty": bool(changed_files),
+        "changedFiles": changed_files,
+        "insertions": insertions,
+        "deletions": deletions,
+    }
+
+
 QUICK_PROMPTS = {
     "CONTINUE": (
         "QUICK // CONTINUE\n"
@@ -784,8 +887,18 @@ QUICK_PROMPTS = {
     ),
     "REPORT": (
         "QUICK // REPORT\n"
-        "Provide a concise Room checkpoint report covering what changed, "
-        "current status, risks or blockers, verification, and the next action. "
+        "Produce a concise Doctor Note for the current Room. Use these exact "
+        "Markdown section headings, in this order:\n"
+        "## IMPLEMENTATION\n"
+        "## HOW TO USE\n"
+        "## VERIFY\n"
+        "## WATCH OUT FOR\n"
+        "## CHECKLIST\n"
+        "## NEXT\n"
+        "## DECISIONS\n"
+        "State NONE when a section has nothing material to report. "
+        "Do not invent Git facts such as branch, HEAD, or changed-file counts; "
+        "PX records deterministic Git evidence separately. "
         "Do not start unrelated work."
     ),
     "CHECKLIST": (
@@ -918,6 +1031,59 @@ def run_quick(args) -> dict:
                 "kind": checkpoint.get("kind"),
                 "sourceMessageId": checkpoint.get(
                     "sourceMessageId"
+                ),
+            },
+        )
+
+        git_evidence = collect_git_report_evidence(
+            str(session.get("workingDirectory") or "")
+        )
+        report_args = [
+            "room-report-append",
+            "--room-id", str(session.get("roomId") or ""),
+            "--session-id", args.session_id,
+            "--checkpoint-id", str(checkpoint.get("id") or ""),
+            "--report-kind", "DOCTOR_NOTE",
+            "--title",
+            "ROOM "
+            + str(session.get("roomId") or "")
+            + " // DOCTOR REPORT",
+            "--bed-path", str(session.get("workingDirectory") or ""),
+            "--branch", str(git_evidence["branch"]),
+            "--head-sha", str(git_evidence["headSha"]),
+            "--git-evidence-status", str(git_evidence["status"]),
+            "--changed-files-json",
+            json.dumps(git_evidence["changedFiles"], sort_keys=True),
+            "--insertions", str(git_evidence["insertions"]),
+            "--deletions", str(git_evidence["deletions"]),
+        ]
+        if source_message_id:
+            report_args.extend([
+                "--source-message-id",
+                source_message_id,
+            ])
+        if git_evidence["dirty"]:
+            report_args.append("--dirty")
+        report_args.append("--body-stdin")
+
+        room_report = px_hospital(
+            *report_args,
+            stdin_text=assistant,
+        )
+        payload["roomReport"] = room_report
+        payload["gitEvidence"] = git_evidence
+
+        store_event(
+            args.session_id,
+            "room_report.created",
+            {
+                "reportId": room_report.get("id"),
+                "checkpointId": checkpoint.get("id"),
+                "sourceMessageId": room_report.get(
+                    "sourceMessageId"
+                ),
+                "gitEvidenceStatus": room_report.get(
+                    "gitEvidenceStatus"
                 ),
             },
         )
