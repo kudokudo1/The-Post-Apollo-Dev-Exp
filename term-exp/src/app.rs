@@ -3,6 +3,8 @@ pub enum Mode {
     Home,
     Leader,
     Search,
+    ActionPrompt,
+    Output,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +23,15 @@ pub struct App {
     pub query: String,
     pub status: Option<String>,
     pub should_quit: bool,
+
+    pub pending_action_id: Option<String>,
+    pub prompt_index: usize,
+    pub prompt_values: Vec<String>,
+    pub prompt_buffer: String,
+
+    pub output_title: String,
+    pub output_text: String,
+    pub output_scroll: u16,
 }
 
 impl App {
@@ -33,6 +44,15 @@ impl App {
             query: String::new(),
             status: None,
             should_quit: false,
+
+            pending_action_id: None,
+            prompt_index: 0,
+            prompt_values: Vec::new(),
+            prompt_buffer: String::new(),
+
+            output_title: String::new(),
+            output_text: String::new(),
+            output_scroll: 0,
         }
     }
 
@@ -68,9 +88,42 @@ impl App {
         self.status = None;
     }
 
+    pub fn back_to_search(&mut self) {
+        self.mode = Mode::Search;
+        self.status = None;
+        self.pending_action_id = None;
+        self.prompt_index = 0;
+        self.prompt_values.clear();
+        self.prompt_buffer.clear();
+    }
+
+    pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
+        self.mode = Mode::ActionPrompt;
+        self.pending_action_id = Some(action_id);
+        self.prompt_index = 0;
+        self.prompt_values = vec![String::new(); argument_count];
+        self.prompt_buffer.clear();
+        self.status = None;
+    }
+
+    pub fn open_output(&mut self, title: String, text: String) {
+        self.mode = Mode::Output;
+        self.output_title = title;
+        self.output_text = text;
+        self.output_scroll = 0;
+        self.status = None;
+    }
+
     pub fn home(&mut self) {
         self.mode = Mode::Home;
         self.query.clear();
         self.status = None;
+        self.pending_action_id = None;
+        self.prompt_index = 0;
+        self.prompt_values.clear();
+        self.prompt_buffer.clear();
+        self.output_title.clear();
+        self.output_text.clear();
+        self.output_scroll = 0;
     }
 }

@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use serde::Deserialize;
@@ -45,6 +45,19 @@ struct Action {
     title: String,
     category: String,
     summary: String,
+    command: Vec<String>,
+    #[serde(default)]
+    arguments: Vec<ActionArgument>,
+    mutation: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActionArgument {
+    name: String,
+    required: bool,
+    kind: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,10 +305,7 @@ fn handle_key(
                     if let Some(item) = results.get(app.search_selected) {
                         match item.kind {
                             SearchKind::Action => {
-                                app.status = Some(format!(
-                                    "Selected action {} — action execution is the next lane",
-                                    item.key
-                                ));
+                                begin_or_run_action(app, model, &item.key);
                             }
                             SearchKind::Tool => {
                                 launch_specialist(guard, app, model, &item.key)?;
@@ -317,6 +327,75 @@ fn handle_key(
                 _ => {}
             }
         }
+
+        Mode::ActionPrompt => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                app.back_to_search();
+                return Ok(());
+            };
+
+            match key.code {
+                KeyCode::Esc => app.back_to_search(),
+                KeyCode::Backspace => {
+                    app.prompt_buffer.pop();
+                    app.status = None;
+                }
+                KeyCode::Enter => {
+                    if let Some(argument) = action.arguments.get(app.prompt_index) {
+                        let value = app.prompt_buffer.trim().to_owned();
+
+                        if argument.required && value.is_empty() {
+                            app.status = Some(format!("{} is required", argument.name));
+                            return Ok(());
+                        }
+
+                        if let Some(slot) = app.prompt_values.get_mut(app.prompt_index) {
+                            *slot = value;
+                        }
+
+                        if app.prompt_index + 1 < action.arguments.len() {
+                            app.prompt_index += 1;
+                            app.prompt_buffer.clear();
+                            app.status = None;
+                        } else {
+                            let values = app.prompt_values.clone();
+                            run_read_action(app, model, action, &values);
+                        }
+                    }
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.prompt_buffer.push(character);
+                    app.status = None;
+                }
+                _ => {}
+            }
+        }
+
+        Mode::Output => match key.code {
+            KeyCode::Esc => app.back_to_search(),
+            KeyCode::Char('q') => app.home(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.output_scroll = app.output_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.output_scroll = app.output_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                app.output_scroll = app.output_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                app.output_scroll = app.output_scroll.saturating_sub(10)
+            }
+            _ => {}
+        },
     }
 
     Ok(())
@@ -406,6 +485,136 @@ fn launch_specialist(
     Ok(())
 }
 
+fn action_by_id<'a>(model: &'a Model, id: &str) -> Option<&'a Action> {
+    model.actions.actions.iter().find(|action| action.id == id)
+}
+
+fn expand_action_command(action: &Action, values: &[String]) -> Result<Vec<String>, String> {
+    let mut by_name = BTreeMap::<&str, &str>::new();
+
+    for (argument, value) in action.arguments.iter().zip(values.iter()) {
+        by_name.insert(argument.name.as_str(), value.as_str());
+    }
+
+    let mut command = Vec::new();
+
+    for token in &action.command {
+        if let Some(name) = token
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+        {
+            let optional = name.ends_with('?');
+            let name = name.trim_end_matches('?');
+            let value = by_name.get(name).copied().unwrap_or("");
+
+            if value.is_empty() {
+                if optional {
+                    continue;
+                }
+
+                return Err(format!("missing required argument: {name}"));
+            }
+
+            command.push(value.to_owned());
+        } else {
+            command.push(token.clone());
+        }
+    }
+
+    Ok(command)
+}
+
+fn display_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout_text = String::from_utf8_lossy(stdout).trim().to_owned();
+    let stderr_text = String::from_utf8_lossy(stderr).trim().to_owned();
+
+    let mut sections = Vec::new();
+
+    if !stdout_text.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout_text) {
+            sections.push(
+                serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| stdout_text.clone()),
+            );
+        } else {
+            sections.push(stdout_text);
+        }
+    }
+
+    if !stderr_text.is_empty() {
+        sections.push(format!("STDERR\n{stderr_text}"));
+    }
+
+    if sections.is_empty() {
+        "(command completed with no output)".to_owned()
+    } else {
+        sections.join("\n\n")
+    }
+}
+
+fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[String]) {
+    if action.mutation != "read" {
+        app.status = Some(format!(
+            "{} is a {} action; TERM EXP will not execute it without a mutation policy",
+            action.title, action.mutation
+        ));
+        return;
+    }
+
+    let args = match expand_action_command(action, values) {
+        Ok(args) => args,
+        Err(error) => {
+            app.status = Some(error);
+            return;
+        }
+    };
+
+    let output = match Command::new(&model.px_path).args(&args).output() {
+        Ok(output) => output,
+        Err(error) => {
+            app.open_output(
+                format!("{} // ERROR", action.title),
+                format!("could not launch PX action: {error}"),
+            );
+            return;
+        }
+    };
+
+    let mut text = display_output(&output.stdout, &output.stderr);
+
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "signal".to_owned());
+        text = format!("EXIT {code}\n\n{text}");
+    }
+
+    app.open_output(action.title.clone(), text);
+}
+
+fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
+    let Some(action) = action_by_id(model, action_id) else {
+        app.status = Some(format!("Action disappeared: {action_id}"));
+        return;
+    };
+
+    if action.mutation != "read" {
+        app.status = Some(format!(
+            "{} is a {} action; execution stays locked until mutation controls land",
+            action.title, action.mutation
+        ));
+        return;
+    }
+
+    if action.arguments.is_empty() {
+        run_read_action(app, model, action, &[]);
+    } else {
+        app.begin_action_prompt(action.id.clone(), action.arguments.len());
+    }
+}
+
 fn resolve_px_path() -> PathBuf {
     if let Ok(root) = env::var("PX_RUNTIME_ROOT") {
         let candidate = Path::new(&root).join("bin").join("px");
@@ -477,7 +686,7 @@ fn representative_actions(actions: &[Action]) -> Vec<&Action> {
 fn leader_entries(model: &Model) -> Vec<(char, SearchScope, String)> {
     let mut entries = vec![
         ('a', SearchScope::Actions, "All Actions".to_owned()),
-        ('t', SearchScope::Tools, "Tools".to_owned()),
+        ('t', SearchScope::Tools, "Commands".to_owned()),
     ];
 
     for (key, category) in [
@@ -544,16 +753,7 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
                 }
             }
 
-            let searchable = format!(
-                "{} {} {} {}",
-                action.id, action.title, action.category, action.summary
-            );
-
-            let score = if query.is_empty() {
-                Some(1000)
-            } else {
-                fuzzy_score(query, &searchable).map(|score| score + 1000)
-            };
+            let score = action_search_score(action, query);
 
             if let Some(score) = score {
                 items.push(SearchItem {
@@ -569,12 +769,7 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
 
     if allow_tools && !query.is_empty() {
         for tool in preferred_tools(&model.tools.tools) {
-            let searchable = format!(
-                "{} {} {} {}",
-                tool.name, tool.path, tool.backend, tool.environment
-            );
-
-            if let Some(score) = fuzzy_score(query, &searchable) {
+            if let Some(score) = search_field_score(query, &tool.name) {
                 items.push(SearchItem {
                     kind: SearchKind::Tool,
                     key: tool.name.clone(),
@@ -607,6 +802,53 @@ fn search_results(model: &Model, scope: &SearchScope, query: &str) -> Vec<Search
 
     items.truncate(128);
     items
+}
+
+fn action_search_score(action: &Action, query: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(500);
+    }
+
+    let mut scores = vec![
+        search_field_score(query, &action.title),
+        search_field_score(query, &action.id),
+        search_field_score(query, &action.category),
+    ];
+
+    scores.extend(
+        action
+            .keywords
+            .iter()
+            .map(|keyword| search_field_score(query, keyword)),
+    );
+
+    let query_lower = query.to_lowercase();
+    if action.summary.to_lowercase().contains(&query_lower) {
+        scores.push(search_field_score(query, &action.summary).map(|score| score - 250));
+    }
+
+    scores.into_iter().flatten().max()
+}
+
+fn search_field_score(query: &str, candidate: &str) -> Option<i64> {
+    let query_lower = query.to_lowercase();
+    let candidate_lower = candidate.to_lowercase();
+
+    if query_lower.is_empty() {
+        return Some(0);
+    }
+
+    let base = fuzzy_score(&query_lower, &candidate_lower)?;
+
+    if candidate_lower == query_lower {
+        Some(base + 2000)
+    } else if candidate_lower.starts_with(&query_lower) {
+        Some(base + 1400)
+    } else if candidate_lower.contains(&query_lower) {
+        Some(base + 900)
+    } else {
+        Some(base)
+    }
 }
 
 fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
@@ -679,6 +921,8 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
         Mode::Home => draw_body(frame, rows[1], model),
         Mode::Leader => draw_leader(frame, rows[1], app, model),
         Mode::Search => draw_search(frame, rows[1], app, model),
+        Mode::ActionPrompt => draw_action_prompt(frame, rows[1], app, model),
+        Mode::Output => draw_output(frame, rows[1], app),
     }
 
     draw_footer(frame, rows[2], app, model);
@@ -692,7 +936,7 @@ fn draw_header(frame: &mut Frame, area: Rect, model: &Model) {
         ),
         Span::styled(
             format!(
-                "  {} actions · {} tools",
+                "  {} actions · {} commands",
                 model.actions.actions.len(),
                 model.tools.counts.total
             ),
@@ -754,7 +998,7 @@ fn draw_body(frame: &mut Frame, area: Rect, model: &Model) {
 fn draw_control_plane(frame: &mut Frame, area: Rect, model: &Model) {
     let lines = vec![
         kv("ACTION REGISTRY", model.actions.actions.len().to_string(), MAGENTA),
-        kv("TOOL REGISTRY", model.tools.counts.total.to_string(), CYAN),
+        kv("COMMAND REGISTRY", model.tools.counts.total.to_string(), CYAN),
         kv("HOST", model.tools.counts.host.to_string(), FG),
         kv("TOOLBOX", model.tools.counts.toolbox.to_string(), FG),
         kv("PX", model.px_path.display().to_string(), ORANGE),
@@ -914,11 +1158,27 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         .map(|item| {
             let kind = match item.kind {
                 SearchKind::Action => "ACTION",
-                SearchKind::Tool => "TOOL",
+                SearchKind::Tool if is_specialist_tool(&item.key) => "SPECIAL",
+                SearchKind::Tool => "COMMAND",
             };
+            let kind_color = match item.kind {
+                SearchKind::Action => MAGENTA,
+                SearchKind::Tool if is_specialist_tool(&item.key) => ORANGE,
+                SearchKind::Tool => CYAN,
+            };
+
             ListItem::new(vec![
-                Line::from(format!("{kind:<8} {}", item.title)),
-                Line::from(format!("  {}", item.subtitle)),
+                Line::from(vec![
+                    Span::styled(format!("{kind:<8}"), Style::default().fg(kind_color)),
+                    Span::styled(
+                        &item.title,
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("  {}", item.subtitle),
+                    Style::default().fg(Color::DarkGray),
+                )),
             ])
         })
         .collect();
@@ -936,11 +1196,110 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
+fn draw_action_prompt(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending action").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Action no longer exists").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(argument) = action.arguments.get(app.prompt_index) else {
+        frame.render_widget(
+            Paragraph::new("No remaining arguments").block(panel(" ACTION INPUT ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                &action.title,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", action.id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    for (index, previous) in action.arguments.iter().enumerate().take(app.prompt_index) {
+        let value = app.prompt_values.get(index).map(String::as_str).unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<18}", previous.name),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(value, Style::default().fg(FG)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                "{}{} [{}]  ",
+                argument.name,
+                if argument.required { " *" } else { "" },
+                argument.kind
+            ),
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&app.prompt_buffer, Style::default().fg(FG)),
+    ]));
+
+    if let Some(status) = &app.status {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(status, Style::default().fg(ORANGE))));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" ACTION INPUT ", ORANGE))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
+    let title = if app.output_title.is_empty() {
+        " ACTION OUTPUT ".to_owned()
+    } else {
+        format!(" {} ", app.output_title)
+    };
+
+    frame.render_widget(
+        Paragraph::new(app.output_text.as_str())
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(CYAN))
+                    .style(Style::default().bg(BG).fg(FG)),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((app.output_scroll, 0)),
+        area,
+    );
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     let default = match &app.mode {
         Mode::Home => "SPACE commands   / find anything   q quit",
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
-        Mode::Search => "type to search   Up/Down move   Enter select   Esc back",
+        Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
+        Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
+        Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
     let message_color = if app.status.is_some() { ORANGE } else { FG };
@@ -955,7 +1314,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         ),
         Span::styled(
             format!(
-                " a{} t{} ",
+                " a{} c{} ",
                 model.actions.actions.len(),
                 model.tools.counts.total
             ),
@@ -1003,6 +1362,10 @@ mod tests {
             title: id.to_owned(),
             category: category.to_owned(),
             summary: String::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
         }
     }
 
@@ -1046,6 +1409,57 @@ mod tests {
     fn fuzzy_match_accepts_subsequence() {
         assert!(fuzzy_score("hosp", "hospital room status").is_some());
         assert!(fuzzy_score("zzz", "hospital room status").is_none());
+    }
+
+    #[test]
+    fn exact_and_prefix_matches_beat_loose_fuzzy_matches() {
+        let exact = search_field_score("lazy", "lazy").unwrap();
+        let prefix = search_field_score("lazy", "lazygit").unwrap();
+        let fuzzy = search_field_score("lazy", "local analyzer yearly").unwrap();
+
+        assert!(exact > prefix);
+        assert!(prefix > fuzzy);
+    }
+
+    #[test]
+    fn action_expansion_handles_required_and_optional_arguments() {
+        let action = Action {
+            id: "test".to_owned(),
+            title: "Test".to_owned(),
+            category: "PX".to_owned(),
+            summary: String::new(),
+            command: vec![
+                "inspect".to_owned(),
+                "{repository}".to_owned(),
+                "{run_id}".to_owned(),
+                "{optional?}".to_owned(),
+            ],
+            arguments: vec![
+                ActionArgument {
+                    name: "repository".to_owned(),
+                    required: true,
+                    kind: "repository".to_owned(),
+                },
+                ActionArgument {
+                    name: "run_id".to_owned(),
+                    required: true,
+                    kind: "run".to_owned(),
+                },
+                ActionArgument {
+                    name: "optional".to_owned(),
+                    required: false,
+                    kind: "text".to_owned(),
+                },
+            ],
+            mutation: "read".to_owned(),
+            keywords: Vec::new(),
+        };
+
+        let values = vec!["dev".to_owned(), "1234".to_owned(), String::new()];
+        assert_eq!(
+            expand_action_command(&action, &values).unwrap(),
+            vec!["inspect", "dev", "1234"]
+        );
     }
 
     #[test]
