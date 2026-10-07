@@ -53,6 +53,8 @@ struct Action {
     mutation: String,
     #[serde(default)]
     recovery: String,
+    #[serde(default, rename = "executionPolicy")]
+    execution_policy: String,
     #[serde(default)]
     keywords: Vec<String>,
 }
@@ -146,6 +148,18 @@ struct HospitalPrepareResult {
     base: String,
     #[serde(default, rename = "base_head")]
     base_head: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MutationPreflightResult {
+    #[serde(default)]
+    allowed: bool,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -455,7 +469,7 @@ fn handle_key(
                 KeyCode::Esc | KeyCode::Char('q') => app.back_to_search(),
                 KeyCode::Enter => {
                     if mutation_requires_arm(action) {
-                        match arm_hospital_integration(app, model, action) {
+                        match arm_mutation(app, model, action) {
                             Ok(()) => app.open_mutation_confirm(),
                             Err(error) => {
                                 app.mutation_armed = false;
@@ -902,8 +916,16 @@ fn validate_typed_argument(argument: &ActionArgument, value: &str) -> Result<(),
     }
 }
 
-fn mutation_requires_arm(action: &Action) -> bool {
+fn mutation_requires_hospital_arm(action: &Action) -> bool {
     action.id == "hospital.integration.integrate"
+}
+
+fn mutation_uses_px_guard(action: &Action) -> bool {
+    action.execution_policy == "px-guarded"
+}
+
+fn mutation_requires_arm(action: &Action) -> bool {
+    mutation_requires_hospital_arm(action) || mutation_uses_px_guard(action)
 }
 
 fn mutation_execution_enabled(action: &Action) -> bool {
@@ -1000,7 +1022,117 @@ fn arm_hospital_integration(
 
     app.mutation_armed = true;
     app.mutation_preflight = summary;
+    app.mutation_preflight_token.clear();
     Ok(())
+}
+
+fn mutation_arguments_json(action: &Action, values: &[String]) -> String {
+    let mut arguments = serde_json::Map::new();
+
+    for (name, value) in mutation_argument_pairs(action, values) {
+        arguments.insert(name, serde_json::Value::String(value));
+    }
+
+    serde_json::Value::Object(arguments).to_string()
+}
+
+fn px_guard_preflight(
+    model: &Model,
+    action: &Action,
+    values: &[String],
+) -> Result<MutationPreflightResult, String> {
+    resolver::load_choice_json(
+        &model.px_path,
+        &[
+            "mutation-preflight".to_owned(),
+            action.id.clone(),
+            mutation_arguments_json(action, values),
+        ],
+        "PX mutation preflight",
+    )
+}
+
+fn arm_px_guarded_mutation(
+    app: &mut App,
+    model: &Model,
+    action: &Action,
+) -> Result<(), String> {
+    let preflight = px_guard_preflight(model, action, &app.prompt_values)?;
+
+    if !preflight.allowed {
+        return Err(if !preflight.reason.is_empty() {
+            preflight.reason
+        } else if !preflight.summary.is_empty() {
+            preflight.summary
+        } else {
+            "PX mutation preflight refused execution".to_owned()
+        });
+    }
+
+    if preflight.token.is_empty() {
+        return Err("PX mutation preflight returned no target token".to_owned());
+    }
+
+    app.mutation_armed = true;
+    app.mutation_preflight = if preflight.summary.is_empty() {
+        "PX GUARDED TARGET ARMED".to_owned()
+    } else {
+        preflight.summary
+    };
+    app.mutation_preflight_token = preflight.token;
+    Ok(())
+}
+
+fn arm_mutation(app: &mut App, model: &Model, action: &Action) -> Result<(), String> {
+    if mutation_requires_hospital_arm(action) {
+        return arm_hospital_integration(app, model, action);
+    }
+
+    if mutation_uses_px_guard(action) {
+        return arm_px_guarded_mutation(app, model, action);
+    }
+
+    Err("mutation has no arming policy".to_owned())
+}
+
+fn revalidate_px_guarded_mutation(
+    app: &mut App,
+    model: &Model,
+    action: &Action,
+) -> Result<(), String> {
+    let preflight = px_guard_preflight(model, action, &app.prompt_values)?;
+
+    if !preflight.allowed {
+        return Err(if !preflight.reason.is_empty() {
+            preflight.reason
+        } else {
+            "PX mutation preflight no longer permits execution".to_owned()
+        });
+    }
+
+    if preflight.token.is_empty()
+        || preflight.token != app.mutation_preflight_token
+    {
+        return Err("PX guarded target identity changed after confirmation".to_owned());
+    }
+
+    Ok(())
+}
+
+fn px_guard_verification(
+    model: &Model,
+    action: &Action,
+    values: &[String],
+) -> Result<serde_json::Value, String> {
+    resolver::load_choice_json(
+        &model.px_path,
+        &[
+            "mutation-verify".to_owned(),
+            action.id.clone(),
+            mutation_arguments_json(action, values),
+        ],
+        "PX mutation verification",
+    )
 }
 
 fn hospital_integration_verify_args(
@@ -1068,6 +1200,17 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         app.mode = Mode::MutationPreview;
         app.status = Some("REMOTE EXECUTION REFUSED // action is not armed".to_owned());
         return;
+    }
+
+    if mutation_uses_px_guard(action) {
+        if let Err(error) = revalidate_px_guarded_mutation(app, model, action) {
+            app.mode = Mode::MutationPreview;
+            app.mutation_armed = false;
+            app.mutation_preflight.clear();
+            app.mutation_preflight_token.clear();
+            app.status = Some(format!("REMOTE EXECUTION REFUSED // {error}"));
+            return;
+        }
     }
 
     let argument_pairs = mutation_argument_pairs(action, &app.prompt_values);
@@ -1148,7 +1291,7 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         return;
     }
 
-    if mutation_requires_arm(action) {
+    if mutation_requires_hospital_arm(action) {
         let verify_args = match hospital_integration_verify_args(action, &app.prompt_values) {
             Ok(args) => args,
             Err(error) => {
@@ -1239,6 +1382,93 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             &execution_evidence,
             &verification_evidence,
             "mutation and post-op verification succeeded",
+        ));
+        text = format!(
+            "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
+        );
+        app.open_output(
+            format!("{} // REMOTE // VERIFIED", action.title),
+            text,
+        );
+        return;
+    }
+
+    if mutation_uses_px_guard(action) {
+        let verification = match px_guard_verification(model, action, &app.prompt_values) {
+            Ok(value) => value,
+            Err(error) => {
+                let verification = serde_json::json!({"error": error});
+                let warning = journal_warning(journal::finish(
+                    &model.px_path,
+                    &operation_id,
+                    "COMPLETE",
+                    execution_exit,
+                    "UNAVAILABLE",
+                    &execution_evidence,
+                    &verification,
+                    "mutation succeeded; PX verification could not complete",
+                ));
+                text = format!(
+                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nUNAVAILABLE // {error}{warning}"
+                );
+                app.open_output(
+                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    text,
+                );
+                return;
+            }
+        };
+
+        let passed = verification
+            .get("passed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let summary = verification
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("PX mutation verification returned no summary");
+        let reason = verification
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let verify_text = serde_json::to_string_pretty(&verification)
+            .unwrap_or_else(|_| verification.to_string());
+
+        if !passed {
+            let result_summary = if reason.is_empty() {
+                summary.to_owned()
+            } else {
+                format!("{summary} // {reason}")
+            };
+            let warning = journal_warning(journal::finish(
+                &model.px_path,
+                &operation_id,
+                "COMPLETE",
+                execution_exit,
+                "FAILED",
+                &execution_evidence,
+                &verification,
+                &result_summary,
+            ));
+            text = format!(
+                "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
+            );
+            app.open_output(
+                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                text,
+            );
+            return;
+        }
+
+        let warning = journal_warning(journal::finish(
+            &model.px_path,
+            &operation_id,
+            "COMPLETE",
+            execution_exit,
+            "PASSED",
+            &execution_evidence,
+            &verification,
+            summary,
         ));
         text = format!(
             "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
@@ -2212,7 +2442,11 @@ fn draw_mutation_preview(frame: &mut Frame, area: Rect, app: &App, model: &Model
             if app.mutation_armed {
                 format!("ARMED // {}", app.mutation_preflight)
             } else {
-                "ARM REQUIRED // Enter runs PX Room prepare against the frozen target".to_owned()
+                if mutation_requires_hospital_arm(action) {
+                    "ARM REQUIRED // Enter runs PX Room prepare against the frozen target".to_owned()
+                } else {
+                    "ARM REQUIRED // Enter runs PX mutation preflight against the frozen target".to_owned()
+                }
             },
             Style::default().fg(if app.mutation_armed { CYAN } else { ORANGE }),
         )));
@@ -2319,7 +2553,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
         Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
         Mode::ActionChoice => "type filter   Up/Down move   Enter choose   Backspace edit   Esc cancel",
-        Mode::MutationPreview => "Enter confirm local mutation   Esc cancel",
+        Mode::MutationPreview => "Enter preflight/confirm mutation   Esc cancel",
         Mode::MutationConfirm => "type confirmation word   Enter execute   Esc preview",
         Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
@@ -2388,6 +2622,7 @@ mod tests {
             arguments: Vec::new(),
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         }
     }
@@ -2482,6 +2717,7 @@ mod tests {
             ],
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
 
@@ -2525,6 +2761,7 @@ mod tests {
             ],
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
 
@@ -2664,12 +2901,13 @@ mod tests {
             ],
             mutation: "remote".to_owned(),
             recovery: "EVIDENCE_ONLY".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         }
     }
 
     #[test]
-    fn mutation_execution_policy_keeps_remote_and_external_locked_except_guarded_integration() {
+    fn mutation_execution_policy_only_unlocks_certified_remote_actions() {
         let mut local = action("local", "AI");
         local.mutation = "local".to_owned();
         local.recovery = "EVIDENCE_ONLY".to_owned();
@@ -2680,12 +2918,21 @@ mod tests {
         external.mutation = "external".to_owned();
         external.recovery = "EVIDENCE_ONLY".to_owned();
         let integration = integration_action();
+        let mut cancel = action("github.run.cancel", "GitHub");
+        cancel.mutation = "remote".to_owned();
+        cancel.recovery = "EVIDENCE_ONLY".to_owned();
+        cancel.execution_policy = "px-guarded".to_owned();
 
         assert!(mutation_execution_enabled(&local));
         assert!(!mutation_execution_enabled(&remote));
         assert!(!mutation_execution_enabled(&external));
         assert!(mutation_execution_enabled(&integration));
+        assert!(mutation_execution_enabled(&cancel));
         assert!(mutation_requires_arm(&integration));
+        assert!(mutation_requires_arm(&cancel));
+        assert!(mutation_requires_hospital_arm(&integration));
+        assert!(!mutation_requires_hospital_arm(&cancel));
+        assert!(mutation_uses_px_guard(&cancel));
         assert!(!mutation_requires_arm(&remote));
         assert_eq!(mutation_confirmation_phrase(&local), "LOCAL");
         assert_eq!(mutation_confirmation_phrase(&integration), "REMOTE");
@@ -2784,6 +3031,7 @@ mod tests {
             ],
             mutation: "local".to_owned(),
             recovery: "EVIDENCE_ONLY".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
         let mut app = App::new();
