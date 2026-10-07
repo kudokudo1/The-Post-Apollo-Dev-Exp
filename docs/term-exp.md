@@ -254,3 +254,8 @@ PX // TERM EXP
 
 TERM EXP is therefore a frontend to current PX. It does not recreate the old
 Rust-side discovery, backend, or semantic action registries.
+
+
+## Recovery planning
+
+Workflow creation is `CONTENT_RECOVERABLE` after successful verification. PX records a concrete `DELETE_CREATED_WORKFLOW` plan from the exact durable YAML and remote identity, but automatic execution remains disabled until a stale-state-checking recovery executor is certified.

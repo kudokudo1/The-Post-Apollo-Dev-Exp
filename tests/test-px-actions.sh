@@ -72,6 +72,13 @@ recovery_contract="$(jq -c '
 ' <<<"$registry")"
 [[ "$recovery_contract" == '{"read_non_none":0,"mutation_undeclared":0,"integrate":"EVIDENCE_ONLY"}' ]]
 
+workflow_create_recovery="$(jq -r '
+  .actions[]
+  | select(.id == "workflow.create")
+  | .recovery
+' <<<"$registry")"
+[[ "$workflow_create_recovery" == "CONTENT_RECOVERABLE" ]]
+
 guarded_mutation_contract="$(jq -c '
   {
     ids: (
@@ -87,7 +94,12 @@ guarded_mutation_contract="$(jq -c '
       | select((.executionPolicy // "") == "px-guarded")
       | select(
           ((.mutation != "remote") and (.mutation != "external"))
-          or .recovery != "EVIDENCE_ONLY"
+          or (
+            if .id == "workflow.create"
+            then .recovery != "CONTENT_RECOVERABLE"
+            else .recovery != "EVIDENCE_ONLY"
+            end
+          )
         )
       | .id
     ]

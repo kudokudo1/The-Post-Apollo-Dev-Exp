@@ -1096,7 +1096,7 @@
         "github",
         "actions"
       ],
-      "recovery": "EVIDENCE_ONLY",
+      "recovery": "CONTENT_RECOVERABLE",
       "executionPolicy": "px-guarded"
     },
     {

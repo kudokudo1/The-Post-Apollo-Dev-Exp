@@ -136,6 +136,90 @@ def main():
         )
         assert "already COMPLETE" in duplicate.stderr
 
+        create_started = payload(
+            run_px(
+                env,
+                "operation",
+                "start",
+                "--action-id",
+                "workflow.create",
+                "--title",
+                "Create Workflow",
+                "--mutation",
+                "remote",
+                "--recovery",
+                "CONTENT_RECOVERABLE",
+                "--command-json",
+                '["create","owner/repo","smoke","recoverable","manual","--install","--json"]',
+                "--arguments-json",
+                '{"repository":"dev","template":"smoke","slug":"recoverable"}',
+                "--before-json",
+                '{"armed":true,"preflight":"CREATE WORKFLOW"}',
+                "--json",
+            )
+        )
+        create_id = create_started["id"]
+        yaml_text = "name: recoverable\non:\n  workflow_dispatch:\n"
+        create_after = {
+            "stdout": {
+                "repository": "owner/repo",
+                "base": "main",
+                "path": ".github/workflows/recoverable.yml",
+                "yaml": yaml_text,
+                "install": {
+                    "installed": True,
+                    "commit": "c" * 40,
+                },
+            },
+            "stderr": "",
+        }
+        create_verification = {
+            "passed": True,
+            "target": {
+                "remoteBlobSha": "blob-recoverable",
+                "currentBaseSha": "d" * 40,
+                "expectedYamlSha": "e" * 64,
+            },
+        }
+        payload(
+            run_px(
+                env,
+                "operation",
+                "finish",
+                create_id,
+                "--status",
+                "COMPLETE",
+                "--exit-code",
+                "0",
+                "--verification-status",
+                "PASSED",
+                "--after-json",
+                json.dumps(create_after),
+                "--verification-json",
+                json.dumps(create_verification),
+                "--result-summary",
+                "workflow creation verified",
+                "--json",
+            )
+        )
+
+        create_recovery = payload(
+            run_px(env, "operation", "recovery", create_id, "--json")
+        )
+        assert create_recovery["recovery"] == "CONTENT_RECOVERABLE"
+        assert create_recovery["automaticRecoveryAvailable"] is False
+        assert create_recovery["planAvailable"] is True
+        assert create_recovery["strategy"] == "DELETE_CREATED_WORKFLOW"
+        assert create_recovery["plan"]["repository"] == "owner/repo"
+        assert create_recovery["plan"]["base"] == "main"
+        assert (
+            create_recovery["plan"]["path"]
+            == ".github/workflows/recoverable.yml"
+        )
+        assert create_recovery["plan"]["yaml"] == yaml_text
+        assert create_recovery["plan"]["remoteBlobSha"] == "blob-recoverable"
+        assert "executor is not registered yet" in create_recovery["reason"]
+
         invalid = run_px(
             env,
             "operation",
