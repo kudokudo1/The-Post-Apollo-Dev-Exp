@@ -1350,7 +1350,7 @@ usage() {
 Post-Apollo PX control bus
 
 Usage:
-  px repos
+  px repos [--json]
   px doctor
   px workflows <repo>
   px runs <repo> [limit] [sha]
