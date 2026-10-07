@@ -37,15 +37,18 @@ The first shell proves:
 - representative semantic actions are rendered from the live registry;
 - terminal raw/alternate-screen cleanup is guarded on exit.
 
-Navigation is deliberately minimal in this lane: `q`, `Esc`, or `Ctrl-C`
-exit cleanly.
+The first interaction model is now live:
 
-The next lane adds the actual interaction model:
+- `SPACE` opens a command/category menu;
+- `/` opens Find Anything;
+- leader and search selectors are independent;
+- fuzzy search spans semantic PX actions and preferred host/Toolbox tools;
+- narrow terminals stack the dashboard vertically instead of crushing the
+  two-column layout;
+- `q`, `Esc`, and `Ctrl-C` preserve clean terminal exit behavior.
 
-- `SPACE` command hierarchy;
-- `/` Find Anything;
-- independent selectors;
-- action + tool fuzzy search.
+Selection is browse-only in this lane. Action execution and specialist tool
+delegation are intentionally the next layer.
 
 ## Architecture
 
