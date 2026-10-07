@@ -1308,6 +1308,8 @@ fn draw(frame: &mut Frame, app: &App, model: &Model) {
         Mode::Search => draw_search(frame, rows[1], app, model),
         Mode::ActionPrompt => draw_action_prompt(frame, rows[1], app, model),
         Mode::ActionChoice => draw_action_choice(frame, rows[1], app, model),
+        Mode::MutationPreview => draw_mutation_preview(frame, rows[1], app, model),
+        Mode::MutationConfirm => draw_mutation_confirm(frame, rows[1], app, model),
         Mode::Output => draw_output(frame, rows[1], app),
     }
 
@@ -1756,6 +1758,174 @@ fn draw_action_prompt(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
     );
 }
 
+fn mutation_color(action: &Action) -> Color {
+    match action.mutation.as_str() {
+        "local" => CYAN,
+        "remote" => ORANGE,
+        "external" => MAGENTA,
+        _ => FG,
+    }
+}
+
+fn draw_mutation_preview(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending mutation").block(panel(" MUTATION PREVIEW ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Mutation action no longer exists")
+                .block(panel(" MUTATION PREVIEW ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let color = mutation_color(action);
+    let executable = mutation_execution_enabled(action);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                &action.title,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", action.id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("MUTATION  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                action.mutation.to_uppercase(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if executable {
+                    "  EXECUTION ENABLED"
+                } else {
+                    "  PREVIEW ONLY"
+                },
+                Style::default().fg(if executable { CYAN } else { ORANGE }),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "RESOLVED ARGUMENTS",
+            Style::default().fg(MAGENTA).add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    for (index, argument) in action.arguments.iter().enumerate() {
+        let value = app
+            .prompt_values
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<18}", argument.name),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                if value.is_empty() { "(default)" } else { value },
+                Style::default().fg(FG),
+            ),
+        ]));
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "FROZEN PX COMMAND",
+            Style::default().fg(MAGENTA).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("px {}", app.mutation_args.join(" ")),
+            Style::default().fg(FG),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Nothing has executed yet.",
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+        )),
+    ]);
+
+    if executable {
+        lines.push(Line::from(
+            "Enter continues to explicit confirmation. Esc cancels.",
+        ));
+    } else {
+        lines.push(Line::from(
+            "Execution remains locked until this mutation class has a certified policy.",
+        ));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel(" MUTATION PREVIEW ", color)),
+        area,
+    );
+}
+
+fn draw_mutation_confirm(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
+    let Some(action_id) = app.pending_action_id.as_deref() else {
+        frame.render_widget(
+            Paragraph::new("No pending mutation").block(panel(" CONFIRM MUTATION ", ORANGE)),
+            area,
+        );
+        return;
+    };
+    let Some(action) = action_by_id(model, action_id) else {
+        frame.render_widget(
+            Paragraph::new("Mutation action no longer exists")
+                .block(panel(" CONFIRM MUTATION ", ORANGE)),
+            area,
+        );
+        return;
+    };
+
+    let expected = mutation_confirmation_phrase(action);
+    let color = mutation_color(action);
+    let lines = vec![
+        Line::from(Span::styled(
+            &action.title,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("The exact command shown on the previous screen is frozen."),
+        Line::from(vec![
+            Span::styled("Type ", Style::default().fg(FG)),
+            Span::styled(
+                expected,
+                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to execute:", Style::default().fg(FG)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            &app.mutation_confirm_buffer,
+            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("px {}", app.mutation_args.join(" ")),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel(" CONFIRM MUTATION ", color)),
+        area,
+    );
+}
+
 fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.output_title.is_empty() {
         " ACTION OUTPUT ".to_owned()
@@ -1785,6 +1955,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
         Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
         Mode::ActionChoice => "type filter   Up/Down move   Enter choose   Backspace edit   Esc cancel",
+        Mode::MutationPreview => "Enter confirm local mutation   Esc cancel",
+        Mode::MutationConfirm => "type confirmation word   Enter execute   Esc preview",
         Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
