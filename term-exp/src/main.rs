@@ -718,7 +718,9 @@ fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
             }
         }
         "run" => {
-            let Some(repository) = selected_repository(action, &app.prompt_values) else {
+            let Some(repository) =
+                selected_repository(action, &app.prompt_values).map(str::to_owned)
+            else {
                 app.open_prompt();
                 app.status = Some(
                     "No repository is selected, so the run ID must be typed manually".to_owned(),
@@ -726,7 +728,7 @@ fn prepare_current_argument(app: &mut App, model: &Model, action: &Action) {
                 return;
             };
 
-            match run_choices(model, repository) {
+            match run_choices(model, &repository) {
                 Ok(choices) if !choices.is_empty() => app.open_choice(choices),
                 Ok(_) => {
                     app.open_prompt();
