@@ -104,8 +104,11 @@ Mutation handling is deliberately staged:
   command carrying the expected blob SHA. Execution refuses if that workflow file
   changed after confirmation, and verification requires the file to be absent on
   an advanced target ref;
-- workflow creation remains preview-only until its own PX guard and verification
-  contract is certified;
+- workflow creation is `px-guarded`: PX renders and semantically validates the
+  candidate first, freezes the default branch, base SHA, generated YAML hash, and
+  optional script-test path, then supplies an explicit `--install` command.
+  Execution regenerates the candidate and refuses branch or YAML drift; verification
+  requires the created remote file bytes to match the frozen YAML on an advanced base;
 - after guarded remote execution, TERM EXP reports execution success separately
   from post-operation verification.
 
