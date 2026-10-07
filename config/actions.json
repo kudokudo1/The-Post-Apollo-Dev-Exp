@@ -154,6 +154,69 @@
       ]
     },
     {
+      "id": "repository.branches.list",
+      "title": "List Repository Branches",
+      "category": "GitHub",
+      "summary": "List known branches and their current heads for a repository.",
+      "command": [
+        "branches",
+        "{repository}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "branch",
+        "branches",
+        "ref",
+        "heads"
+      ]
+    },
+    {
+      "id": "repository.commits.list",
+      "title": "List Repository Commits",
+      "category": "GitHub",
+      "summary": "List recent commits for a repository, optionally scoped to a ref.",
+      "command": [
+        "commits",
+        "{repository}",
+        "{ref?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "ref",
+          "required": false,
+          "kind": "ref"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "commit",
+        "commits",
+        "history",
+        "sha",
+        "ref"
+      ]
+    },
+    {
       "id": "github.runs.list",
       "title": "List Workflow Runs",
       "category": "GitHub",
@@ -807,7 +870,12 @@
         {
           "name": "trigger",
           "required": false,
-          "kind": "enum"
+          "kind": "enum",
+          "choices": [
+            "manual",
+            "push",
+            "manual+push"
+          ]
         }
       ],
       "mutation": "remote",
@@ -863,6 +931,175 @@
         "remove",
         "github",
         "actions"
+      ]
+    },
+    {
+      "id": "hospital.room.checkpoints.list",
+      "title": "List Room Checkpoints",
+      "category": "Hospital",
+      "summary": "List durable checkpoints for a selected Hospital Room.",
+      "command": [
+        "hospital",
+        "checkpoints",
+        "{room}",
+        "--limit",
+        "50",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "checkpoint",
+        "progress"
+      ]
+    },
+    {
+      "id": "hospital.room.reports.list",
+      "title": "List Room Reports",
+      "category": "Hospital",
+      "summary": "List durable Doctor Notes and Room Reports for a selected Room.",
+      "command": [
+        "hospital",
+        "room-reports",
+        "{room}",
+        "--limit",
+        "50",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "report",
+        "doctor note"
+      ]
+    },
+    {
+      "id": "hospital.room.report.view",
+      "title": "View Room Report",
+      "category": "Hospital",
+      "summary": "Open one Doctor Note selected from a Hospital Room.",
+      "command": [
+        "hospital",
+        "room-report",
+        "{report}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "report",
+          "required": true,
+          "kind": "report"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "report",
+        "doctor note",
+        "inspect"
+      ]
+    },
+    {
+      "id": "hospital.room.chart.list",
+      "title": "List Room Chart Entries",
+      "category": "Hospital",
+      "summary": "List durable Chart memory for a selected Hospital Room.",
+      "command": [
+        "hospital",
+        "chart-entries",
+        "--scope",
+        "ROOM",
+        "--room-id",
+        "{room}",
+        "--status",
+        "ALL",
+        "--limit",
+        "200",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "chart",
+        "memory"
+      ]
+    },
+    {
+      "id": "hospital.room.chart.view",
+      "title": "View Room Chart Entry",
+      "category": "Hospital",
+      "summary": "Open one Chart entry selected from a Hospital Room.",
+      "command": [
+        "hospital",
+        "chart-entry",
+        "{chart_entry}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "chart_entry",
+          "required": true,
+          "kind": "chart_entry"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "chart",
+        "memory",
+        "entry",
+        "inspect"
       ]
     },
     {

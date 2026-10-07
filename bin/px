@@ -79,6 +79,69 @@ workflows_for() {
     return "$status"
 }
 
+branches_for() {
+    local repo="$1"
+    local default_branch rows
+
+    need jq
+    default_branch="$(default_branch_for "$repo")"
+    rows="$(
+        gh api --paginate "repos/$repo/branches?per_page=100" \
+            --jq '.[] | [.name, .commit.sha, ((.protected // false) | tostring)] | @tsv'
+    )"
+
+    jq -Rn \
+        --arg repository "$repo" \
+        --arg default_branch "$default_branch" \
+        --arg rows "$rows" '
+        {
+            version: 1,
+            repository: $repository,
+            defaultBranch: $default_branch,
+            branches: (
+                $rows
+                | split("\n")
+                | map(select(length > 0))
+                | map(
+                    split("\t")
+                    | {
+                        name: .[0],
+                        head: .[1],
+                        protected: (.[2] == "true"),
+                        default: (.[0] == $default_branch),
+                        source: "github"
+                    }
+                )
+            )
+        }
+    '
+}
+
+commits_for() {
+    local repo="$1"
+    local ref="${2:-}"
+    local limit="${3:-20}"
+    local endpoint="repos/$repo/commits?per_page=$limit"
+
+    need jq
+
+    if [[ -n "$ref" ]]; then
+        endpoint+="&sha=$(jq -rn --arg value "$ref" '$value | @uri')"
+    fi
+
+    gh api "$endpoint" --jq '
+        [
+            .[]
+            | {
+                sha: .sha,
+                message: ((.commit.message // "") | split("\n")[0]),
+                author: (.commit.author.name // ""),
+                date: (.commit.author.date // "")
+            }
+        ]
+    '
+}
+
 validate_slug() {
     local slug="$1"
     [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -1353,6 +1416,8 @@ Usage:
   px repos [--json]
   px doctor
   px workflows <repo>
+  px branches <repo>
+  px commits <repo> [ref] [limit]
   px runs <repo> [limit] [sha]
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
@@ -1384,6 +1449,8 @@ Workflow factory:
 
 Examples:
   px workflows dev
+  px branches dev
+  px commits dev main 20
   px inspect dev 123456789
   px logs dev 123456789
   px run dev px-smoke.yml
@@ -1453,6 +1520,18 @@ case "$cmd" in
         need gh
         repo="$(repo_for "${1:-}")"
         workflows_for "$repo"
+        ;;
+
+    branches)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        branches_for "$repo"
+        ;;
+
+    commits)
+        need gh
+        repo="$(repo_for "${1:-}")"
+        commits_for "$repo" "${2:-}" "${3:-20}"
         ;;
 
     runs)
