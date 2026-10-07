@@ -60,6 +60,10 @@ assignment_active_json="$("$ROOT/bin/px" hospital assignment-activate "$assignme
 
 providers_json="$("$ROOT/bin/px" agent providers --json)"
 created_json="$("$ROOT/bin/px" agent session-create     --room-id T6     --doctor-id doctor-t6     --provider-id mock     --working-directory "$BED"     --session-id session-t6-agent     --json)"
+historical_checkpoint_json="$(printf '%s' 'Application Audio ownership regression sentinel from an older checkpoint.' | "$ROOT/bin/px" hospital checkpoint-append --room-id T6 --session-id session-t6-agent --checkpoint-kind PROGRESS --body-stdin --json)"
+historical_checkpoint_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$historical_checkpoint_json")"
+historical_report_json="$(printf '%s' 'Earlier Application Audio extraction found a reusable stream ownership seam.' | "$ROOT/bin/px" hospital room-report-append --room-id T6 --session-id session-t6-agent --checkpoint-id "$historical_checkpoint_id" --report-kind DOCTOR_NOTE --title "Application Audio historical note" --git-evidence-status UNAVAILABLE --body-stdin --json)"
+historical_report_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$historical_report_json")"
 context_json="$("$ROOT/bin/px" agent context session-t6-agent --json)"
 
 turn_one_frame="$(python3 -c 'import json; print(json.dumps({"prompt": "first task\nwith detail"}))')"
@@ -71,7 +75,7 @@ session_json="$("$ROOT/bin/px" hospital session session-t6-agent --json)"
 messages_json="$("$ROOT/bin/px" hospital messages T6 --limit 100 --json)"
 events_json="$("$ROOT/bin/px" hospital events session-t6-agent --limit 200 --json)"
 
-python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$assignment_json"     "$assignment_active_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED" <<'PY'
+python3 -     "$providers_json"     "$created_json"     "$context_json"     "$patient_chart_json"     "$room_chart_json"     "$assignment_json"     "$assignment_active_json"     "$turn_one_json"     "$turn_two_json"     "$session_json"     "$messages_json"     "$events_json"     "$BED"     "$historical_checkpoint_id"     "$historical_report_id" <<'PY'
 import json
 import pathlib
 import sys
@@ -89,6 +93,8 @@ session = json.loads(sys.argv[10])
 messages = json.loads(sys.argv[11])
 events = json.loads(sys.argv[12])
 bed = pathlib.Path(sys.argv[13])
+historical_checkpoint_id = sys.argv[14]
+historical_report_id = sys.argv[15]
 
 assert providers == [
     {
@@ -109,7 +115,7 @@ assert created["workingDirectory"] == str(bed), created
 assert created["providerSessionId"] == "", created
 assert created["status"] == "IDLE", created
 
-assert context["version"] == 1, context
+assert context["version"] == 2, context
 assert context["session"]["id"] == "session-t6-agent", context
 assert context["room"]["id"] == "T6", context
 assert context["room"]["patientId"] == "patient-taskbars", context
@@ -128,6 +134,14 @@ assert len(context["git"]["headSha"]) == 40, context
 assert [row["id"] for row in context["patientChart"]] == [patient_chart["id"]], context
 assert [row["id"] for row in context["roomChart"]] == [room_chart["id"]], context
 assert context["recentMessages"] == [], context
+retrieved_refs = {
+    f'{row["type"]}:{row["id"]}'
+    for row in context["retrievedContext"]
+}
+assert f"CHECKPOINT:{historical_checkpoint_id}" in retrieved_refs, context
+assert f"ROOM_REPORT:{historical_report_id}" in retrieved_refs, context
+assert "RETRIEVED ROOM HISTORY // RELEVANCE" in context["renderedText"], context
+assert "Application Audio ownership regression sentinel" in context["renderedText"], context
 assert "HOSPITAL LIVE CONTEXT // GENERATED" in context["renderedText"], context
 assert "Provider identity must never replace Room identity." in context["renderedText"], context
 assert "Keep Application Audio work inside the T6 Bed" in context["renderedText"], context
@@ -144,6 +158,8 @@ assert turn_one["context"]["assignmentPermissions"] == ["READ", "EDIT", "TEST"],
 assert turn_one["context"]["patientChartEntryIds"] == [patient_chart["id"]], turn_one
 assert turn_one["context"]["roomChartEntryIds"] == [room_chart["id"]], turn_one
 assert turn_one["context"]["recentMessageIds"] == [], turn_one
+assert f"CHECKPOINT:{historical_checkpoint_id}" in turn_one["context"]["retrievedContextRefs"], turn_one
+assert f"ROOM_REPORT:{historical_report_id}" in turn_one["context"]["retrievedContextRefs"], turn_one
 assert turn_one["context"]["gitEvidenceStatus"] == "VERIFIED", turn_one
 assert len(turn_one["context"]["gitHeadSha"]) == 40, turn_one
 
@@ -183,6 +199,8 @@ context_events = [row for row in events if row["type"] == "turn.context"]
 assert context_events[0]["payload"]["patientChartEntryIds"] == [patient_chart["id"]], context_events
 assert context_events[0]["payload"]["roomChartEntryIds"] == [room_chart["id"]], context_events
 assert context_events[0]["payload"]["recentMessageIds"] == [], context_events
+assert f"CHECKPOINT:{historical_checkpoint_id}" in context_events[0]["payload"]["retrievedContextRefs"], context_events
+assert f"ROOM_REPORT:{historical_report_id}" in context_events[0]["payload"]["retrievedContextRefs"], context_events
 assert len(context_events[1]["payload"]["recentMessageIds"]) == 2, context_events
 
 provider_system = [row["payload"] for row in events if row["type"] == "provider.system"]
@@ -378,7 +396,9 @@ python3 - \
     "$quick_room_reports_json" \
     "$quick_events_json" \
     "$quick_suggest_json" \
-    "$quick_suggestions_json" <<'PY'
+    "$quick_suggestions_json" \
+    "$historical_checkpoint_id" \
+    "$historical_report_id" <<'PY'
 import json
 import sys
 
@@ -394,6 +414,8 @@ room_reports = json.loads(sys.argv[9])
 events = json.loads(sys.argv[10])
 suggest = json.loads(sys.argv[11])
 suggestions = json.loads(sys.argv[12])
+historical_checkpoint_id = sys.argv[13]
+historical_report_id = sys.argv[14]
 
 assert status["command"] == "STATUS", status
 assert status["status"]["status"] == "WAITING", status
@@ -481,13 +503,15 @@ assert any(
     for row in feedback_provider_system
 ), feedback_provider_system
 
-assert len(checkpoints) == 1, checkpoints
-assert checkpoints[0]["id"] == report["checkpoint"]["id"], checkpoints
-assert checkpoints[0]["sessionId"] == "session-t6-agent", checkpoints
-assert checkpoints[0]["providerId"] == "mock", checkpoints
+checkpoint_by_id = {row["id"]: row for row in checkpoints}
+assert report["checkpoint"]["id"] in checkpoint_by_id, checkpoints
+assert historical_checkpoint_id in checkpoint_by_id, checkpoints
+assert checkpoint_by_id[report["checkpoint"]["id"]]["sessionId"] == "session-t6-agent", checkpoints
+assert checkpoint_by_id[report["checkpoint"]["id"]]["providerId"] == "mock", checkpoints
 
-assert len(room_reports) == 1, room_reports
-assert room_reports[0]["id"] == room_report["id"], room_reports
+room_report_by_id = {row["id"]: row for row in room_reports}
+assert room_report["id"] in room_report_by_id, room_reports
+assert historical_report_id in room_report_by_id, room_reports
 
 types = [row["type"] for row in events]
 assert "room_report.created" in types, types

@@ -647,12 +647,17 @@ def cancel_session(args) -> dict:
     }
 
 
-CONTEXT_VERSION = 1
+CONTEXT_VERSION = 2
 PATIENT_CHART_LIMIT = 6
 ROOM_CHART_LIMIT = 10
 RECENT_MESSAGE_LIMIT = 6
 CONTEXT_ITEM_TEXT_LIMIT = 900
 CONTEXT_CHANGED_FILE_LIMIT = 40
+HISTORY_MESSAGE_POOL_LIMIT = 80
+HISTORY_CHECKPOINT_POOL_LIMIT = 40
+HISTORY_REPORT_POOL_LIMIT = 30
+RETRIEVED_HISTORY_LIMIT = 6
+RETRIEVAL_TOKEN_MIN_LENGTH = 3
 
 
 def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
@@ -662,9 +667,137 @@ def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def context_query_tokens(value: str) -> set[str]:
+    text = str(value or "").lower()
+    token = ""
+    tokens = set()
+    for char in text:
+        if char.isalnum() or char in ("_", "-", "/"):
+            token += char
+            continue
+        if len(token) >= RETRIEVAL_TOKEN_MIN_LENGTH:
+            tokens.add(token)
+        token = ""
+    if len(token) >= RETRIEVAL_TOKEN_MIN_LENGTH:
+        tokens.add(token)
+    return tokens
+
+
+def historical_context_score(query_tokens: set[str], text: str) -> int:
+    if not query_tokens:
+        return 0
+    item_tokens = context_query_tokens(text)
+    if not item_tokens:
+        return 0
+    overlap = query_tokens.intersection(item_tokens)
+    if not overlap:
+        return 0
+    score = len(overlap) * 10
+    for value in overlap:
+        if "/" in value or "_" in value or "-" in value:
+            score += 2
+    return score
+
+
+def select_relevant_room_history(
+    room_id: str,
+    query_text: str,
+    recent_messages: list,
+) -> list[dict]:
+    query_tokens = context_query_tokens(query_text)
+    if not query_tokens:
+        return []
+
+    recent_ids = {
+        str(row.get("id") or "")
+        for row in recent_messages
+        if row.get("id")
+    }
+    candidates = []
+
+    messages = px_hospital(
+        "messages",
+        room_id,
+        "--limit", str(HISTORY_MESSAGE_POOL_LIMIT),
+    )
+    for row in messages:
+        item_id = str(row.get("id") or "")
+        if not item_id or item_id in recent_ids:
+            continue
+        body = str(row.get("body") or "")
+        score = historical_context_score(query_tokens, body)
+        if score <= 0:
+            continue
+        candidates.append({
+            "type": "MESSAGE",
+            "id": item_id,
+            "title": str(row.get("authorRole") or "message").upper(),
+            "body": body,
+            "createdAt": str(row.get("createdAt") or ""),
+            "score": score,
+        })
+
+    checkpoints = px_hospital(
+        "checkpoints",
+        room_id,
+        "--limit", str(HISTORY_CHECKPOINT_POOL_LIMIT),
+    )
+    for row in checkpoints:
+        body = str(row.get("body") or "")
+        title = str(row.get("kind") or "CHECKPOINT")
+        score = historical_context_score(
+            query_tokens,
+            title + "\n" + body,
+        )
+        if score <= 0:
+            continue
+        candidates.append({
+            "type": "CHECKPOINT",
+            "id": str(row.get("id") or ""),
+            "title": title,
+            "body": body,
+            "createdAt": str(row.get("createdAt") or ""),
+            "score": score + 2,
+        })
+
+    reports = px_hospital(
+        "room-reports",
+        room_id,
+        "--limit", str(HISTORY_REPORT_POOL_LIMIT),
+    )
+    for row in reports:
+        title = str(row.get("title") or row.get("kind") or "ROOM REPORT")
+        body = str(row.get("body") or "")
+        score = historical_context_score(
+            query_tokens,
+            title + "\n" + body,
+        )
+        if score <= 0:
+            continue
+        candidates.append({
+            "type": "ROOM_REPORT",
+            "id": str(row.get("id") or ""),
+            "title": title,
+            "body": body,
+            "createdAt": str(row.get("createdAt") or ""),
+            "score": score + 4,
+        })
+
+    candidates.sort(
+        key=lambda row: (
+            int(row.get("score") or 0),
+            str(row.get("createdAt") or ""),
+            str(row.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return candidates[:RETRIEVED_HISTORY_LIMIT]
+
+
 def live_context_payload(
     session_id: str,
     working_directory: str = "",
+    query_text: str = "",
 ) -> dict:
     session = px_hospital("session", session_id)
     room_id = str(session.get("roomId") or "")
@@ -707,6 +840,22 @@ def live_context_payload(
         "--limit", str(RECENT_MESSAGE_LIMIT),
     )
 
+    retrieval_query = "\n".join(
+        value
+        for value in (
+            str(query_text or "").strip(),
+            str(assignment.get("title") or "").strip(),
+            str(assignment.get("goal") or "").strip(),
+            str(assignment.get("openQuestions") or "").strip(),
+        )
+        if value
+    )
+    retrieved_context = select_relevant_room_history(
+        room_id,
+        retrieval_query,
+        recent_messages,
+    )
+
     git_evidence = collect_git_report_evidence(cwd_text)
 
     return {
@@ -737,6 +886,7 @@ def live_context_payload(
         "patientChart": patient_chart,
         "roomChart": room_chart,
         "recentMessages": recent_messages,
+        "retrievedContext": retrieved_context,
     }
 
 
@@ -767,6 +917,7 @@ def render_live_context(payload: dict) -> str:
     git = payload.get("git") or {}
     assignment = payload.get("assignment") or {}
     recent = payload.get("recentMessages") or []
+    retrieved = payload.get("retrievedContext") or []
 
     lines = [
         "HOSPITAL LIVE CONTEXT // GENERATED",
@@ -872,6 +1023,23 @@ def render_live_context(payload: dict) -> str:
     else:
         lines.append("- NONE")
 
+    lines.extend(["", "RETRIEVED ROOM HISTORY // RELEVANCE"])
+    if retrieved:
+        for item in retrieved:
+            item_type = str(item.get("type") or "HISTORY")
+            item_id = str(item.get("id") or "?")
+            title = str(item.get("title") or "").strip()
+            score = int(item.get("score") or 0)
+            body = clip_context_text(item.get("body") or "")
+            heading = f"- [{item_type} #{item_id} SCORE {score}]"
+            if title:
+                heading += " " + title
+            lines.append(heading)
+            if body:
+                lines.append("  " + body.replace("\n", "\n  "))
+    else:
+        lines.append("- NONE")
+
     lines.extend([
         "",
         "AUTHORITY",
@@ -908,6 +1076,15 @@ def context_summary(payload: dict) -> dict:
         "recentMessageIds": [
             str(row.get("id") or "")
             for row in (payload.get("recentMessages") or [])
+            if row.get("id")
+        ],
+        "retrievedContextRefs": [
+            (
+                str(row.get("type") or "HISTORY")
+                + ":"
+                + str(row.get("id") or "")
+            )
+            for row in (payload.get("retrievedContext") or [])
             if row.get("id")
         ],
         "gitEvidenceStatus": str(git.get("status") or "UNAVAILABLE"),
@@ -981,6 +1158,7 @@ def run_turn(args) -> dict:
     context = live_context_payload(
         args.session_id,
         str(cwd),
+        prompt,
     )
     supplemental_context = str(
         getattr(args, "supplemental_context", "") or ""
