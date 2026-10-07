@@ -218,13 +218,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        handle_key(&mut app, key, &model);
+        handle_key(&mut guard, &mut app, key, &model)?;
     }
 
     Ok(())
 }
 
-fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
+fn handle_key(
+    guard: &mut TerminalGuard,
+    app: &mut App,
+    key: KeyEvent,
+    model: &Model,
+) -> io::Result<()> {
     match &app.mode {
         Mode::Home => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -312,6 +317,8 @@ fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
             }
         }
     }
+
+    Ok(())
 }
 
 fn resolve_px_path() -> PathBuf {
