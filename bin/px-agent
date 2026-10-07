@@ -286,7 +286,8 @@ def run_turn(args) -> dict:
         "--author-id", args.author_id,
         "--direction", "outgoing",
         "--message-type", args.message_type,
-        "--body", prompt,
+        "--body-stdin",
+        stdin_text=prompt,
     )
     store_event(
         args.session_id,
@@ -413,7 +414,8 @@ def run_turn(args) -> dict:
         "--author-id", str(session.get("doctorId") or "doctor"),
         "--direction", "incoming",
         "--message-type", "chat",
-        "--body", assistant,
+        "--body-stdin",
+        stdin_text=assistant,
     )
 
     update_args = [
