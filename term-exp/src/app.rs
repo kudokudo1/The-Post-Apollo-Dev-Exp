@@ -47,6 +47,7 @@ pub struct App {
     pub mutation_confirm_buffer: String,
     pub mutation_armed: bool,
     pub mutation_preflight: String,
+    pub mutation_preflight_token: String,
 
     pub output_title: String,
     pub output_text: String,
@@ -77,6 +78,7 @@ impl App {
             mutation_confirm_buffer: String::new(),
             mutation_armed: false,
             mutation_preflight: String::new(),
+            mutation_preflight_token: String::new(),
 
             output_title: String::new(),
             output_text: String::new(),
@@ -130,6 +132,7 @@ impl App {
         self.mutation_confirm_buffer.clear();
         self.mutation_armed = false;
         self.mutation_preflight.clear();
+        self.mutation_preflight_token.clear();
     }
 
     pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
@@ -144,6 +147,7 @@ impl App {
         self.mutation_confirm_buffer.clear();
         self.mutation_armed = false;
         self.mutation_preflight.clear();
+        self.mutation_preflight_token.clear();
         self.status = None;
     }
 
@@ -171,6 +175,7 @@ impl App {
         self.mutation_confirm_buffer.clear();
         self.mutation_armed = false;
         self.mutation_preflight.clear();
+        self.mutation_preflight_token.clear();
         self.status = None;
     }
 
@@ -209,6 +214,7 @@ impl App {
         self.mutation_confirm_buffer.clear();
         self.mutation_armed = false;
         self.mutation_preflight.clear();
+        self.mutation_preflight_token.clear();
         self.output_title.clear();
         self.output_text.clear();
         self.output_scroll = 0;
