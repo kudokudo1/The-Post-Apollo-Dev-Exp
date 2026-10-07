@@ -2622,6 +2622,7 @@ mod tests {
             arguments: Vec::new(),
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         }
     }
@@ -2716,6 +2717,7 @@ mod tests {
             ],
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
 
@@ -2759,6 +2761,7 @@ mod tests {
             ],
             mutation: "read".to_owned(),
             recovery: "NONE".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
 
@@ -2898,6 +2901,7 @@ mod tests {
             ],
             mutation: "remote".to_owned(),
             recovery: "EVIDENCE_ONLY".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         }
     }
@@ -3027,6 +3031,7 @@ mod tests {
             ],
             mutation: "local".to_owned(),
             recovery: "EVIDENCE_ONLY".to_owned(),
+            execution_policy: String::new(),
             keywords: Vec::new(),
         };
         let mut app = App::new();
