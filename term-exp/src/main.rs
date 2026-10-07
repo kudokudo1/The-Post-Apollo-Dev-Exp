@@ -786,6 +786,67 @@ fn validate_typed_argument(argument: &ActionArgument, value: &str) -> Result<(),
     }
 }
 
+fn mutation_execution_enabled(action: &Action) -> bool {
+    action.mutation == "local"
+}
+
+fn mutation_confirmation_phrase(action: &Action) -> &'static str {
+    match action.mutation.as_str() {
+        "local" => "LOCAL",
+        "remote" => "REMOTE",
+        "external" => "EXTERNAL",
+        _ => "CONFIRM",
+    }
+}
+
+fn prepare_mutation_preview(app: &mut App, action: &Action, values: &[String]) {
+    match expand_action_command(action, values) {
+        Ok(args) => app.open_mutation_preview(args),
+        Err(error) => app.status = Some(error),
+    }
+}
+
+fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
+    if !mutation_execution_enabled(action) {
+        app.mode = Mode::MutationPreview;
+        app.status = Some(format!(
+            "{} execution remains locked for {} mutations",
+            action.title, action.mutation
+        ));
+        return;
+    }
+
+    let output = match Command::new(&model.px_path)
+        .args(&app.mutation_args)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            app.open_output(
+                format!("{} // ERROR", action.title),
+                format!("could not launch PX mutation: {error}"),
+            );
+            return;
+        }
+    };
+
+    let mut text = display_output(&output.stdout, &output.stderr);
+
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "signal".to_owned());
+        text = format!("EXIT {code}\n\n{text}");
+    }
+
+    app.open_output(
+        format!("{} // {}", action.title, action.mutation.to_uppercase()),
+        text,
+    );
+}
+
 fn commit_argument_value(
     app: &mut App,
     model: &Model,
@@ -803,7 +864,12 @@ fn commit_argument_value(
         prepare_current_argument(app, model, action);
     } else {
         let values = app.prompt_values.clone();
-        run_read_action(app, model, action, &values);
+
+        if action.mutation == "read" {
+            run_read_action(app, model, action, &values);
+        } else {
+            prepare_mutation_preview(app, action, &values);
+        }
     }
 }
 
@@ -813,16 +879,14 @@ fn begin_or_run_action(app: &mut App, model: &Model, action_id: &str) {
         return;
     };
 
-    if action.mutation != "read" {
-        app.status = Some(format!(
-            "{} is a {} action; execution stays locked until mutation controls land",
-            action.title, action.mutation
-        ));
-        return;
-    }
-
     if action.arguments.is_empty() {
-        run_read_action(app, model, action, &[]);
+        app.pending_action_id = Some(action.id.clone());
+
+        if action.mutation == "read" {
+            run_read_action(app, model, action, &[]);
+        } else {
+            prepare_mutation_preview(app, action, &[]);
+        }
     } else {
         app.begin_action_prompt(action.id.clone(), action.arguments.len());
         prepare_current_argument(app, model, action);
