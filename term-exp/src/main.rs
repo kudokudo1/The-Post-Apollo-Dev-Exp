@@ -353,6 +353,62 @@ fn representative_actions(actions: &[Action]) -> Vec<&Action> {
     representatives
 }
 
+fn leader_entries(model: &Model) -> Vec<(char, SearchScope, String)> {
+    let mut entries = vec![
+        ('a', SearchScope::Actions, "All Actions".to_owned()),
+        ('t', SearchScope::Tools, "Tools".to_owned()),
+    ];
+
+    for (key, category) in [
+        ('p', "PX"),
+        ('h', "Hospital"),
+        ('i', "AI"),
+        ('g', "GitHub"),
+        ('w', "Workflow"),
+    ] {
+        if model
+            .actions
+            .actions
+            .iter()
+            .any(|action| action.category.eq_ignore_ascii_case(category))
+        {
+            entries.push((
+                key,
+                SearchScope::Category(category.to_owned()),
+                category.to_owned(),
+            ));
+        }
+    }
+
+    entries
+}
+
+fn preferred_tools(tools: &[Tool]) -> Vec<&Tool> {
+    let mut by_name = BTreeMap::<&str, &Tool>::new();
+
+    for tool in tools {
+        by_name
+            .entry(tool.name.as_str())
+            .and_modify(|current| {
+                if tool_rank(tool) < tool_rank(current) {
+                    *current = tool;
+                }
+            })
+            .or_insert(tool);
+    }
+
+    by_name.into_values().collect()
+}
+
+fn tool_rank(tool: &Tool) -> u8 {
+    match tool.backend.as_str() {
+        "native" => 0,
+        "toolbox" => 1,
+        "distrobox" => 2,
+        _ => 9,
+    }
+}
+
 fn draw(frame: &mut Frame, model: &Model) {
     let area = frame.area();
     frame.render_widget(
