@@ -290,16 +290,17 @@ fn handle_key(
                 KeyCode::Up => App::previous(&mut app.search_selected, results.len()),
                 KeyCode::Enter => {
                     if let Some(item) = results.get(app.search_selected) {
-                        app.status = Some(match item.kind {
-                            SearchKind::Action => format!(
-                                "Selected action {} — execution is the next lane",
-                                item.key
-                            ),
-                            SearchKind::Tool => format!(
-                                "Selected tool {} — delegation is the next lane",
-                                item.key
-                            ),
-                        });
+                        match item.kind {
+                            SearchKind::Action => {
+                                app.status = Some(format!(
+                                    "Selected action {} — action execution is the next lane",
+                                    item.key
+                                ));
+                            }
+                            SearchKind::Tool => {
+                                launch_specialist(guard, app, model, &item.key)?;
+                            }
+                        }
                     }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
