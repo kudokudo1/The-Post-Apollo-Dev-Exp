@@ -151,6 +151,63 @@ github_run_guard_record() {
         --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
 }
 
+
+github_workflow_guard_record() {
+    local repo="$1"
+    local workflow_query="$2"
+    local rows matches count
+
+    rows="$(workflows_for "$repo")"
+    matches="$(jq -c --arg query "$workflow_query" '
+        [
+            .[]
+            | select(
+                (.path // "") == $query
+                or ((.id // "") | tostring) == $query
+                or (.name // "") == $query
+            )
+        ]
+    ' <<<"$rows")"
+    count="$(jq 'length' <<<"$matches")"
+
+    [[ "$count" -gt 0 ]] || die "workflow not found: $workflow_query"
+    [[ "$count" -eq 1 ]] || die "workflow selector is ambiguous: $workflow_query"
+
+    jq -c '.[0]' <<<"$matches"
+}
+
+github_ref_sha() {
+    local repo="$1"
+    local ref="$2"
+    local encoded
+
+    encoded="$(jq -rn --arg value "$ref" '$value | @uri')"
+    gh api "repos/$repo/commits/$encoded" --jq '.sha'
+}
+
+github_workflow_blob_sha() {
+    local repo="$1"
+    local workflow_path="$2"
+    local ref="$3"
+    local encoded_ref
+
+    encoded_ref="$(jq -rn --arg value "$ref" '$value | @uri')"
+    gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref" --jq '.sha'
+}
+
+github_dispatch_runs_for() {
+    local repo="$1"
+    local workflow_path="$2"
+    local ref_sha="$3"
+
+    gh run list -R "$repo" \
+        --workflow "$workflow_path" \
+        --event workflow_dispatch \
+        --commit "$ref_sha" \
+        --limit 50 \
+        --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,url
+}
+
 mutation_preflight() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
@@ -293,6 +350,101 @@ mutation_preflight() {
                     summary:$summary,
                     reason:$reason,
                     token:$token,
+                    target:$target
+                }'
+            ;;
+        github.workflow.run)
+            need gh
+
+            local repository_key repo workflow_query ref_value effective_ref
+            local workflow_json workflow_id workflow_name workflow_path workflow_state
+            local ref_sha workflow_blob_sha baseline baseline_ids token summary frozen_command
+            local allowed="true" reason=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            workflow_query="$(jq -r '.workflow // ""' <<<"$arguments_json")"
+            ref_value="$(jq -r '.ref // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.workflow.run preflight requires repository"
+            [[ -n "$workflow_query" ]] || die "github.workflow.run preflight requires workflow"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_json="$(github_workflow_guard_record "$repo" "$workflow_query")"
+            workflow_id="$(jq -r '.id // ""' <<<"$workflow_json")"
+            workflow_name="$(jq -r '.name // ""' <<<"$workflow_json")"
+            workflow_path="$(jq -r '.path // ""' <<<"$workflow_json")"
+            workflow_state="$(jq -r '.state // ""' <<<"$workflow_json")"
+
+            [[ -n "$workflow_path" ]] || die "workflow has no canonical path: $workflow_query"
+
+            if [[ -n "$ref_value" ]]; then
+                effective_ref="$ref_value"
+            else
+                effective_ref="$(default_branch_for "$repo")"
+            fi
+
+            [[ -n "$effective_ref" ]] || die "workflow dispatch ref could not be resolved"
+
+            ref_sha="$(github_ref_sha "$repo" "$effective_ref")"
+            [[ -n "$ref_sha" ]] || die "workflow dispatch ref has no commit SHA"
+
+            workflow_blob_sha="$(github_workflow_blob_sha "$repo" "$workflow_path" "$effective_ref")"
+            [[ -n "$workflow_blob_sha" ]] || die "workflow file has no blob SHA at $effective_ref"
+
+            baseline="$(github_dispatch_runs_for "$repo" "$workflow_path" "$ref_sha")"
+            baseline_ids="$(jq -c '[.[].databaseId] | sort' <<<"$baseline")"
+
+            if [[ "${workflow_state,,}" != "active" ]]; then
+                allowed="false"
+                reason="WORKFLOW IS NOT ACTIVE // ${workflow_state^^}"
+            fi
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowId "$workflow_id" \
+                --arg workflowName "$workflow_name" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowState "$workflow_state" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                --arg ref "$effective_ref" \
+                --arg refSha "$ref_sha" \
+                --argjson beforeRunIds "$baseline_ids" \
+                '{
+                    repository:$repository,
+                    workflowId:$workflowId,
+                    workflowName:$workflowName,
+                    workflowPath:$workflowPath,
+                    workflowState:$workflowState,
+                    workflowBlobSha:$workflowBlobSha,
+                    ref:$ref,
+                    refSha:$refSha,
+                    beforeRunIds:$beforeRunIds
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflow "$workflow_path" \
+                --arg ref "$effective_ref" \
+                '["run",$repository,$workflow,$ref]')"
+
+            summary="DISPATCH // $workflow_name // $workflow_path // $effective_ref@${ref_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$workflow_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
                     target:$target
                 }'
             ;;
