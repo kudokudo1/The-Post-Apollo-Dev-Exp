@@ -148,7 +148,7 @@ github_run_guard_record() {
     local run_id="$2"
 
     gh run view "$run_id" -R "$repo" \
-        --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
+        --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
 }
 
 mutation_preflight() {
@@ -196,14 +196,86 @@ mutation_preflight() {
                 [[ -n "$conclusion" ]] && reason+=" // ${conclusion^^}"
             fi
 
-            token="$(jq -nc \
+            token="$(jq -c \
                 --arg repository "$repo" \
                 --arg runId "$run_id" \
-                --arg workflow "$workflow" \
-                --arg headSha "$head_sha" \
-                '{repository:$repository,runId:$runId,workflow:$workflow,headSha:$headSha}')"
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
 
             summary="CANCEL // $workflow // #$run_id // ${status^^}"
+            [[ -n "$head_branch" ]] && summary+=" // $head_branch"
+            [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    target:$target
+                }'
+            ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json actual_id
+            local workflow status conclusion head_branch head_sha token run_attempt
+            local allowed="true" reason="" summary=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun preflight requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun preflight requires run_id"
+
+            repo="$(repo_for "$repository_key")"
+            run_json="$(github_run_guard_record "$repo" "$run_id")"
+
+            actual_id="$(jq -r '.databaseId // ""' <<<"$run_json")"
+            [[ "$actual_id" == "$run_id" ]] \
+                || die "GitHub returned run $actual_id while guarding rerun $run_id"
+
+            workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
+            status="$(jq -r '.status // ""' <<<"$run_json")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+            head_branch="$(jq -r '.headBranch // ""' <<<"$run_json")"
+            head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+            run_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+            if [[ -z "$status" ]]; then
+                allowed="false"
+                reason="RUN STATUS IS UNKNOWN"
+            elif [[ "${status,,}" != "completed" ]]; then
+                allowed="false"
+                reason="RUN MUST BE COMPLETED BEFORE RERUN // STATUS ${status^^}"
+            fi
+
+            token="$(jq -c \
+                --arg repository "$repo" \
+                --arg runId "$run_id" \
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
+
+            summary="RERUN // $workflow // #$run_id // ATTEMPT $run_attempt"
+            [[ -n "$conclusion" ]] && summary+=" // ${conclusion^^}"
             [[ -n "$head_branch" ]] && summary+=" // $head_branch"
             [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
 
@@ -233,6 +305,7 @@ mutation_preflight() {
 mutation_verify() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
+    local preflight_token="${3:-}"
 
     [[ -n "$action_id" ]] || die "mutation action id required"
     [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
@@ -279,6 +352,69 @@ mutation_verify() {
             else
                 reason="RUN STILL ${status^^} AFTER CANCELLATION REQUEST"
                 summary="CANCEL VERIFY PENDING // $workflow // #$run_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json
+            local workflow="" status="" head_sha="" current_attempt=0
+            local original_attempt expected_workflow expected_head_sha
+            local summary="" reason="" passed="false"
+            local check
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun verification requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun verification requires run_id"
+            [[ -n "$preflight_token" ]] || die "github.run.rerun verification requires preflight token"
+
+            original_attempt="$(jq -r '.attempt // 0' <<<"$preflight_token")"
+            expected_workflow="$(jq -r '.workflow // ""' <<<"$preflight_token")"
+            expected_head_sha="$(jq -r '.headSha // ""' <<<"$preflight_token")"
+            repo="$(repo_for "$repository_key")"
+
+            for check in 1 2 3 4 5; do
+                run_json="$(github_run_guard_record "$repo" "$run_id")"
+                workflow="$(jq -r '.workflowName // ""' <<<"$run_json")"
+                status="$(jq -r '.status // ""' <<<"$run_json")"
+                head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+                current_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+                if [[ "$workflow" != "$expected_workflow"
+                        || "$head_sha" != "$expected_head_sha" ]]; then
+                    reason="RUN IDENTITY CHANGED DURING RERUN VERIFICATION"
+                    break
+                fi
+
+                if (( current_attempt > original_attempt )); then
+                    passed="true"
+                    summary="RERUN VERIFIED // $workflow // #$run_id // ATTEMPT $current_attempt // ${status^^}"
+                    break
+                fi
+
+                [[ "$check" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "$passed" != "true" && -z "$reason" ]]; then
+                reason="RUN ATTEMPT DID NOT ADVANCE // STILL $current_attempt"
+                summary="RERUN VERIFY FAILED // $workflow // #$run_id"
             fi
 
             jq -n \
@@ -1582,7 +1718,7 @@ Usage:
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
   px mutation-preflight <action-id> <arguments-json>
-  px mutation-verify <action-id> <arguments-json>
+  px mutation-verify <action-id> <arguments-json> [preflight-token]
   px run <repo> <workflow> [ref]
   px watch <repo> <run-id>
   px rerun <repo> <run-id>

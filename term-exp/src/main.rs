@@ -1123,6 +1123,7 @@ fn px_guard_verification(
     model: &Model,
     action: &Action,
     values: &[String],
+    preflight_token: &str,
 ) -> Result<serde_json::Value, String> {
     resolver::load_choice_json(
         &model.px_path,
@@ -1130,6 +1131,7 @@ fn px_guard_verification(
             "mutation-verify".to_owned(),
             action.id.clone(),
             mutation_arguments_json(action, values),
+            preflight_token.to_owned(),
         ],
         "PX mutation verification",
     )
@@ -1394,7 +1396,12 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
     }
 
     if mutation_uses_px_guard(action) {
-        let verification = match px_guard_verification(model, action, &app.prompt_values) {
+        let verification = match px_guard_verification(
+            model,
+            action,
+            &app.prompt_values,
+            &app.mutation_preflight_token,
+        ) {
             Ok(value) => value,
             Err(error) => {
                 let verification = serde_json::json!({"error": error});

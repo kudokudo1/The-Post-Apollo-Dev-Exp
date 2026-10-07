@@ -85,12 +85,15 @@ Mutation handling is deliberately staged:
   HEAD, base, and base HEAD to match the frozen selection exactly, then asks
   for the explicit word `REMOTE` before calling the already-guarded
   `px integrate` contract;
-- GitHub workflow-run cancellation is the first `px-guarded` GitHub remote
-  action: PX preflights the exact run, TERM EXP freezes PX's target token,
-  revalidates it immediately before execution, requires `REMOTE`, journals
-  the cancellation request, and then asks PX to verify that the run reached
-  `completed/cancelled`;
-- other GitHub remote actions such as dispatch, rerun, workflow creation, and
+- GitHub workflow-run cancellation is `px-guarded`: PX preflights the exact
+  active run, TERM EXP freezes PX's target token, revalidates it immediately
+  before execution, requires `REMOTE`, journals the cancellation request,
+  and then asks PX to verify that the run reached `completed/cancelled`;
+- GitHub workflow rerun is also `px-guarded`, but only for a completed run:
+  PX freezes the run identity plus its current attempt number, TERM EXP
+  revalidates that exact attempt before execution, and post-op verification
+  requires the same run to advance to a higher attempt;
+- other GitHub remote actions such as workflow dispatch, workflow creation, and
   workflow deletion remain preview-only until their own PX guard and
   verification contracts are certified;
 - after guarded remote execution, TERM EXP reports execution success separately

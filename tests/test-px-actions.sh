@@ -74,23 +74,23 @@ recovery_contract="$(jq -c '
 
 guarded_remote_contract="$(jq -c '
   {
-    guarded: [
+    ids: (
+      [
+        .actions[]
+        | select((.executionPolicy // "") == "px-guarded")
+        | .id
+      ]
+      | sort
+    ),
+    invalid: [
       .actions[]
       | select((.executionPolicy // "") == "px-guarded")
-      | {id, mutation, recovery}
-    ],
-    cancel: (
-      .actions[]
-      | select(.id == "github.run.cancel")
-      | {
-          policy: (.executionPolicy // ""),
-          mutation,
-          recovery
-        }
-    )
+      | select(.mutation != "remote" or .recovery != "EVIDENCE_ONLY")
+      | .id
+    ]
   }
 ' <<<"$registry")"
-[[ "$guarded_remote_contract" == '{"guarded":[{"id":"github.run.cancel","mutation":"remote","recovery":"EVIDENCE_ONLY"}],"cancel":{"policy":"px-guarded","mutation":"remote","recovery":"EVIDENCE_ONLY"}}' ]]
+[[ "$guarded_remote_contract" == '{"ids":["github.run.cancel","github.run.rerun"],"invalid":[]}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]

@@ -552,7 +552,8 @@
         "rerun",
         "retry"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "github.run.cancel",
