@@ -48,6 +48,9 @@ jq -e '
   and any(.actions[]; .id == "ai.quick.pause")
   and any(.actions[]; .id == "px.tool.resolve")
   and any(.actions[]; .id == "px.term.open")
+  and any(.actions[]; .id == "px.operations.list")
+  and any(.actions[]; .id == "px.operation.view")
+  and any(.actions[]; .id == "px.operation.recovery")
 ' <<<"$registry" >/dev/null
 
 

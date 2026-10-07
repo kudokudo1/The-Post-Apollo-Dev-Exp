@@ -148,6 +148,54 @@ Inspect Workflow Run
 
 No repository alias or run ID has to be remembered.
 
+## Durable operation journal
+
+Mutation history belongs to PX, not to TERM EXP. Before an executable mutation
+runs, TERM EXP asks PX to create a durable RUNNING operation record. If that
+record cannot be created, execution is refused.
+
+The record preserves:
+
+- semantic action ID and mutation/recovery classes;
+- the exact frozen PX command shown during confirmation;
+- named argument values;
+- available preflight/arming evidence;
+- execution exit status and bounded stdout/stderr evidence;
+- post-operation verification status/evidence where a domain provides it;
+- COMPLETE or FAILED lifecycle state.
+
+Read-side journal actions are normal semantic PX actions, so TERM EXP can list,
+inspect, and show recovery facts without requiring operation IDs to be
+memorized.
+
+Recovery classes describe guarantees, not wishes:
+
+- `NONE` — no recovery operation is declared;
+- `EVIDENCE_ONLY` — durable evidence exists, but automatic undo is not promised;
+- `REF_RECOVERABLE` — reserved for operations that can prove reference-level
+  recovery;
+- `CONTENT_RECOVERABLE` — reserved for operations that can prove content-level
+  recovery.
+
+Even a recoverable class does not make an executor magically available. PX
+recovery facts explicitly report `automaticRecoveryAvailable: false` until an
+operation-specific recovery implementation is registered and certified.
+
+```text
+confirm frozen target
+        |
+        v
+PX operation START (RUNNING)
+        |
+        v
+execute mutation
+        |
+        +--> optional domain verification
+        |
+        v
+PX operation FINISH (COMPLETE / FAILED)
+```
+
 ## Architecture
 
 ```text

@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import uuid
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+MUTATIONS = {"local", "remote", "external"}
+RECOVERY_CLASSES = {
+    "NONE",
+    "EVIDENCE_ONLY",
+    "REF_RECOVERABLE",
+    "CONTENT_RECOVERABLE",
+}
+FINISH_STATUSES = {"COMPLETE", "FAILED"}
+VERIFICATION_STATUSES = {
+    "NOT_RUN",
+    "PASSED",
+    "FAILED",
+    "UNAVAILABLE",
+}
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS operations (
+    operation_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    mutation TEXT NOT NULL,
+    recovery TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'RUNNING',
+    command_json TEXT NOT NULL,
+    arguments_json TEXT NOT NULL DEFAULT '{}',
+    before_json TEXT NOT NULL DEFAULT '{}',
+    after_json TEXT NOT NULL DEFAULT '{}',
+    exit_code INTEGER,
+    verification_status TEXT NOT NULL DEFAULT 'NOT_RUN',
+    verification_json TEXT NOT NULL DEFAULT '{}',
+    result_summary TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    CHECK(mutation IN ('local', 'remote', 'external')),
+    CHECK(recovery IN ('NONE', 'EVIDENCE_ONLY', 'REF_RECOVERABLE', 'CONTENT_RECOVERABLE')),
+    CHECK(status IN ('RUNNING', 'COMPLETE', 'FAILED')),
+    CHECK(verification_status IN ('NOT_RUN', 'PASSED', 'FAILED', 'UNAVAILABLE'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_operations_started
+    ON operations(started_at DESC, operation_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_operations_status
+    ON operations(status, started_at DESC);
+"""
+
+
+def operation_db_path() -> Path:
+    override = os.environ.get("PX_OPERATION_DB", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "post-apollo" / "operations" / "operations.db"
+
+
+def connect() -> sqlite3.Connection:
+    path = operation_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.executescript(SCHEMA)
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(SCHEMA_VERSION),),
+    )
+    conn.commit()
+    return conn
+
+
+def parse_json_text(value: str, label: str, expected=None):
+    text = str(value or "").strip()
+    if not text:
+        parsed = {} if expected is dict else [] if expected is list else {}
+    else:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{label} is invalid JSON: {exc}") from exc
+
+    if expected is not None and not isinstance(parsed, expected):
+        raise RuntimeError(f"{label} must be a JSON {expected.__name__}")
+    return parsed
+
+
+def normalize_record(row: sqlite3.Row) -> dict:
+    def decoded(column: str):
+        try:
+            return json.loads(str(row[column] or "{}"))
+        except json.JSONDecodeError:
+            return {}
+
+    return {
+        "id": str(row["operation_id"]),
+        "actionId": str(row["action_id"]),
+        "title": str(row["title"] or ""),
+        "mutation": str(row["mutation"]),
+        "recovery": str(row["recovery"]),
+        "status": str(row["status"]),
+        "command": decoded("command_json"),
+        "arguments": decoded("arguments_json"),
+        "before": decoded("before_json"),
+        "after": decoded("after_json"),
+        "exitCode": row["exit_code"],
+        "verificationStatus": str(row["verification_status"] or "NOT_RUN"),
+        "verification": decoded("verification_json"),
+        "resultSummary": str(row["result_summary"] or ""),
+        "startedAt": str(row["started_at"] or ""),
+        "completedAt": str(row["completed_at"] or ""),
+    }
+
+
+def get_record(conn: sqlite3.Connection, operation_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM operations WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"unknown PX operation: {operation_id}")
+    return normalize_record(row)
+
+
+def start_operation(conn: sqlite3.Connection, args) -> dict:
+    mutation = str(args.mutation or "").strip().lower()
+    recovery = str(args.recovery or "").strip().upper()
+
+    if mutation not in MUTATIONS:
+        raise RuntimeError(f"invalid mutation class: {mutation}")
+    if recovery not in RECOVERY_CLASSES:
+        raise RuntimeError(f"invalid recovery class: {recovery}")
+
+    command = parse_json_text(args.command_json, "command", list)
+    arguments = parse_json_text(args.arguments_json, "arguments", dict)
+    before = parse_json_text(args.before_json, "before evidence")
+
+    if not command or not all(isinstance(value, str) for value in command):
+        raise RuntimeError("command must be a non-empty JSON string array")
+
+    operation_id = "op-" + uuid.uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO operations(
+            operation_id, action_id, title, mutation, recovery,
+            command_json, arguments_json, before_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            operation_id,
+            str(args.action_id or "").strip(),
+            str(args.title or "").strip(),
+            mutation,
+            recovery,
+            json.dumps(command, separators=(",", ":")),
+            json.dumps(arguments, separators=(",", ":"), sort_keys=True),
+            json.dumps(before, separators=(",", ":"), sort_keys=True),
+        ),
+    )
+    conn.commit()
+    return get_record(conn, operation_id)
+
+
+def finish_operation(conn: sqlite3.Connection, args) -> dict:
+    operation_id = str(args.operation_id or "").strip()
+    status = str(args.status or "").strip().upper()
+    verification_status = str(args.verification_status or "NOT_RUN").strip().upper()
+
+    if status not in FINISH_STATUSES:
+        raise RuntimeError(f"invalid operation finish status: {status}")
+    if verification_status not in VERIFICATION_STATUSES:
+        raise RuntimeError(f"invalid verification status: {verification_status}")
+
+    current = get_record(conn, operation_id)
+    if current["status"] != "RUNNING":
+        raise RuntimeError(
+            f"PX operation {operation_id} is already {current['status']}"
+        )
+
+    after = parse_json_text(args.after_json, "after evidence")
+    verification = parse_json_text(args.verification_json, "verification evidence")
+
+    conn.execute(
+        """
+        UPDATE operations
+        SET status = ?,
+            exit_code = ?,
+            after_json = ?,
+            verification_status = ?,
+            verification_json = ?,
+            result_summary = ?,
+            completed_at = CURRENT_TIMESTAMP
+        WHERE operation_id = ?
+        """,
+        (
+            status,
+            args.exit_code,
+            json.dumps(after, separators=(",", ":"), sort_keys=True),
+            verification_status,
+            json.dumps(verification, separators=(",", ":"), sort_keys=True),
+            str(args.result_summary or "")[:8192],
+            operation_id,
+        ),
+    )
+    conn.commit()
+    return get_record(conn, operation_id)
+
+
+def list_operations(conn: sqlite3.Connection, args) -> list:
+    limit = int(args.limit)
+    if limit < 1 or limit > 1000:
+        raise RuntimeError("operation limit must be between 1 and 1000")
+
+    status = str(args.status or "").strip().upper()
+    if status and status not in {"RUNNING", "COMPLETE", "FAILED"}:
+        raise RuntimeError(f"invalid operation status filter: {status}")
+
+    if status:
+        rows = conn.execute(
+            """
+            SELECT * FROM operations
+            WHERE status = ?
+            ORDER BY started_at DESC, operation_id DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM operations
+            ORDER BY started_at DESC, operation_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [normalize_record(row) for row in rows]
+
+
+def recovery_payload(record: dict) -> dict:
+    recovery = str(record.get("recovery") or "NONE")
+    base = {
+        "operationId": record["id"],
+        "actionId": record["actionId"],
+        "status": record["status"],
+        "recovery": recovery,
+        "automaticRecoveryAvailable": False,
+    }
+
+    if recovery == "NONE":
+        return {
+            **base,
+            "strategy": "NONE",
+            "reason": "this action declares no recovery operation",
+        }
+    if recovery == "EVIDENCE_ONLY":
+        return {
+            **base,
+            "strategy": "EVIDENCE_ONLY",
+            "reason": "operation evidence is durable; automatic undo is not promised",
+        }
+
+    return {
+        **base,
+        "strategy": recovery,
+        "reason": (
+            "the action declares a recoverable class, but no PX recovery "
+            "executor is registered for this operation"
+        ),
+    }
+
+
+def emit(payload, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    if isinstance(payload, list):
+        for row in payload:
+            print(
+                f"{row['id']}\t{row['status']}\t{row['mutation']}\t"
+                f"{row['actionId']}\t{row['startedAt']}"
+            )
+        return
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            print(f"{key}: {value}")
+        return
+
+    print(payload)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="px operation",
+        description="Post-Apollo durable PX operation journal",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    start = sub.add_parser("start")
+    start.add_argument("--action-id", required=True)
+    start.add_argument("--title", default="")
+    start.add_argument("--mutation", required=True, choices=sorted(MUTATIONS))
+    start.add_argument("--recovery", required=True, choices=sorted(RECOVERY_CLASSES))
+    start.add_argument("--command-json", required=True)
+    start.add_argument("--arguments-json", default="{}")
+    start.add_argument("--before-json", default="{}")
+    start.add_argument("--json", action="store_true")
+
+    finish = sub.add_parser("finish")
+    finish.add_argument("operation_id")
+    finish.add_argument("--status", required=True, choices=sorted(FINISH_STATUSES))
+    finish.add_argument("--exit-code", type=int)
+    finish.add_argument(
+        "--verification-status",
+        default="NOT_RUN",
+        choices=sorted(VERIFICATION_STATUSES),
+    )
+    finish.add_argument("--after-json", default="{}")
+    finish.add_argument("--verification-json", default="{}")
+    finish.add_argument("--result-summary", default="")
+    finish.add_argument("--json", action="store_true")
+
+    get = sub.add_parser("get")
+    get.add_argument("operation_id")
+    get.add_argument("--json", action="store_true")
+
+    listing = sub.add_parser("list")
+    listing.add_argument("--limit", type=int, default=50)
+    listing.add_argument("--status", default="")
+    listing.add_argument("--json", action="store_true")
+
+    recovery = sub.add_parser("recovery")
+    recovery.add_argument("operation_id")
+    recovery.add_argument("--json", action="store_true")
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    try:
+        with connect() as conn:
+            if args.command == "start":
+                payload = start_operation(conn, args)
+            elif args.command == "finish":
+                payload = finish_operation(conn, args)
+            elif args.command == "get":
+                payload = get_record(conn, args.operation_id)
+            elif args.command == "list":
+                payload = list_operations(conn, args)
+            elif args.command == "recovery":
+                payload = recovery_payload(get_record(conn, args.operation_id))
+            else:
+                raise RuntimeError(f"unknown operation command: {args.command}")
+
+        emit(payload, getattr(args, "json", False))
+        return 0
+    except (RuntimeError, sqlite3.Error, OSError) as exc:
+        print(f"px operation: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

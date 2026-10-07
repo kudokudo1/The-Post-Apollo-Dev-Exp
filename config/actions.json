@@ -132,6 +132,92 @@
       "recovery": "NONE"
     },
     {
+      "id": "px.operations.list",
+      "title": "List PX Operations",
+      "category": "PX",
+      "summary": "List recent durable mutation journal records captured by PX.",
+      "command": [
+        "operations",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "recovery": "NONE",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "operation",
+        "operations",
+        "journal",
+        "history",
+        "mutation",
+        "evidence"
+      ]
+    },
+    {
+      "id": "px.operation.view",
+      "title": "Inspect PX Operation",
+      "category": "PX",
+      "summary": "Inspect one durable PX operation record and its execution evidence.",
+      "command": [
+        "operation",
+        "get",
+        "{operation_id}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "operation_id",
+          "required": true,
+          "kind": "operation"
+        }
+      ],
+      "mutation": "read",
+      "recovery": "NONE",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "operation",
+        "journal",
+        "inspect",
+        "history",
+        "evidence"
+      ]
+    },
+    {
+      "id": "px.operation.recovery",
+      "title": "PX Operation Recovery Facts",
+      "category": "PX",
+      "summary": "Show the declared recovery class and whether automatic recovery is available.",
+      "command": [
+        "operation",
+        "recovery",
+        "{operation_id}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "operation_id",
+          "required": true,
+          "kind": "operation"
+        }
+      ],
+      "mutation": "read",
+      "recovery": "NONE",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "operation",
+        "recovery",
+        "undo",
+        "journal",
+        "evidence"
+      ]
+    },
+    {
       "id": "github.workflows.list",
       "title": "List Workflows",
       "category": "GitHub",

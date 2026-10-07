@@ -1,4 +1,5 @@
 mod app;
+mod journal;
 mod resolver;
 
 use app::{ActionChoiceItem, App, Mode, SearchScope};
@@ -800,6 +801,7 @@ fn known_value_choices(
         }
         "workflow_template" => resolver::workflow_template_choices(&model.px_path).map(Some),
         "command" => resolver::command_choices(&model.px_path).map(Some),
+        "operation" => resolver::operation_choices(&model.px_path).map(Some),
         "branch" | "ref" => {
             let repository =
                 repository.ok_or_else(|| "select a repository first".to_owned())?;
@@ -1028,6 +1030,27 @@ fn prepare_mutation_preview(app: &mut App, action: &Action, values: &[String]) {
     }
 }
 
+fn mutation_argument_pairs(action: &Action, values: &[String]) -> Vec<(String, String)> {
+    action
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            (
+                argument.name.clone(),
+                values.get(index).cloned().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+fn journal_warning(result: Result<(), String>) -> String {
+    match result {
+        Ok(()) => String::new(),
+        Err(error) => format!("\n\nJOURNAL WARNING\n{error}"),
+    }
+}
+
 fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
     if !mutation_execution_enabled(action) {
         app.mode = Mode::MutationPreview;
@@ -1044,30 +1067,77 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         return;
     }
 
+    let argument_pairs = mutation_argument_pairs(action, &app.prompt_values);
+    let operation_id = match journal::start(
+        &model.px_path,
+        &action.id,
+        &action.title,
+        &action.mutation,
+        &action.recovery,
+        &app.mutation_args,
+        &argument_pairs,
+        app.mutation_armed,
+        &app.mutation_preflight,
+    ) {
+        Ok(operation_id) => operation_id,
+        Err(error) => {
+            app.mode = Mode::MutationPreview;
+            app.status = Some(format!(
+                "EXECUTION REFUSED // PX operation journal could not start // {error}"
+            ));
+            return;
+        }
+    };
+
     let output = match Command::new(&model.px_path)
         .args(&app.mutation_args)
         .output()
     {
         Ok(output) => output,
         Err(error) => {
+            let after = serde_json::json!({"launchError": error.to_string()});
+            let warning = journal_warning(journal::finish(
+                &model.px_path,
+                &operation_id,
+                "FAILED",
+                None,
+                "NOT_RUN",
+                &after,
+                &serde_json::json!({}),
+                &format!("mutation launch failed: {error}"),
+            ));
             app.open_output(
                 format!("{} // ERROR", action.title),
-                format!("could not launch PX mutation: {error}"),
+                format!(
+                    "OPERATION {operation_id}\n\nEXECUTION\ncould not launch PX mutation: {error}{warning}"
+                ),
             );
             return;
         }
     };
 
     let execution_success = output.status.success();
+    let execution_exit = output.status.code();
+    let execution_evidence = journal::output_evidence(&output.stdout, &output.stderr);
     let mut text = display_output(&output.stdout, &output.stderr);
 
     if !execution_success {
-        let code = output
-            .status
-            .code()
+        let code = execution_exit
             .map(|value| value.to_string())
             .unwrap_or_else(|| "signal".to_owned());
-        text = format!("EXECUTION\nEXIT {code}\n\n{text}");
+        let warning = journal_warning(journal::finish(
+            &model.px_path,
+            &operation_id,
+            "FAILED",
+            execution_exit,
+            "NOT_RUN",
+            &execution_evidence,
+            &serde_json::json!({}),
+            &format!("mutation failed with exit {code}"),
+        ));
+        text = format!(
+            "OPERATION {operation_id}\n\nEXECUTION\nEXIT {code}\n\n{text}{warning}"
+        );
         app.open_output(
             format!("{} // {} // FAILED", action.title, action.mutation.to_uppercase()),
             text,
@@ -1079,8 +1149,19 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         let verify_args = match hospital_integration_verify_args(action, &app.prompt_values) {
             Ok(args) => args,
             Err(error) => {
+                let verification = serde_json::json!({"error": error});
+                let warning = journal_warning(journal::finish(
+                    &model.px_path,
+                    &operation_id,
+                    "COMPLETE",
+                    execution_exit,
+                    "UNAVAILABLE",
+                    &execution_evidence,
+                    &verification,
+                    "mutation succeeded; post-op verification arguments were unavailable",
+                ));
                 text = format!(
-                    "EXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}"
+                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nNOT STARTED // {error}{warning}"
                 );
                 app.open_output(
                     format!("{} // REMOTE // VERIFY FAILED", action.title),
@@ -1093,8 +1174,19 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         let verify = match Command::new(&model.px_path).args(&verify_args).output() {
             Ok(output) => output,
             Err(error) => {
+                let verification = serde_json::json!({"launchError": error.to_string()});
+                let warning = journal_warning(journal::finish(
+                    &model.px_path,
+                    &operation_id,
+                    "COMPLETE",
+                    execution_exit,
+                    "UNAVAILABLE",
+                    &execution_evidence,
+                    &verification,
+                    "mutation succeeded; post-op verification could not launch",
+                ));
                 text = format!(
-                    "EXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}"
+                    "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}{warning}"
                 );
                 app.open_output(
                     format!("{} // REMOTE // VERIFY FAILED", action.title),
@@ -1103,6 +1195,9 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 return;
             }
         };
+
+        let verification_evidence =
+            journal::output_evidence(&verify.stdout, &verify.stderr);
         let mut verify_text = display_output(&verify.stdout, &verify.stderr);
 
         if !verify.status.success() {
@@ -1111,8 +1206,20 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 .code()
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "signal".to_owned());
+            let warning = journal_warning(journal::finish(
+                &model.px_path,
+                &operation_id,
+                "COMPLETE",
+                execution_exit,
+                "FAILED",
+                &execution_evidence,
+                &verification_evidence,
+                &format!("mutation succeeded; post-op verification failed with exit {code}"),
+            ));
             verify_text = format!("EXIT {code}\n\n{verify_text}");
-            text = format!("EXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}");
+            text = format!(
+                "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
+            );
             app.open_output(
                 format!("{} // REMOTE // VERIFY FAILED", action.title),
                 text,
@@ -1120,7 +1227,19 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             return;
         }
 
-        text = format!("EXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}");
+        let warning = journal_warning(journal::finish(
+            &model.px_path,
+            &operation_id,
+            "COMPLETE",
+            execution_exit,
+            "PASSED",
+            &execution_evidence,
+            &verification_evidence,
+            "mutation and post-op verification succeeded",
+        ));
+        text = format!(
+            "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
+        );
         app.open_output(
             format!("{} // REMOTE // VERIFIED", action.title),
             text,
@@ -1128,9 +1247,19 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
         return;
     }
 
+    let warning = journal_warning(journal::finish(
+        &model.px_path,
+        &operation_id,
+        "COMPLETE",
+        execution_exit,
+        "NOT_RUN",
+        &execution_evidence,
+        &serde_json::json!({}),
+        "mutation completed successfully",
+    ));
     app.open_output(
         format!("{} // {}", action.title, action.mutation.to_uppercase()),
-        text,
+        format!("OPERATION {operation_id}\n\n{text}{warning}"),
     );
 }
 
