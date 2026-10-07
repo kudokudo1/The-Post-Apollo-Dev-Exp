@@ -45,6 +45,8 @@ pub struct App {
 
     pub mutation_args: Vec<String>,
     pub mutation_confirm_buffer: String,
+    pub mutation_armed: bool,
+    pub mutation_preflight: String,
 
     pub output_title: String,
     pub output_text: String,
@@ -73,6 +75,8 @@ impl App {
 
             mutation_args: Vec::new(),
             mutation_confirm_buffer: String::new(),
+            mutation_armed: false,
+            mutation_preflight: String::new(),
 
             output_title: String::new(),
             output_text: String::new(),
@@ -124,6 +128,8 @@ impl App {
         self.choice_query.clear();
         self.mutation_args.clear();
         self.mutation_confirm_buffer.clear();
+        self.mutation_armed = false;
+        self.mutation_preflight.clear();
     }
 
     pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
@@ -136,6 +142,8 @@ impl App {
         self.choice_query.clear();
         self.mutation_args.clear();
         self.mutation_confirm_buffer.clear();
+        self.mutation_armed = false;
+        self.mutation_preflight.clear();
         self.status = None;
     }
 
@@ -160,6 +168,14 @@ impl App {
     pub fn open_mutation_preview(&mut self, args: Vec<String>) {
         self.mode = Mode::MutationPreview;
         self.mutation_args = args;
+        self.mutation_confirm_buffer.clear();
+        self.mutation_armed = false;
+        self.mutation_preflight.clear();
+        self.status = None;
+    }
+
+    pub fn return_to_mutation_preview(&mut self) {
+        self.mode = Mode::MutationPreview;
         self.mutation_confirm_buffer.clear();
         self.status = None;
     }
@@ -191,6 +207,8 @@ impl App {
         self.choice_query.clear();
         self.mutation_args.clear();
         self.mutation_confirm_buffer.clear();
+        self.mutation_armed = false;
+        self.mutation_preflight.clear();
         self.output_title.clear();
         self.output_text.clear();
         self.output_scroll = 0;
