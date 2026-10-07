@@ -182,6 +182,23 @@ struct CommitRecord {
     date: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ToolChoiceRegistry {
+    #[serde(default)]
+    tools: Vec<ToolChoiceRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolChoiceRecord {
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    backend: String,
+    #[serde(default)]
+    environment: String,
+}
+
 pub(crate) fn repository_registry(px_path: &Path) -> Result<RepositoryRegistry, String> {
     load_choice_json(
         px_path,
@@ -735,3 +752,45 @@ pub(crate) fn commit_choices(
         .collect())
 }
 
+
+pub(crate) fn command_choices(px_path: &Path) -> Result<Vec<ActionChoiceItem>, String> {
+    let registry: ToolChoiceRegistry = load_choice_json(
+        px_path,
+        &["tools".to_owned(), "--json".to_owned()],
+        "tool registry",
+    )?;
+    let mut by_name = std::collections::BTreeMap::<String, ToolChoiceRecord>::new();
+
+    for tool in registry.tools {
+        let rank = |backend: &str| match backend {
+            "native" => 0,
+            "toolbox" => 1,
+            "distrobox" => 2,
+            _ => 9,
+        };
+
+        match by_name.get(&tool.name) {
+            Some(current) if rank(&current.backend) <= rank(&tool.backend) => {}
+            _ => {
+                by_name.insert(tool.name.clone(), tool);
+            }
+        }
+    }
+
+    Ok(by_name
+        .into_values()
+        .map(|tool| {
+            let detail = [tool.backend, tool.environment, tool.path]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("  ");
+
+            ActionChoiceItem {
+                value: tool.name.clone(),
+                label: tool.name,
+                detail,
+            }
+        })
+        .collect())
+}
