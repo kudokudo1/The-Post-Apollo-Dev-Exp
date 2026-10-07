@@ -152,4 +152,94 @@ assert session["status"] == "FAILED", session
 assert "different session id" in session["lastError"], session
 PY
 
+
+cat > "$TMP/providers.json" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "legacy": {
+      "name": "LEGACY HERMES",
+      "command": "python3",
+      "dialect": "hermes-auto",
+      "startArgs": [
+        "$ROOT/tests/fixtures/mock-hermes-legacy.py",
+        "chat"
+      ],
+      "resumeArgs": [
+        "$ROOT/tests/fixtures/mock-hermes-legacy.py",
+        "chat"
+      ]
+    }
+  }
+}
+EOF
+
+LEGACY_BED="$TMP/t7-bed"
+mkdir -p "$LEGACY_BED"
+
+"$ROOT/bin/px" hospital room-bind T7 \
+    --repository kudokudo1/taskbars-post-apollo \
+    --patient-id patient-taskbars \
+    --patient-label TASKBARS \
+    --team T7 \
+    --branch feature/legacy-hermes \
+    --bed-path "$LEGACY_BED" \
+    --doctor-id doctor-t7 \
+    --json >/dev/null
+
+legacy_created_json="$("$ROOT/bin/px" agent session-create \
+    --room-id T7 \
+    --doctor-id doctor-t7 \
+    --provider-id legacy \
+    --working-directory "$LEGACY_BED" \
+    --session-id session-t7-legacy \
+    --json)"
+
+legacy_one_json="$(printf '%s\n' '{"prompt":"legacy first"}' | \
+    "$ROOT/bin/px" agent turn session-t7-legacy \
+        --prompt-json-stdin \
+        --timeout 30 \
+        --json)"
+
+legacy_two_json="$(printf '%s\n' '{"prompt":"legacy second"}' | \
+    "$ROOT/bin/px" agent turn session-t7-legacy \
+        --prompt-json-stdin \
+        --timeout 30 \
+        --json)"
+
+legacy_session_json="$("$ROOT/bin/px" hospital session session-t7-legacy --json)"
+legacy_messages_json="$("$ROOT/bin/px" hospital messages T7 --limit 100 --json)"
+
+python3 - \
+    "$legacy_created_json" \
+    "$legacy_one_json" \
+    "$legacy_two_json" \
+    "$legacy_session_json" \
+    "$legacy_messages_json" <<'PY'
+import json
+import sys
+
+created = json.loads(sys.argv[1])
+turn_one = json.loads(sys.argv[2])
+turn_two = json.loads(sys.argv[3])
+session = json.loads(sys.argv[4])
+messages = json.loads(sys.argv[5])
+
+assert created["providerId"] == "legacy", created
+assert turn_one["assistant"] == "LEGACY: legacy first", turn_one
+assert turn_one["providerSessionId"] == "legacy-provider-session", turn_one
+assert turn_two["assistant"] == "LEGACY: legacy second", turn_two
+assert turn_two["providerSessionId"] == "legacy-provider-session", turn_two
+assert session["providerSessionId"] == "legacy-provider-session", session
+assert session["status"] == "WAITING", session
+assert [row["body"] for row in messages] == [
+    "legacy first",
+    "LEGACY: legacy first",
+    "legacy second",
+    "LEGACY: legacy second",
+], messages
+PY
+
+printf 'hospital legacy Hermes compatibility: PASS\n'
+
 printf 'hospital agent runtime: PASS\n'
