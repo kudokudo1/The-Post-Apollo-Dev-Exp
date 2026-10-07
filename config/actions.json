@@ -1076,6 +1076,11 @@
             "push",
             "manual+push"
           ]
+        },
+        {
+          "name": "script_path",
+          "required": false,
+          "kind": "path"
         }
       ],
       "mutation": "remote",
@@ -1091,7 +1096,8 @@
         "github",
         "actions"
       ],
-      "recovery": "EVIDENCE_ONLY"
+      "recovery": "EVIDENCE_ONLY",
+      "executionPolicy": "px-guarded"
     },
     {
       "id": "workflow.delete",
