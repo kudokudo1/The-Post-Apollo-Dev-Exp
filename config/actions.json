@@ -1,0 +1,996 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "id": "px.repositories.list",
+      "title": "List Repositories",
+      "category": "PX",
+      "summary": "List repository aliases known to the PX control plane.",
+      "command": [
+        "repos"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [],
+      "keywords": [
+        "repos",
+        "repositories",
+        "registry",
+        "projects"
+      ]
+    },
+    {
+      "id": "px.doctor",
+      "title": "PX Doctor",
+      "category": "PX",
+      "summary": "Check the PX repository registry and GitHub authentication.",
+      "command": [
+        "doctor"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "awk"
+      ],
+      "keywords": [
+        "doctor",
+        "health",
+        "diagnostics",
+        "github"
+      ]
+    },
+    {
+      "id": "github.workflows.list",
+      "title": "List Workflows",
+      "category": "GitHub",
+      "summary": "List GitHub Actions workflows for a repository.",
+      "command": [
+        "workflows",
+        "{repository}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "workflows",
+        "ci"
+      ]
+    },
+    {
+      "id": "github.runs.list",
+      "title": "List Workflow Runs",
+      "category": "GitHub",
+      "summary": "List recent GitHub Actions runs, optionally for an exact commit SHA.",
+      "command": [
+        "runs",
+        "{repository}",
+        "{limit?}",
+        "{sha?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "kind": "integer"
+        },
+        {
+          "name": "sha",
+          "required": false,
+          "kind": "commit"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "runs",
+        "ci",
+        "sha"
+      ]
+    },
+    {
+      "id": "github.run.inspect",
+      "title": "Inspect Workflow Run",
+      "category": "GitHub",
+      "summary": "Read normalized metadata, jobs, and exact execution identity for one workflow run.",
+      "command": [
+        "inspect",
+        "{repository}",
+        "{run_id}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "run_id",
+          "required": true,
+          "kind": "run"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "inspect",
+        "jobs",
+        "evidence"
+      ]
+    },
+    {
+      "id": "github.run.logs",
+      "title": "Workflow Run Logs",
+      "category": "GitHub",
+      "summary": "Read logs for one GitHub Actions workflow run.",
+      "command": [
+        "logs",
+        "{repository}",
+        "{run_id}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "run_id",
+          "required": true,
+          "kind": "run"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "logs",
+        "ci"
+      ]
+    },
+    {
+      "id": "github.workflow.run",
+      "title": "Run Workflow",
+      "category": "GitHub",
+      "summary": "Dispatch a GitHub Actions workflow on the default branch or an explicit ref.",
+      "command": [
+        "run",
+        "{repository}",
+        "{workflow}",
+        "{ref?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "workflow",
+          "required": true,
+          "kind": "workflow"
+        },
+        {
+          "name": "ref",
+          "required": false,
+          "kind": "ref"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "run",
+        "dispatch",
+        "workflow"
+      ]
+    },
+    {
+      "id": "github.run.watch",
+      "title": "Watch Workflow Run",
+      "category": "GitHub",
+      "summary": "Watch a GitHub Actions run until completion.",
+      "command": [
+        "watch",
+        "{repository}",
+        "{run_id}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "run_id",
+          "required": true,
+          "kind": "run"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "watch",
+        "run",
+        "ci"
+      ]
+    },
+    {
+      "id": "github.run.rerun",
+      "title": "Rerun Workflow",
+      "category": "GitHub",
+      "summary": "Request another attempt of an existing GitHub Actions run.",
+      "command": [
+        "rerun",
+        "{repository}",
+        "{run_id}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "run_id",
+          "required": true,
+          "kind": "run"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "rerun",
+        "retry"
+      ]
+    },
+    {
+      "id": "github.run.cancel",
+      "title": "Cancel Workflow Run",
+      "category": "GitHub",
+      "summary": "Cancel an in-progress GitHub Actions run.",
+      "command": [
+        "cancel",
+        "{repository}",
+        "{run_id}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "run_id",
+          "required": true,
+          "kind": "run"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "github",
+        "actions",
+        "cancel",
+        "stop"
+      ]
+    },
+    {
+      "id": "repository.audit",
+      "title": "Audit Repository",
+      "category": "Hospital",
+      "summary": "Collect repository, workflow, run, and operating-room evidence for a patient repository.",
+      "command": [
+        "audit",
+        "{repository}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "audit",
+        "repository",
+        "rooms",
+        "evidence"
+      ]
+    },
+    {
+      "id": "hospital.room.status",
+      "title": "Room Status",
+      "category": "Hospital",
+      "summary": "Inspect one Hospital operating room against the repository baseline.",
+      "command": [
+        "room",
+        "{repository}",
+        "{team}",
+        "status"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "status",
+        "branch",
+        "evidence"
+      ]
+    },
+    {
+      "id": "hospital.room.diff",
+      "title": "Room Diff",
+      "category": "Hospital",
+      "summary": "Read changed-file evidence for one Hospital operating room.",
+      "command": [
+        "room",
+        "{repository}",
+        "{team}",
+        "diff"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "diff",
+        "files",
+        "evidence"
+      ]
+    },
+    {
+      "id": "hospital.room.log",
+      "title": "Room Log",
+      "category": "Hospital",
+      "summary": "Read recent commits for one Hospital operating room.",
+      "command": [
+        "room",
+        "{repository}",
+        "{team}",
+        "log"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "log",
+        "commits"
+      ]
+    },
+    {
+      "id": "hospital.room.prepare",
+      "title": "Prepare Room",
+      "category": "Hospital",
+      "summary": "Build certification preparation evidence for an operating room.",
+      "command": [
+        "room",
+        "{repository}",
+        "{team}",
+        "prepare"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "room",
+        "prepare",
+        "certification",
+        "evidence"
+      ]
+    },
+    {
+      "id": "hospital.integration.rehearse",
+      "title": "Rehearse Integration",
+      "category": "Hospital",
+      "summary": "Rehearse a Hospital room integration against frozen branch and base SHAs.",
+      "command": [
+        "rehearse",
+        "{repository}",
+        "{team}",
+        "{branch}",
+        "{room_head}",
+        "{base}",
+        "{base_head}",
+        "{local_path}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "branch",
+          "required": true,
+          "kind": "branch"
+        },
+        {
+          "name": "room_head",
+          "required": true,
+          "kind": "commit"
+        },
+        {
+          "name": "base",
+          "required": true,
+          "kind": "branch"
+        },
+        {
+          "name": "base_head",
+          "required": true,
+          "kind": "commit"
+        },
+        {
+          "name": "local_path",
+          "required": true,
+          "kind": "path"
+        }
+      ],
+      "mutation": "local",
+      "requires": [
+        "git",
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "rehearse",
+        "integration",
+        "merge",
+        "certification"
+      ]
+    },
+    {
+      "id": "hospital.integration.integrate",
+      "title": "Integrate Room",
+      "category": "Hospital",
+      "summary": "Integrate a frozen Hospital room into its baseline using the guarded PX integration path.",
+      "command": [
+        "integrate",
+        "{repository}",
+        "{team}",
+        "{branch}",
+        "{room_head}",
+        "{base}",
+        "{base_head}",
+        "{local_path}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "branch",
+          "required": true,
+          "kind": "branch"
+        },
+        {
+          "name": "room_head",
+          "required": true,
+          "kind": "commit"
+        },
+        {
+          "name": "base",
+          "required": true,
+          "kind": "branch"
+        },
+        {
+          "name": "base_head",
+          "required": true,
+          "kind": "commit"
+        },
+        {
+          "name": "local_path",
+          "required": true,
+          "kind": "path"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "git",
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "integrate",
+        "merge",
+        "certification",
+        "main"
+      ]
+    },
+    {
+      "id": "hospital.integration.verify",
+      "title": "Verify Integration",
+      "category": "Hospital",
+      "summary": "Verify post-operation containment and exact expected SHAs.",
+      "command": [
+        "verify",
+        "{repository}",
+        "{team}",
+        "{base}",
+        "{expected_base_head}",
+        "{expected_room_head}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "team",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "base",
+          "required": true,
+          "kind": "branch"
+        },
+        {
+          "name": "expected_base_head",
+          "required": true,
+          "kind": "commit"
+        },
+        {
+          "name": "expected_room_head",
+          "required": true,
+          "kind": "commit"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "hospital",
+        "verify",
+        "integration",
+        "post-op",
+        "evidence"
+      ]
+    },
+    {
+      "id": "workflow.templates.list",
+      "title": "List Workflow Templates",
+      "category": "Workflow",
+      "summary": "List workflow templates available in the PX Workflow Factory.",
+      "command": [
+        "templates"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [],
+      "keywords": [
+        "workflow",
+        "templates",
+        "factory",
+        "github",
+        "actions"
+      ]
+    },
+    {
+      "id": "workflow.create",
+      "title": "Create Workflow",
+      "category": "Workflow",
+      "summary": "Preview or install a validated workflow generated by the PX Workflow Factory.",
+      "command": [
+        "create",
+        "{repository}",
+        "{template}",
+        "{slug}",
+        "{trigger?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "template",
+          "required": true,
+          "kind": "workflow_template"
+        },
+        {
+          "name": "slug",
+          "required": true,
+          "kind": "slug"
+        },
+        {
+          "name": "trigger",
+          "required": false,
+          "kind": "enum"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "gh"
+      ],
+      "keywords": [
+        "workflow",
+        "create",
+        "factory",
+        "install",
+        "preview",
+        "github",
+        "actions"
+      ]
+    },
+    {
+      "id": "workflow.delete",
+      "title": "Delete Workflow",
+      "category": "Workflow",
+      "summary": "Delete a GitHub Actions workflow file through the guarded PX deletion path.",
+      "command": [
+        "delete-workflow",
+        "{repository}",
+        "{workflow_path}",
+        "{ref?}"
+      ],
+      "arguments": [
+        {
+          "name": "repository",
+          "required": true,
+          "kind": "repository"
+        },
+        {
+          "name": "workflow_path",
+          "required": true,
+          "kind": "workflow"
+        },
+        {
+          "name": "ref",
+          "required": false,
+          "kind": "ref"
+        }
+      ],
+      "mutation": "remote",
+      "requires": [
+        "gh",
+        "jq"
+      ],
+      "keywords": [
+        "workflow",
+        "delete",
+        "remove",
+        "github",
+        "actions"
+      ]
+    },
+    {
+      "id": "hospital.store.status",
+      "title": "Hospital Store Status",
+      "category": "Hospital",
+      "summary": "Inspect the durable Hospital state-store schema, path, and record counts.",
+      "command": [
+        "hospital",
+        "status",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "store",
+        "database",
+        "state",
+        "status"
+      ]
+    },
+    {
+      "id": "hospital.doctors.list",
+      "title": "List Doctors",
+      "category": "Hospital",
+      "summary": "List Doctors registered in durable Hospital state.",
+      "command": [
+        "hospital",
+        "doctors",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "doctor",
+        "staff",
+        "registry"
+      ]
+    },
+    {
+      "id": "hospital.rooms.list",
+      "title": "List Rooms",
+      "category": "Hospital",
+      "summary": "List durable Hospital Room bindings.",
+      "command": [
+        "hospital",
+        "rooms",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "rooms",
+        "beds",
+        "patients",
+        "staffing"
+      ]
+    },
+    {
+      "id": "hospital.sessions.list",
+      "title": "List Doctor Sessions",
+      "category": "Hospital",
+      "summary": "List durable Doctor/provider sessions, optionally scoped to a Room.",
+      "command": [
+        "hospital",
+        "sessions",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room_id",
+          "required": false,
+          "kind": "room"
+        }
+      ],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "hospital",
+        "sessions",
+        "doctor",
+        "provider",
+        "conversation"
+      ]
+    },
+    {
+      "id": "ai.providers.list",
+      "title": "List AI Providers",
+      "category": "AI",
+      "summary": "Discover normalized Hospital AI providers and their current command availability.",
+      "command": [
+        "agent",
+        "providers",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "agent",
+        "providers",
+        "codex",
+        "hermes"
+      ]
+    },
+    {
+      "id": "ai.session.create",
+      "title": "Create Doctor Session",
+      "category": "AI",
+      "summary": "Create a durable Hospital Doctor session bound to a provider and working directory.",
+      "command": [
+        "agent",
+        "session-create",
+        "--room-id",
+        "{room_id}",
+        "--doctor-id",
+        "{doctor_id}",
+        "--provider-id",
+        "{provider_id}",
+        "--working-directory",
+        "{working_directory}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "room_id",
+          "required": true,
+          "kind": "room"
+        },
+        {
+          "name": "doctor_id",
+          "required": true,
+          "kind": "doctor"
+        },
+        {
+          "name": "provider_id",
+          "required": true,
+          "kind": "provider"
+        },
+        {
+          "name": "working_directory",
+          "required": true,
+          "kind": "path"
+        }
+      ],
+      "mutation": "local",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "agent",
+        "doctor",
+        "session",
+        "provider",
+        "hospital"
+      ]
+    },
+    {
+      "id": "ai.turn",
+      "title": "Message Doctor",
+      "category": "AI",
+      "summary": "Run one normalized AI provider turn inside an existing Hospital Doctor session.",
+      "command": [
+        "agent",
+        "turn",
+        "{session_id}",
+        "--prompt",
+        "{prompt}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "session_id",
+          "required": true,
+          "kind": "session"
+        },
+        {
+          "name": "prompt",
+          "required": true,
+          "kind": "text"
+        }
+      ],
+      "mutation": "external",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "ai",
+        "agent",
+        "doctor",
+        "message",
+        "prompt",
+        "codex",
+        "hermes",
+        "hospital"
+      ]
+    }
+  ]
+}
