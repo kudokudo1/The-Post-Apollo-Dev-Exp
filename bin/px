@@ -1435,7 +1435,13 @@ case "$cmd" in
             '
         else
             printf '%-12s %s\n' ALIAS REPOSITORY
-            while IFS=
+            while IFS="$(printf '\\t')" read -r alias repo; do
+                [[ -z "$alias" || "$alias" == \#* ]] && continue
+                printf '%-12s %s\n' "$alias" "$repo"
+            done < "$REGISTRY"
+        fi
+        ;;
+
     doctor)
         need gh
         need awk
