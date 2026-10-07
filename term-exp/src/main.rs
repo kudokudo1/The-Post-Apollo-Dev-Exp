@@ -195,6 +195,96 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn handle_key(app: &mut App, key: KeyEvent, model: &Model) {
+    match &app.mode {
+        Mode::Home => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char(' ') => app.open_leader(),
+            KeyCode::Char('/') => app.open_search(SearchScope::All),
+            _ => {}
+        },
+
+        Mode::Leader => {
+            let entries = leader_entries(model);
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Backspace => app.home(),
+                KeyCode::Char('/') => app.open_search(SearchScope::All),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    App::next(&mut app.leader_selected, entries.len())
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    App::previous(&mut app.leader_selected, entries.len())
+                }
+                KeyCode::Enter => {
+                    if let Some((_, scope, _)) = entries.get(app.leader_selected) {
+                        app.open_search(scope.clone());
+                    }
+                }
+                KeyCode::Char('a') => app.open_search(SearchScope::Actions),
+                KeyCode::Char('t') => app.open_search(SearchScope::Tools),
+                KeyCode::Char('p') => {
+                    app.open_search(SearchScope::Category("PX".to_owned()))
+                }
+                KeyCode::Char('h') => {
+                    app.open_search(SearchScope::Category("Hospital".to_owned()))
+                }
+                KeyCode::Char('i') => {
+                    app.open_search(SearchScope::Category("AI".to_owned()))
+                }
+                KeyCode::Char('g') => {
+                    app.open_search(SearchScope::Category("GitHub".to_owned()))
+                }
+                KeyCode::Char('w') => {
+                    app.open_search(SearchScope::Category("Workflow".to_owned()))
+                }
+                KeyCode::Char('q') => app.should_quit = true,
+                _ => {}
+            }
+        }
+
+        Mode::Search => {
+            let results = search_results(model, &app.search_scope, &app.query);
+
+            match key.code {
+                KeyCode::Esc => app.home(),
+                KeyCode::Backspace => {
+                    app.query.pop();
+                    app.search_selected = 0;
+                }
+                KeyCode::Down => App::next(&mut app.search_selected, results.len()),
+                KeyCode::Up => App::previous(&mut app.search_selected, results.len()),
+                KeyCode::Enter => {
+                    if let Some(item) = results.get(app.search_selected) {
+                        app.status = Some(match item.kind {
+                            SearchKind::Action => format!(
+                                "Selected action {} — execution is the next lane",
+                                item.key
+                            ),
+                            SearchKind::Tool => format!(
+                                "Selected tool {} — delegation is the next lane",
+                                item.key
+                            ),
+                        });
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.query.clear();
+                    app.search_selected = 0;
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.query.push(character);
+                    app.search_selected = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 fn resolve_px_path() -> PathBuf {
     if let Ok(root) = env::var("PX_RUNTIME_ROOT") {
         let candidate = Path::new(&root).join("bin").join("px");
