@@ -156,6 +156,33 @@
       ]
     },
     {
+      "id": "px.operations.stale",
+      "title": "List Stale PX Operations",
+      "category": "PX",
+      "summary": "List RUNNING operation journals whose exact recorded owner process is no longer live.",
+      "command": [
+        "operation",
+        "stale",
+        "--json"
+      ],
+      "arguments": [],
+      "mutation": "read",
+      "recovery": "NONE",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "operation",
+        "operations",
+        "journal",
+        "stale",
+        "running",
+        "interrupted",
+        "crash",
+        "orphan"
+      ]
+    },
+    {
       "id": "px.operation.view",
       "title": "Inspect PX Operation",
       "category": "PX",
@@ -184,6 +211,40 @@
         "inspect",
         "history",
         "evidence"
+      ]
+    },
+    {
+      "id": "px.operation.reconcile",
+      "title": "Mark Interrupted PX Operation",
+      "category": "PX",
+      "summary": "Reconcile a proven-stale RUNNING journal as INTERRUPTED with execution outcome UNKNOWN; never infer mutation success or failure.",
+      "command": [
+        "operation",
+        "reconcile",
+        "{operation_id}",
+        "--json"
+      ],
+      "arguments": [
+        {
+          "name": "operation_id",
+          "required": true,
+          "kind": "stale_operation"
+        }
+      ],
+      "mutation": "local",
+      "recovery": "EVIDENCE_ONLY",
+      "requires": [
+        "python3"
+      ],
+      "keywords": [
+        "operation",
+        "journal",
+        "interrupted",
+        "stale",
+        "crash",
+        "reconcile",
+        "unknown",
+        "orphan"
       ]
     },
     {
