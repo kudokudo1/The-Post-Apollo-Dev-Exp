@@ -23,8 +23,18 @@ if [[ "${1:-} ${2:-}" == "repo view" ]]; then
     exit 0
 fi
 
+if [[ "${1:-}" == "api" && "${2:-}" == repos/owner/repo/branches/* ]]; then
+    printf '%s\n' "${GH_BRANCH_HEAD:-oldhead}"
+    exit 0
+fi
+
 if [[ "${1:-}" == "api" && "${2:-}" == repos/owner/repo/contents/.github/workflows/old-check.yml?ref=* ]]; then
-    printf '{"type":"file","sha":"abc123"}\n'
+    printf '{"type":"file","sha":"%s"}\n' "${GH_FILE_SHA:-abc123}"
+    exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
+    printf '%s\n' '{"data":{"createCommitOnBranch":{"commit":{"oid":"newhead","url":"https://example.invalid/commit/newhead"}}}}'
     exit 0
 fi
 
@@ -71,6 +81,30 @@ fi
 
 if "$ROOT/bin/px" delete-workflow dev .github/workflows/../evil.yml >/dev/null 2>&1; then
     printf 'parent traversal unexpectedly succeeded\n' >&2
+    exit 1
+fi
+
+: > "$GH_LOG_FILE"
+export GH_BRANCH_HEAD=oldhead
+export GH_FILE_SHA=abc123
+guarded="$("$ROOT/bin/px" delete-workflow dev .github/workflows/old-check.yml main --expected-sha abc123 --expected-ref-head oldhead)"
+grep -q '^deleted workflow: .github/workflows/old-check.yml @ main // commit newhead
+ <<<"$guarded"
+grep -Fq 
+CALL\tapi\trepos/owner/repo/branches/main\t--jq\t.commit.sha' "$GH_LOG_FILE"
+grep -Fq 
+CALL\tapi\tgraphql' "$GH_LOG_FILE"
+
+export GH_BRANCH_HEAD=movedhead
+if "$ROOT/bin/px" delete-workflow dev .github/workflows/old-check.yml main --expected-sha abc123 --expected-ref-head oldhead >/dev/null 2>&1; then
+    printf 'guarded delete unexpectedly accepted moved branch HEAD\n' >&2
+    exit 1
+fi
+
+export GH_BRANCH_HEAD=oldhead
+export GH_FILE_SHA=changedsha
+if "$ROOT/bin/px" delete-workflow dev .github/workflows/old-check.yml main --expected-sha abc123 --expected-ref-head oldhead >/dev/null 2>&1; then
+    printf 'guarded delete unexpectedly accepted changed workflow content\n' >&2
     exit 1
 fi
 
