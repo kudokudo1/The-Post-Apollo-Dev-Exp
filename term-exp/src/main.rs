@@ -419,6 +419,79 @@ fn handle_key(
             }
         }
 
+        Mode::MutationPreview => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.back_to_search();
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                return Ok(());
+            };
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.back_to_search(),
+                KeyCode::Enter => {
+                    if mutation_execution_enabled(action) {
+                        app.open_mutation_confirm();
+                    } else {
+                        app.status = Some(format!(
+                            "{} mutations are preview-only until their execution policy lands",
+                            action.mutation.to_uppercase()
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Mode::MutationConfirm => {
+            let Some(action_id) = app.pending_action_id.clone() else {
+                app.back_to_search();
+                return Ok(());
+            };
+            let Some(action) = action_by_id(model, &action_id) else {
+                app.back_to_search();
+                app.status = Some(format!("Action disappeared: {action_id}"));
+                return Ok(());
+            };
+            let expected = mutation_confirmation_phrase(action);
+
+            match key.code {
+                KeyCode::Esc => {
+                    let args = app.mutation_args.clone();
+                    app.open_mutation_preview(args);
+                }
+                KeyCode::Backspace => {
+                    app.mutation_confirm_buffer.pop();
+                    app.status = None;
+                }
+                KeyCode::Enter => {
+                    if app
+                        .mutation_confirm_buffer
+                        .trim()
+                        .eq_ignore_ascii_case(expected)
+                    {
+                        run_mutation_action(app, model, action);
+                    } else {
+                        app.status = Some(format!(
+                            "Type {expected} exactly to execute this {} mutation",
+                            action.mutation
+                        ));
+                    }
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    app.mutation_confirm_buffer.push(character);
+                    app.status = None;
+                }
+                _ => {}
+            }
+        }
+
         Mode::Output => match key.code {
             KeyCode::Esc => app.back_to_search(),
             KeyCode::Char('q') => app.home(),
