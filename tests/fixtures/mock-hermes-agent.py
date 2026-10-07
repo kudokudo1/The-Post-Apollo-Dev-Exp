@@ -28,7 +28,13 @@ if "FORCE_SESSION_MISMATCH" in prompt:
 if "SLOW_TURN" in prompt:
     time.sleep(30)
 
-reply = "MOCK: " + prompt
+separator = "\nOPERATOR TURN\n"
+if separator in prompt:
+    operator_prompt = prompt.rsplit(separator, 1)[1].strip()
+else:
+    operator_prompt = prompt
+
+reply = "MOCK: " + operator_prompt
 
 events = [
     {
@@ -36,6 +42,12 @@ events = [
         "subtype": "init",
         "session_id": session_id,
         "model": "mock",
+        "hospital_context": (
+            "HOSPITAL LIVE CONTEXT // GENERATED" in prompt
+        ),
+        "patient_chart": "PATIENT CHART // ACTIVE" in prompt,
+        "room_chart": "ROOM CHART // ACTIVE" in prompt,
+        "recent_transcript": "RECENT CANONICAL TRANSCRIPT" in prompt,
     },
     {
         "type": "text",
