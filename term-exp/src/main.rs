@@ -158,6 +158,27 @@ struct WorkflowTemplateRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct BranchRegistry {
+    #[serde(default, rename = "defaultBranch")]
+    default_branch: String,
+    #[serde(default)]
+    branches: Vec<BranchRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchRecord {
+    name: String,
+    #[serde(default)]
+    head: String,
+    #[serde(default)]
+    protected: bool,
+    #[serde(default, rename = "default")]
+    is_default: bool,
+    #[serde(default)]
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolRegistry {
     version: u64,
     counts: ToolCounts,
@@ -1032,6 +1053,42 @@ fn workflow_template_choices(model: &Model) -> Result<Vec<ActionChoiceItem>, Str
         .collect())
 }
 
+fn branch_choices(model: &Model, repository: &str) -> Result<Vec<ActionChoiceItem>, String> {
+    let registry: BranchRegistry = load_choice_json(
+        model,
+        &["branches".to_owned(), repository.to_owned()],
+        "repository branches",
+    )?;
+    let default_branch = registry.default_branch;
+
+    Ok(registry
+        .branches
+        .into_iter()
+        .map(|branch| {
+            let mut details = Vec::new();
+
+            if branch.is_default || branch.name == default_branch {
+                details.push("DEFAULT".to_owned());
+            }
+            if branch.protected {
+                details.push("PROTECTED".to_owned());
+            }
+            if !branch.source.is_empty() {
+                details.push(branch.source.to_uppercase());
+            }
+            if !branch.head.is_empty() {
+                details.push(branch.head.chars().take(8).collect());
+            }
+
+            ActionChoiceItem {
+                value: branch.name.clone(),
+                label: branch.name,
+                detail: details.join("  "),
+            }
+        })
+        .collect())
+}
+
 fn known_value_choices(
     model: &Model,
     action: &Action,
@@ -1058,6 +1115,11 @@ fn known_value_choices(
         "provider" => provider_choices(model).map(Some),
         "session" => session_choices(model, room).map(Some),
         "workflow_template" => workflow_template_choices(model).map(Some),
+        "branch" | "ref" => {
+            let repository =
+                repository.ok_or_else(|| "select a repository first".to_owned())?;
+            branch_choices(model, repository).map(Some)
+        }
         "enum" if !argument.choices.is_empty() => Ok(Some(
             argument
                 .choices
