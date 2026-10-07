@@ -23,14 +23,47 @@ if [[ "${1:-} ${2:-}" == "repo view" ]]; then
     exit 0
 fi
 
+if [[ "${1:-} ${2:-} ${3:-}" == "api --method DELETE" ]]; then
+    endpoint="${4:-}"
+    [[ "$endpoint" == "repos/owner/repo/contents/.github/workflows/deploy.yml" ]] || {
+        printf 'unexpected delete endpoint: %s\n' "$endpoint" >&2
+        exit 2
+    }
+    printf '{}\n'
+    exit 0
+fi
+
 if [[ "${1:-}" == "api" ]]; then
     case "${2:-}" in
         repos/owner/repo/commits/main)
-            printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+            case "${GH_DELETE_STATE:-baseline}" in
+                deleted) printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
+                *) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+            esac
             exit 0
             ;;
         repos/owner/repo/contents/.github/workflows/deploy.yml?ref=main)
-            printf 'blob-deploy-main\n'
+            case "${GH_DELETE_STATE:-baseline}" in
+                deleted)
+                    printf 'gh: Not Found (HTTP 404)\n' >&2
+                    exit 1
+                    ;;
+                changed_blob)
+                    blob='blob-deploy-changed'
+                    ;;
+                *)
+                    blob='blob-deploy-main'
+                    ;;
+            esac
+
+            for arg in "$@"; do
+                if [[ "$arg" == "--jq" ]]; then
+                    printf '%s\n' "$blob"
+                    exit 0
+                fi
+            done
+
+            printf '{"type":"file","sha":"%s"}\n' "$blob"
             exit 0
             ;;
     esac
@@ -212,6 +245,58 @@ jq -e '
   .allowed == false
   and (.reason | contains("WORKFLOW IS NOT ACTIVE"))
 ' <<<"$dispatch_disabled" >/dev/null
+
+delete_arguments='{"repository":"dev","workflow_path":".github/workflows/deploy.yml","ref":""}'
+
+export GH_DELETE_STATE=baseline
+delete_preflight="$("$ROOT/bin/px" mutation-preflight workflow.delete "$delete_arguments")"
+delete_token="$(jq -r '.token' <<<"$delete_preflight")"
+jq -e '
+  .allowed == true
+  and .frozenCommand == [
+    "delete-workflow",
+    "owner/repo",
+    ".github/workflows/deploy.yml",
+    "main",
+    "--expect-sha",
+    "blob-deploy-main"
+  ]
+  and (.token | fromjson | .workflowPath) == ".github/workflows/deploy.yml"
+  and (.token | fromjson | .workflowBlobSha) == "blob-deploy-main"
+  and (.token | fromjson | .ref) == "main"
+  and (.token | fromjson | .refSha) == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  and (.summary | contains("DELETE WORKFLOW"))
+' <<<"$delete_preflight" >/dev/null
+
+export GH_DELETE_STATE=changed_blob
+delete_changed="$("$ROOT/bin/px" mutation-preflight workflow.delete "$delete_arguments")"
+[[ "$(jq -r '.token' <<<"$delete_changed")" != "$delete_token" ]]
+
+if "$ROOT/bin/px" delete-workflow dev .github/workflows/deploy.yml main --expect-sha blob-deploy-main >/dev/null 2>&1; then
+    printf 'workflow delete unexpectedly accepted a changed blob SHA\n' >&2
+    exit 1
+fi
+
+export GH_DELETE_STATE=baseline
+"$ROOT/bin/px" delete-workflow dev .github/workflows/deploy.yml main --expect-sha blob-deploy-main >/dev/null
+
+delete_still_present="$("$ROOT/bin/px" mutation-verify workflow.delete "$delete_arguments" "$delete_token")"
+jq -e '
+  .passed == false
+  and .target.exists == true
+  and (.reason | contains("WORKFLOW STILL EXISTS"))
+' <<<"$delete_still_present" >/dev/null
+
+export GH_DELETE_STATE=deleted
+delete_verified="$("$ROOT/bin/px" mutation-verify workflow.delete "$delete_arguments" "$delete_token")"
+jq -e '
+  .passed == true
+  and .target.exists == false
+  and .target.previousBlobSha == "blob-deploy-main"
+  and .target.previousRefSha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  and .target.currentRefSha == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  and (.summary | contains("DELETE VERIFIED"))
+' <<<"$delete_verified" >/dev/null
 
 if "$ROOT/bin/px" mutation-preflight workflow.create '{"repository":"dev"}' >/dev/null 2>&1; then
     printf 'uncertified workflow creation unexpectedly received a mutation preflight policy\n' >&2

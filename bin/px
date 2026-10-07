@@ -448,6 +448,96 @@ mutation_preflight() {
                     target:$target
                 }'
             ;;
+        workflow.delete)
+            need gh
+
+            local repository_key repo workflow_query ref_value effective_ref
+            local workflow_json workflow_id workflow_name workflow_path workflow_state
+            local ref_sha workflow_blob_sha token summary frozen_command
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            workflow_query="$(jq -r '.workflow_path // ""' <<<"$arguments_json")"
+            ref_value="$(jq -r '.ref // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "workflow.delete preflight requires repository"
+            [[ -n "$workflow_query" ]] || die "workflow.delete preflight requires workflow_path"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_json="$(github_workflow_guard_record "$repo" "$workflow_query")"
+            workflow_id="$(jq -r '.id // ""' <<<"$workflow_json")"
+            workflow_name="$(jq -r '.name // ""' <<<"$workflow_json")"
+            workflow_path="$(jq -r '.path // ""' <<<"$workflow_json")"
+            workflow_state="$(jq -r '.state // ""' <<<"$workflow_json")"
+
+            [[ -n "$workflow_path" ]] || die "workflow delete target has no canonical path: $workflow_query"
+
+            if [[ -n "$ref_value" ]]; then
+                effective_ref="$ref_value"
+            else
+                effective_ref="$(default_branch_for "$repo")"
+            fi
+
+            [[ -n "$effective_ref" ]] || die "workflow delete ref could not be resolved"
+
+            ref_sha="$(github_ref_sha "$repo" "$effective_ref")"
+            [[ -n "$ref_sha" ]] || die "workflow delete ref has no commit SHA"
+
+            workflow_blob_sha="$(github_workflow_blob_sha "$repo" "$workflow_path" "$effective_ref")"
+            [[ -n "$workflow_blob_sha" ]] || die "workflow delete target has no blob SHA at $effective_ref"
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowId "$workflow_id" \
+                --arg workflowName "$workflow_name" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowState "$workflow_state" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                --arg ref "$effective_ref" \
+                --arg refSha "$ref_sha" \
+                '{
+                    repository:$repository,
+                    workflowId:$workflowId,
+                    workflowName:$workflowName,
+                    workflowPath:$workflowPath,
+                    workflowState:$workflowState,
+                    workflowBlobSha:$workflowBlobSha,
+                    ref:$ref,
+                    refSha:$refSha
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg ref "$effective_ref" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                '[
+                    "delete-workflow",
+                    $repository,
+                    $workflowPath,
+                    $ref,
+                    "--expect-sha",
+                    $workflowBlobSha
+                ]')"
+
+            summary="DELETE WORKFLOW // $workflow_name // $workflow_path // $effective_ref@${ref_sha:0:8} // BLOB ${workflow_blob_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --arg summary "$summary" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$workflow_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:true,
+                    summary:$summary,
+                    reason:"",
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+        ;;
         *)
             die "no PX mutation preflight policy for action: $action_id"
             ;;
@@ -651,6 +741,96 @@ mutation_verify() {
                     target:$target
                 }'
             ;;
+        workflow.delete)
+            need gh
+            need mktemp
+
+            local repository_key repo token_repo workflow_path workflow_name ref_value
+            local expected_blob expected_ref_sha current_ref_sha current_blob=""
+            local lookup_error="" encoded_ref tmp
+            local passed="false" summary="" reason="" target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "workflow.delete verification requires repository"
+            [[ -n "$preflight_token" ]] || die "workflow.delete verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            token_repo="$(jq -r '.repository // ""' <<<"$preflight_token")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            workflow_name="$(jq -r '.workflowName // ""' <<<"$preflight_token")"
+            ref_value="$(jq -r '.ref // ""' <<<"$preflight_token")"
+            expected_blob="$(jq -r '.workflowBlobSha // ""' <<<"$preflight_token")"
+            expected_ref_sha="$(jq -r '.refSha // ""' <<<"$preflight_token")"
+
+            [[ "$token_repo" == "$repo" ]] || die "workflow delete verification repository changed"
+            [[ -n "$workflow_path" ]] || die "workflow delete verification token has no workflow path"
+            [[ -n "$ref_value" ]] || die "workflow delete verification token has no ref"
+            [[ -n "$expected_blob" ]] || die "workflow delete verification token has no blob SHA"
+            [[ -n "$expected_ref_sha" ]] || die "workflow delete verification token has no ref SHA"
+
+            current_ref_sha="$(github_ref_sha "$repo" "$ref_value")"
+            [[ -n "$current_ref_sha" ]] || die "workflow delete verification ref has no commit SHA"
+
+            encoded_ref="$(jq -rn --arg value "$ref_value" '$value | @uri')"
+            tmp="$(mktemp)"
+            if current_blob="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref" --jq '.sha' 2>"$tmp")"; then
+                reason="WORKFLOW STILL EXISTS // BLOB ${current_blob:0:8}"
+                summary="DELETE VERIFY FAILED // $workflow_name // $workflow_path"
+            else
+                lookup_error="$(cat "$tmp")"
+
+                if grep -qiE '404|not found' <<<"$lookup_error"; then
+                    if [[ "$current_ref_sha" == "$expected_ref_sha" ]]; then
+                        reason="TARGET REF DID NOT ADVANCE AFTER DELETE"
+                        summary="DELETE VERIFY FAILED // $workflow_name // $workflow_path"
+                    else
+                        passed="true"
+                        summary="DELETE VERIFIED // $workflow_name // $workflow_path // $ref_value@${current_ref_sha:0:8}"
+                    fi
+                else
+                    rm -f "$tmp"
+                    die "workflow delete verification lookup failed // ${lookup_error:-unknown GitHub error}"
+                fi
+            fi
+            rm -f "$tmp"
+
+            target="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowName "$workflow_name" \
+                --arg ref "$ref_value" \
+                --arg previousRefSha "$expected_ref_sha" \
+                --arg currentRefSha "$current_ref_sha" \
+                --arg previousBlobSha "$expected_blob" \
+                --arg currentBlobSha "$current_blob" \
+                --argjson exists "$( [[ -n "$current_blob" ]] && printf true || printf false )" \
+                '{
+                    repository:$repository,
+                    workflowPath:$workflowPath,
+                    workflowName:$workflowName,
+                    ref:$ref,
+                    previousRefSha:$previousRefSha,
+                    currentRefSha:$currentRefSha,
+                    previousBlobSha:$previousBlobSha,
+                    currentBlobSha:(if $currentBlobSha == "" then null else $currentBlobSha end),
+                    exists:$exists
+                }')"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$target" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+        ;;
         *)
             die "no PX mutation verification policy for action: $action_id"
             ;;
@@ -1957,7 +2137,7 @@ Usage:
   px operation <start|finish|get|list|recovery> ...
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
-  px delete-workflow <repo> <workflow-path> [ref]
+  px delete-workflow <repo> <workflow-path> [ref] [--expect-sha SHA]
   px hospital <init|status> [--json]
   px agent <providers|session-create|turn|status|cancel|quick> ...
 
@@ -2205,6 +2385,15 @@ case "$cmd" in
         repo="$(repo_for "${1:-}")"
         workflow="${2:-}"
         ref="${3:-}"
+        expected_sha=""
+
+        if [[ "${4:-}" == "--expect-sha" ]]; then
+            expected_sha="${5:-}"
+            [[ -n "$expected_sha" ]] || die "workflow delete expected SHA is missing"
+            [[ -z "${6:-}" ]] || die "unknown delete-workflow argument: ${6}"
+        elif [[ -n "${4:-}" ]]; then
+            die "unknown delete-workflow argument: ${4}"
+        fi
 
         [[ -n "$workflow" ]] || die "workflow path required"
         workflow="${workflow#./}"
@@ -2233,6 +2422,10 @@ case "$cmd" in
             || die "workflow delete refused: target is not a file"
         [[ -n "$sha" ]] \
             || die "workflow delete refused: content SHA missing"
+
+        if [[ -n "$expected_sha" && "$sha" != "$expected_sha" ]]; then
+            die "workflow delete refused: content SHA changed after confirmation // expected $expected_sha // current $sha"
+        fi
 
         gh api --method DELETE "repos/$repo/contents/$workflow" \
             -f "message=Delete workflow $workflow" \
