@@ -224,6 +224,74 @@ mutation_preflight() {
                     target:$target
                 }'
             ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json actual_id
+            local workflow status conclusion head_branch head_sha token run_attempt
+            local allowed="true" reason="" summary=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun preflight requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun preflight requires run_id"
+
+            repo="$(repo_for "$repository_key")"
+            run_json="$(github_run_guard_record "$repo" "$run_id")"
+
+            actual_id="$(jq -r '.databaseId // ""' <<<"$run_json")"
+            [[ "$actual_id" == "$run_id" ]] \
+                || die "GitHub returned run $actual_id while guarding rerun $run_id"
+
+            workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
+            status="$(jq -r '.status // ""' <<<"$run_json")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+            head_branch="$(jq -r '.headBranch // ""' <<<"$run_json")"
+            head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+            run_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+            if [[ -z "$status" ]]; then
+                allowed="false"
+                reason="RUN STATUS IS UNKNOWN"
+            elif [[ "${status,,}" != "completed" ]]; then
+                allowed="false"
+                reason="RUN MUST BE COMPLETED BEFORE RERUN // STATUS ${status^^}"
+            fi
+
+            token="$(jq -c \
+                --arg repository "$repo" \
+                --arg runId "$run_id" \
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
+
+            summary="RERUN // $workflow // #$run_id // ATTEMPT $run_attempt"
+            [[ -n "$conclusion" ]] && summary+=" // ${conclusion^^}"
+            [[ -n "$head_branch" ]] && summary+=" // $head_branch"
+            [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    target:$target
+                }'
+            ;;
         *)
             die "no PX mutation preflight policy for action: $action_id"
             ;;
