@@ -1359,7 +1359,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nCOULD NOT LAUNCH // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1391,7 +1395,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
             );
             app.open_output(
-                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                 text,
             );
             return;
@@ -1445,7 +1453,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                     "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\nUNAVAILABLE // {error}{warning}"
                 );
                 app.open_output(
-                    format!("{} // REMOTE // VERIFY FAILED", action.title),
+                    format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                     text,
                 );
                 return;
@@ -1487,7 +1499,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
                 "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
             );
             app.open_output(
-                format!("{} // REMOTE // VERIFY FAILED", action.title),
+                format!(
+                    "{} // {} // VERIFY FAILED",
+                    action.title,
+                    action.mutation.to_uppercase()
+                ),
                 text,
             );
             return;
@@ -1507,7 +1523,11 @@ fn run_mutation_action(app: &mut App, model: &Model, action: &Action) {
             "OPERATION {operation_id}\n\nEXECUTION\n{text}\n\nPOST-OP VERIFY\n{verify_text}{warning}"
         );
         app.open_output(
-            format!("{} // REMOTE // VERIFIED", action.title),
+            format!(
+                "{} // {} // VERIFIED",
+                action.title,
+                action.mutation.to_uppercase()
+            ),
             text,
         );
         return;
