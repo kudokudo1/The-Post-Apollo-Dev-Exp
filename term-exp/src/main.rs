@@ -1562,6 +1562,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::Leader => "j/k move   Enter open   hotkey open   / search   Esc back",
         Mode::Search => "type to search   Up/Down move   Enter open   Esc home",
         Mode::ActionPrompt => "type value   Enter next/run   Backspace edit   Esc cancel",
+        Mode::ActionChoice => "j/k move   Enter choose   Esc cancel",
         Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
     };
     let message = app.status.as_deref().unwrap_or(default);
