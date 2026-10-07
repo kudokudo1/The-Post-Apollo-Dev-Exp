@@ -208,6 +208,35 @@ github_dispatch_runs_for() {
         --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,url
 }
 
+
+github_branch_head_sha() {
+    local repo="$1"
+    local branch="$2"
+    local encoded
+
+    encoded="$(jq -rn --arg value "$branch" '$value | @uri')"
+    gh api "repos/$repo/branches/$encoded" --jq '.commit.sha'
+}
+
+github_file_oid_at_ref() {
+    local repo="$1"
+    local ref="$2"
+    local path="$3"
+    local owner name expression query
+
+    owner="${repo%%/*}"
+    name="${repo#*/}"
+    expression="$ref:$path"
+    query='query($owner:String!,$name:String!,$expression:String!){repository(owner:$owner,name:$name){object(expression:$expression){... on Blob{oid}}}}'
+
+    gh api graphql \
+        -f query="$query" \
+        -F owner="$owner" \
+        -F name="$name" \
+        -F expression="$expression" \
+        --jq '.data.repository.object.oid // ""'
+}
+
 mutation_preflight() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
@@ -437,6 +466,109 @@ mutation_preflight() {
                 --arg token "$token" \
                 --argjson frozenCommand "$frozen_command" \
                 --argjson target "$workflow_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
+        workflow.delete)
+            need gh
+
+            local repository_key repo workflow_path ref_value effective_ref
+            local encoded_ref metadata file_type file_sha ref_head token summary frozen_command
+            local allowed="true" reason=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            workflow_path="$(jq -r '.workflow_path // ""' <<<"$arguments_json")"
+            ref_value="$(jq -r '.ref // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "workflow.delete preflight requires repository"
+            [[ -n "$workflow_path" ]] || die "workflow.delete preflight requires workflow path"
+
+            workflow_path="${workflow_path#./}"
+            case "$workflow_path" in
+                .github/workflows/*.yml|.github/workflows/*.yaml)
+                    ;;
+                *)
+                    die "workflow delete refused: path must be .github/workflows/*.yml or *.yaml"
+                    ;;
+            esac
+            [[ "$workflow_path" != *".."* ]] \
+                || die "workflow delete refused: parent traversal is not allowed"
+
+            repo="$(repo_for "$repository_key")"
+            if [[ -n "$ref_value" ]]; then
+                effective_ref="$ref_value"
+            else
+                effective_ref="$(default_branch_for "$repo")"
+            fi
+            [[ -n "$effective_ref" ]] || die "workflow delete target ref unavailable"
+
+            ref_head="$(github_branch_head_sha "$repo" "$effective_ref")"
+            [[ -n "$ref_head" ]] || die "workflow delete branch HEAD unavailable"
+
+            encoded_ref="$(jq -rn --arg value "$effective_ref" '$value | @uri')"
+            metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref")" \
+                || die "workflow not found on $effective_ref: $workflow_path"
+
+            file_type="$(jq -r '.type // ""' <<<"$metadata")"
+            file_sha="$(jq -r '.sha // ""' <<<"$metadata")"
+
+            if [[ "$file_type" != "file" ]]; then
+                allowed="false"
+                reason="WORKFLOW DELETE TARGET IS NOT A FILE"
+            elif [[ -z "$file_sha" ]]; then
+                allowed="false"
+                reason="WORKFLOW DELETE TARGET HAS NO CONTENT SHA"
+            fi
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg ref "$effective_ref" \
+                --arg refHead "$ref_head" \
+                --arg fileSha "$file_sha" \
+                '{
+                    repository:$repository,
+                    workflowPath:$workflowPath,
+                    ref:$ref,
+                    refHead:$refHead,
+                    fileSha:$fileSha
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflow "$workflow_path" \
+                --arg ref "$effective_ref" \
+                --arg fileSha "$file_sha" \
+                --arg refHead "$ref_head" \
+                '[
+                    "delete-workflow",
+                    $repository,
+                    $workflow,
+                    $ref,
+                    "--expected-sha",
+                    $fileSha,
+                    "--expected-ref-head",
+                    $refHead
+                ]')"
+
+            summary="DELETE WORKFLOW // $workflow_path // $effective_ref@${ref_head:0:8} // ${file_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$metadata" \
                 '{
                     version:1,
                     actionId:$actionId,
