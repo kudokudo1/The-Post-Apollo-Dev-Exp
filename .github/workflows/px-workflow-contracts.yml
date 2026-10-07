@@ -5,8 +5,10 @@ on:
   pull_request:
     paths:
       - bin/px
+      - config/actions.json
       - config/repos.tsv
       - docs/workflow-factory.md
+      - tests/test-px-actions.sh
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
@@ -16,8 +18,10 @@ on:
       - main
     paths:
       - bin/px
+      - config/actions.json
       - config/repos.tsv
       - docs/workflow-factory.md
+      - tests/test-px-actions.sh
       - tests/test-px-factory.sh
       - tests/test-px-runs.sh
       - tests/test-px-delete-workflow.sh
@@ -38,9 +42,13 @@ jobs:
       - name: Validate contract script syntax
         run: |
           bash -n bin/px
+          bash -n tests/test-px-actions.sh
           bash -n tests/test-px-factory.sh
           bash -n tests/test-px-runs.sh
           bash -n tests/test-px-delete-workflow.sh
+
+      - name: Test PX action registry
+        run: bash ./tests/test-px-actions.sh
 
       - name: Test workflow factory
         run: ./tests/test-px-factory.sh
