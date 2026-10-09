@@ -435,6 +435,72 @@ def main():
         assert token["blobSha"] == "blob-recoverable"
         assert token["requiresLiveValidation"] is True
 
+        recovery_started = payload(
+            run_px(
+                env,
+                "operation",
+                "start",
+                "--action-id",
+                "px.operation.recover.workflow.create",
+                "--title",
+                "Recover Workflow Creation",
+                "--mutation",
+                "remote",
+                "--recovery",
+                "EVIDENCE_ONLY",
+                "--command-json",
+                '["delete-workflow","owner/repo",".github/workflows/recoverable.yml","main"]',
+                "--arguments-json",
+                json.dumps(
+                    {
+                        "sourceOperationId": create_id,
+                        "repository": "owner/repo",
+                        "path": ".github/workflows/recoverable.yml",
+                    }
+                ),
+                "--before-json",
+                '{"strategy":"DELETE_CREATED_WORKFLOW"}',
+                "--json",
+            )
+        )
+        recovery_id = recovery_started["id"]
+        payload(
+            run_px(
+                env,
+                "operation",
+                "finish",
+                recovery_id,
+                "--status",
+                "COMPLETE",
+                "--exit-code",
+                "0",
+                "--verification-status",
+                "PASSED",
+                "--after-json",
+                '{"delete":{"deleted":true}}',
+                "--verification-json",
+                '{"passed":true,"fileAbsent":true}',
+                "--result-summary",
+                "workflow recovery verified",
+                "--json",
+            )
+        )
+
+        source_detail = payload(
+            run_px(env, "operation", "get", create_id, "--json")
+        )
+        assert source_detail["relationships"]["sourceOperationId"] is None
+        assert source_detail["relationships"]["latestRecoveryOperationId"] == recovery_id
+        assert source_detail["relationships"]["recoveryOperationIds"] == [recovery_id]
+        assert source_detail["recoveryFacts"]["strategy"] == "DELETE_CREATED_WORKFLOW"
+
+        recovery_detail = payload(
+            run_px(env, "operation", "get", recovery_id, "--json")
+        )
+        assert recovery_detail["relationships"]["sourceOperationId"] == create_id
+        assert recovery_detail["relationships"]["recoveryOperationIds"] == []
+        assert recovery_detail["recoveryFacts"]["strategy"] == "EVIDENCE_ONLY"
+
         invalid = run_px(
             env,
             "operation",
