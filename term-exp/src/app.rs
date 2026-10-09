@@ -52,6 +52,9 @@ pub struct App {
     pub output_title: String,
     pub output_text: String,
     pub output_scroll: u16,
+    pub output_operation_id: Option<String>,
+    pub output_source_operation_id: Option<String>,
+    pub output_recovery_operation_ids: Vec<String>,
 }
 
 impl App {
@@ -83,6 +86,9 @@ impl App {
             output_title: String::new(),
             output_text: String::new(),
             output_scroll: 0,
+            output_operation_id: None,
+            output_source_operation_id: None,
+            output_recovery_operation_ids: Vec::new(),
         }
     }
 
@@ -133,6 +139,9 @@ impl App {
         self.mutation_armed = false;
         self.mutation_preflight.clear();
         self.mutation_preflight_token.clear();
+        self.output_operation_id = None;
+        self.output_source_operation_id = None;
+        self.output_recovery_operation_ids.clear();
     }
 
     pub fn begin_action_prompt(&mut self, action_id: String, argument_count: usize) {
@@ -196,6 +205,27 @@ impl App {
         self.output_title = title;
         self.output_text = text;
         self.output_scroll = 0;
+        self.output_operation_id = None;
+        self.output_source_operation_id = None;
+        self.output_recovery_operation_ids.clear();
+        self.status = None;
+    }
+
+    pub fn open_operation_output(
+        &mut self,
+        title: String,
+        text: String,
+        operation_id: String,
+        source_operation_id: Option<String>,
+        recovery_operation_ids: Vec<String>,
+    ) {
+        self.mode = Mode::Output;
+        self.output_title = title;
+        self.output_text = text;
+        self.output_scroll = 0;
+        self.output_operation_id = Some(operation_id);
+        self.output_source_operation_id = source_operation_id;
+        self.output_recovery_operation_ids = recovery_operation_ids;
         self.status = None;
     }
 
@@ -218,5 +248,8 @@ impl App {
         self.output_title.clear();
         self.output_text.clear();
         self.output_scroll = 0;
+        self.output_operation_id = None;
+        self.output_source_operation_id = None;
+        self.output_recovery_operation_ids.clear();
     }
 }
