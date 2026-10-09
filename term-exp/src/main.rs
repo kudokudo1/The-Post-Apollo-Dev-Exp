@@ -538,6 +538,21 @@ fn handle_key(
         Mode::Output => match key.code {
             KeyCode::Esc => app.back_to_search(),
             KeyCode::Char('q') => app.home(),
+            KeyCode::Char('s') => {
+                if let Some(operation_id) = app.output_source_operation_id.clone() {
+                    open_operation_detail(app, model, &operation_id);
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(operation_id) = app.output_recovery_operation_ids.first().cloned() {
+                    open_operation_detail(app, model, &operation_id);
+                }
+            }
+            KeyCode::Char('f') => {
+                if let Some(operation_id) = app.output_operation_id.clone() {
+                    open_operation_recovery_facts(app, model, &operation_id);
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 app.output_scroll = app.output_scroll.saturating_add(1)
             }
@@ -680,6 +695,377 @@ fn expand_action_command(action: &Action, values: &[String]) -> Result<Vec<Strin
     Ok(command)
 }
 
+fn value_string(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn pretty_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn operation_relationships(
+    detail: &serde_json::Value,
+) -> (Option<String>, Vec<String>) {
+    let relationships = detail
+        .get("relationships")
+        .unwrap_or(&serde_json::Value::Null);
+
+    let source = relationships
+        .get("sourceOperationId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+
+    let recoveries = relationships
+        .get("recoveryOperationIds")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (source, recoveries)
+}
+
+fn operation_status_line(detail: &serde_json::Value) -> String {
+    let status = value_string(detail, "status");
+    let owner = value_string(detail, "ownerState");
+    let outcome = value_string(detail, "executionOutcome");
+
+    if status == "INTERRUPTED" {
+        return format!(
+            "INTERRUPTED // OUTCOME {}",
+            if outcome.is_empty() { "UNKNOWN" } else { outcome.as_str() }
+        );
+    }
+
+    if status == "RUNNING" && owner == "STALE" {
+        return "RUNNING // OWNER STALE // RECONCILIATION AVAILABLE".to_owned();
+    }
+
+    if status == "RUNNING" && owner == "LIVE" {
+        return "RUNNING // OWNER LIVE".to_owned();
+    }
+
+    status
+}
+
+fn format_recovery_facts(facts: &serde_json::Value) -> String {
+    let operation_id = value_string(facts, "operationId");
+    let action_id = value_string(facts, "actionId");
+    let recovery = value_string(facts, "recovery");
+    let strategy = value_string(facts, "strategy");
+    let reason = value_string(facts, "reason");
+    let plan_available = facts
+        .get("planAvailable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let executor_available = facts
+        .get("executorAvailable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let live_validation = facts
+        .get("requiresLiveValidation")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let automatic = facts
+        .get("automaticRecoveryAvailable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let mut text = format!(
+        "RECOVERY FACTS\n\nOPERATION  {operation_id}\nACTION     {action_id}\nCLASS      {recovery}\nSTRATEGY   {strategy}\n\nCAPABILITY\nPLAN       {}\nEXECUTOR   {}\nLIVE CHECK {}\nAUTOMATIC  {}",
+        if plan_available { "AVAILABLE" } else { "NONE" },
+        if executor_available { "AVAILABLE" } else { "NONE" },
+        if live_validation { "REQUIRED" } else { "NO" },
+        if automatic { "YES" } else { "NO" },
+    );
+
+    if !reason.is_empty() {
+        text.push_str(&format!("\n\nWHY\n{reason}"));
+    }
+
+    if let Some(plan) = facts.get("plan").filter(|value| value.is_object()) {
+        let repository = value_string(plan, "repository");
+        let base = value_string(plan, "base");
+        let path = value_string(plan, "path");
+        let blob = value_string(plan, "remoteBlobSha");
+        let yaml = value_string(plan, "expectedYamlSha");
+        let install = value_string(plan, "installCommit");
+        let verified = value_string(plan, "verifiedBaseSha");
+
+        text.push_str(&format!(
+            "\n\nTARGET\nREPOSITORY {repository}\nBASE       {base}\nPATH       {path}\nBLOB       {blob}\nYAML SHA   {yaml}\nINSTALL    {install}\nVERIFIED   {verified}"
+        ));
+    }
+
+    text
+}
+
+fn format_operation_detail(detail: &serde_json::Value) -> String {
+    let id = value_string(detail, "id");
+    let action_id = value_string(detail, "actionId");
+    let title = value_string(detail, "title");
+    let mutation = value_string(detail, "mutation").to_uppercase();
+    let status = operation_status_line(detail);
+    let verification = value_string(detail, "verificationStatus");
+    let recovery = value_string(detail, "recovery");
+    let result = value_string(detail, "resultSummary");
+    let started = value_string(detail, "startedAt");
+    let completed = value_string(detail, "completedAt");
+    let owner = value_string(detail, "ownerState");
+    let (source, recoveries) = operation_relationships(detail);
+
+    let mut text = format!(
+        "OPERATION\n\nID         {id}\nACTION     {action_id}\nTITLE      {title}\nCLASS      {mutation}\nSTATUS     {status}\nVERIFY     {verification}\nRECOVERY   {recovery}\nOWNER      {owner}\nSTARTED    {started}"
+    );
+
+    if !completed.is_empty() {
+        text.push_str(&format!("\nCOMPLETED  {completed}"));
+    }
+
+    if let Some(code) = detail.get("exitCode").and_then(serde_json::Value::as_i64) {
+        text.push_str(&format!("\nEXIT       {code}"));
+    }
+
+    if !result.is_empty() {
+        text.push_str(&format!("\n\nRESULT\n{result}"));
+    }
+
+    if detail
+        .get("interrupted")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        let interruption = detail
+            .get("after")
+            .and_then(|value| value.get("interruption"))
+            .unwrap_or(&serde_json::Value::Null);
+        let reason = value_string(interruption, "reason");
+        let next = value_string(interruption, "next");
+        text.push_str("\n\nINTERRUPTION\nOUTCOME    UNKNOWN");
+        if !reason.is_empty() {
+            text.push_str(&format!("\nREASON     {reason}"));
+        }
+        if !next.is_empty() {
+            text.push_str(&format!("\nNEXT       {next}"));
+        }
+    }
+
+    text.push_str("\n\nRELATIONSHIPS");
+    match source {
+        Some(source) => text.push_str(&format!("\nSOURCE     {source}   [s]")),
+        None => text.push_str("\nSOURCE     —"),
+    }
+    if recoveries.is_empty() {
+        text.push_str("\nRECOVERIES —");
+    } else {
+        text.push_str(&format!(
+            "\nRECOVERIES {}   [r = latest]\n{}",
+            recoveries.len(),
+            recoveries.join("\n")
+        ));
+    }
+
+    if let Some(facts) = detail.get("recoveryFacts") {
+        let strategy = value_string(facts, "strategy");
+        let executor = facts
+            .get("executorAvailable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let plan = facts
+            .get("planAvailable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        text.push_str(&format!(
+            "\n\nRECOVERY SUMMARY   [f]\nSTRATEGY   {strategy}\nPLAN       {}\nEXECUTOR   {}",
+            if plan { "AVAILABLE" } else { "NONE" },
+            if executor { "AVAILABLE" } else { "NONE" },
+        ));
+    }
+
+    if let Some(command) = detail.get("command") {
+        text.push_str(&format!("\n\nCOMMAND\n{}", pretty_json(command)));
+    }
+
+    let after = detail.get("after").unwrap_or(&serde_json::Value::Null);
+    if let Some(stdout) = after.get("stdout") {
+        let visible = stdout
+            .as_str()
+            .map(|value| !value.is_empty())
+            .unwrap_or(!stdout.is_null());
+        if visible {
+            text.push_str(&format!("\n\nSTDOUT EVIDENCE\n{}", pretty_json(stdout)));
+        }
+    }
+    if let Some(stderr) = after.get("stderr") {
+        if let Some(stderr) = stderr.as_str().filter(|value| !value.is_empty()) {
+            text.push_str(&format!("\n\nSTDERR EVIDENCE\n{stderr}"));
+        }
+    }
+
+    let verification_evidence = detail
+        .get("verification")
+        .unwrap_or(&serde_json::Value::Null);
+    if !verification_evidence.is_null()
+        && verification_evidence.as_object().map(|value| !value.is_empty()).unwrap_or(false)
+    {
+        text.push_str(&format!(
+            "\n\nVERIFICATION EVIDENCE\n{}",
+            pretty_json(verification_evidence)
+        ));
+    }
+
+    text
+}
+
+fn load_px_json(model: &Model, args: &[String], label: &str) -> Result<serde_json::Value, String> {
+    let output = Command::new(&model.px_path)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{label} launch failed: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("{label} failed")
+        } else {
+            stderr
+        });
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("{label} returned invalid JSON: {error}"))
+}
+
+fn open_operation_detail(app: &mut App, model: &Model, operation_id: &str) {
+    let args = vec![
+        "operation".to_owned(),
+        "get".to_owned(),
+        operation_id.to_owned(),
+        "--json".to_owned(),
+    ];
+
+    match load_px_json(model, &args, "operation detail") {
+        Ok(detail) => {
+            let (source, recoveries) = operation_relationships(&detail);
+            let title = format!(
+                "PX OPERATION // {} // {}",
+                operation_status_line(&detail),
+                operation_id
+            );
+            app.open_operation_output(
+                title,
+                format_operation_detail(&detail),
+                operation_id.to_owned(),
+                source,
+                recoveries,
+            );
+        }
+        Err(error) => app.open_output(
+            "PX OPERATION // ERROR".to_owned(),
+            format!("could not load operation {operation_id}: {error}"),
+        ),
+    }
+}
+
+fn open_operation_recovery_facts(app: &mut App, model: &Model, operation_id: &str) {
+    let args = vec![
+        "operation".to_owned(),
+        "get".to_owned(),
+        operation_id.to_owned(),
+        "--json".to_owned(),
+    ];
+
+    match load_px_json(model, &args, "operation recovery facts") {
+        Ok(detail) => {
+            let facts = detail
+                .get("recoveryFacts")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let (source, recoveries) = operation_relationships(&detail);
+            app.open_operation_output(
+                format!("PX RECOVERY FACTS // {operation_id}"),
+                format_recovery_facts(&facts),
+                operation_id.to_owned(),
+                source,
+                recoveries,
+            );
+        }
+        Err(error) => app.open_output(
+            "PX RECOVERY FACTS // ERROR".to_owned(),
+            format!("could not load recovery facts for {operation_id}: {error}"),
+        ),
+    }
+}
+
+fn format_recovery_execution_result(
+    payload: &serde_json::Value,
+    command_success: bool,
+) -> (String, String, Option<String>, Vec<String>) {
+    let source = value_string(payload, "operationId");
+    let recovery_operation = value_string(payload, "recoveryOperationId");
+    let recovered = payload
+        .get("recovered")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let verification = value_string(payload, "verification");
+    let strategy = value_string(payload, "strategy");
+    let reason = value_string(payload, "reason");
+
+    if !command_success || !recovered {
+        let title = "Recover PX Operation // REMOTE // REFUSED".to_owned();
+        let text = format!(
+            "RECOVERY REFUSED\n\nSOURCE OPERATION  {}\nSTRATEGY          {}\n\nREASON\n{}\n\nNo recovery success is claimed.",
+            if source.is_empty() { "UNKNOWN" } else { source.as_str() },
+            if strategy.is_empty() { "UNKNOWN" } else { strategy.as_str() },
+            if reason.is_empty() { "PX recovery executor refused or failed the request." } else { reason.as_str() },
+        );
+        return (
+            title,
+            text,
+            if source.is_empty() { None } else { Some(source) },
+            Vec::new(),
+        );
+    }
+
+    let state = if verification == "PASSED" {
+        "VERIFIED"
+    } else {
+        "VERIFY FAILED"
+    };
+    let repository = value_string(payload, "repository");
+    let base = value_string(payload, "base");
+    let path = value_string(payload, "path");
+    let delete_commit = value_string(payload, "deleteCommit");
+    let previous_head = value_string(payload, "previousHead");
+    let current_head = value_string(payload, "currentHead");
+
+    let text = format!(
+        "RECOVERY {state}\n\nSOURCE OPERATION    {source}\nRECOVERY OPERATION  {recovery_operation}\nSTRATEGY            {strategy}\nVERIFICATION        {verification}\n\nTARGET\nREPOSITORY          {repository}\nBASE                {base}\nPATH                {path}\nDELETE COMMIT       {delete_commit}\nPREVIOUS HEAD       {previous_head}\nCURRENT HEAD        {current_head}\n\nPX owns the recovery journal and post-recovery verification."
+    );
+
+    (
+        format!("Recover PX Operation // REMOTE // {state}"),
+        text,
+        if source.is_empty() { None } else { Some(source) },
+        if recovery_operation.is_empty() {
+            Vec::new()
+        } else {
+            vec![recovery_operation]
+        },
+    )
+}
+
 fn display_output(stdout: &[u8], stderr: &[u8]) -> String {
     let stdout_text = String::from_utf8_lossy(stdout).trim().to_owned();
     let stderr_text = String::from_utf8_lossy(stderr).trim().to_owned();
@@ -714,6 +1100,23 @@ fn run_read_action(app: &mut App, model: &Model, action: &Action, values: &[Stri
             "{} is a {} action; TERM EXP will not execute it without a mutation policy",
             action.title, action.mutation
         ));
+        return;
+    }
+
+    if matches!(
+        action.id.as_str(),
+        "px.operation.view" | "px.operation.recovery"
+    ) {
+        let Some(operation_id) = selected_argument_named(action, values, "operation_id") else {
+            app.status = Some("operation_id is required".to_owned());
+            return;
+        };
+
+        if action.id == "px.operation.view" {
+            open_operation_detail(app, model, operation_id);
+        } else {
+            open_operation_recovery_facts(app, model, operation_id);
+        }
         return;
     }
 
@@ -1219,52 +1622,52 @@ fn run_px_self_journaled_mutation(app: &mut App, model: &Model, action: &Action)
             app.open_output(
                 format!("{} // ERROR", action.title),
                 format!(
-                    "PX SELF-JOURNALED EXECUTION\n\ncould not launch PX recovery: {error}"
+                    "RECOVERY COULD NOT START\n\ncould not launch PX recovery: {error}"
                 ),
             );
             return;
         }
     };
 
-    let text = display_output(&output.stdout, &output.stderr);
+    let payload = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+    if let Some(payload) = payload {
+        let (title, text, source, recoveries) =
+            format_recovery_execution_result(&payload, output.status.success());
 
-    if !output.status.success() {
-        let code = output
-            .status
-            .code()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "signal".to_owned());
-        app.open_output(
-            format!(
-                "{} // {} // FAILED",
-                action.title,
-                action.mutation.to_uppercase()
-            ),
-            format!(
-                "PX SELF-JOURNALED EXECUTION\n\nEXIT {code}\n\n{text}\n\nPX owns recovery journaling and verification for this action."
-            ),
-        );
+        let recovery_operation = recoveries.first().cloned();
+        let current = recovery_operation
+            .clone()
+            .or_else(|| source.clone())
+            .unwrap_or_default();
+
+        if current.is_empty() {
+            app.open_output(title, text);
+        } else if recovery_operation.is_some() {
+            app.open_operation_output(
+                title,
+                text,
+                current,
+                source.clone(),
+                Vec::new(),
+            );
+        } else {
+            app.open_operation_output(
+                title,
+                text,
+                current,
+                None,
+                Vec::new(),
+            );
+        }
         return;
     }
 
-    let payload = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
-    let verified = payload
-        .as_ref()
-        .and_then(|value| value.get("verification"))
-        .and_then(serde_json::Value::as_str)
-        == Some("PASSED");
-    let recovered = payload
-        .as_ref()
-        .and_then(|value| value.get("recovered"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    let state = if recovered && verified {
-        "VERIFIED"
+    let text = display_output(&output.stdout, &output.stderr);
+    let state = if output.status.success() {
+        "EXECUTED // VERIFY UNKNOWN"
     } else {
-        "COMPLETE"
+        "FAILED"
     };
-
     app.open_output(
         format!(
             "{} // {} // {state}",
@@ -1272,7 +1675,7 @@ fn run_px_self_journaled_mutation(app: &mut App, model: &Model, action: &Action)
             action.mutation.to_uppercase()
         ),
         format!(
-            "PX SELF-JOURNALED EXECUTION\n\n{text}\n\nPX owns the recovery operation journal and post-recovery verification."
+            "RECOVERY RESULT COULD NOT BE PARSED\n\n{text}\n\nPX remains the authority for recovery journaling and verification."
         ),
     );
 }
@@ -2690,7 +3093,23 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, model: &Model) {
         Mode::ActionChoice => "type filter   Up/Down move   Enter choose   Backspace edit   Esc cancel",
         Mode::MutationPreview => "Enter preflight/confirm mutation   Esc cancel",
         Mode::MutationConfirm => "type confirmation word   Enter execute   Esc preview",
-        Mode::Output => "j/k or PgUp/PgDn scroll   Esc results   q home",
+        Mode::Output => {
+            if app.output_operation_id.is_some() {
+                if app.output_source_operation_id.is_some()
+                    && !app.output_recovery_operation_ids.is_empty()
+                {
+                    "j/k scroll   f facts   s source   r recovery   Esc results   q home"
+                } else if app.output_source_operation_id.is_some() {
+                    "j/k scroll   f facts   s source   Esc results   q home"
+                } else if !app.output_recovery_operation_ids.is_empty() {
+                    "j/k scroll   f facts   r recovery   Esc results   q home"
+                } else {
+                    "j/k scroll   f recovery facts   Esc results   q home"
+                }
+            } else {
+                "j/k or PgUp/PgDn scroll   Esc results   q home"
+            }
+        },
     };
     let message = app.status.as_deref().unwrap_or(default);
     let message_color = if app.status.is_some() { ORANGE } else { FG };
@@ -3226,6 +3645,88 @@ mod tests {
 
         assert!(!is_specialist_tool("git"));
         assert!(!is_specialist_tool("rm"));
+    }
+
+    #[test]
+    fn operation_detail_formats_interruption_and_navigation_without_top_level_dump() {
+        let detail = serde_json::json!({
+            "id": "op-source",
+            "actionId": "workflow.create",
+            "title": "Create Workflow",
+            "mutation": "remote",
+            "recovery": "CONTENT_RECOVERABLE",
+            "status": "INTERRUPTED",
+            "journalStatus": "FAILED",
+            "verificationStatus": "UNAVAILABLE",
+            "resultSummary": "operation journal interrupted; execution outcome is UNKNOWN",
+            "startedAt": "2026-10-09 10:00:00",
+            "completedAt": "2026-10-09 10:05:00",
+            "interrupted": true,
+            "executionOutcome": "UNKNOWN",
+            "ownerState": "STALE",
+            "after": {
+                "interruption": {
+                    "reason": "operation owner process no longer exists",
+                    "next": "inspect domain state before retrying"
+                }
+            },
+            "relationships": {
+                "sourceOperationId": null,
+                "recoveryOperationIds": ["op-recovery"],
+                "latestRecoveryOperationId": "op-recovery"
+            },
+            "recoveryFacts": {
+                "strategy": "DELETE_CREATED_WORKFLOW",
+                "planAvailable": true,
+                "executorAvailable": true
+            },
+            "command": ["create", "dev", "smoke"]
+        });
+
+        let text = format_operation_detail(&detail);
+        assert!(text.contains("STATUS     INTERRUPTED // OUTCOME UNKNOWN"));
+        assert!(text.contains("OUTCOME    UNKNOWN"));
+        assert!(text.contains("RECOVERIES 1   [r = latest]"));
+        assert!(text.contains("op-recovery"));
+        assert!(text.contains("RECOVERY SUMMARY   [f]"));
+        assert!(!text.trim_start().starts_with('{'));
+    }
+
+    #[test]
+    fn recovery_result_distinguishes_refused_and_verified() {
+        let refused = serde_json::json!({
+            "recovered": false,
+            "operationId": "op-source",
+            "reason": "workflow content changed"
+        });
+        let (title, text, source, recoveries) =
+            format_recovery_execution_result(&refused, false);
+        assert!(title.contains("REFUSED"));
+        assert!(text.contains("RECOVERY REFUSED"));
+        assert!(text.contains("workflow content changed"));
+        assert_eq!(source.as_deref(), Some("op-source"));
+        assert!(recoveries.is_empty());
+
+        let verified = serde_json::json!({
+            "recovered": true,
+            "operationId": "op-source",
+            "recoveryOperationId": "op-recovery",
+            "strategy": "DELETE_CREATED_WORKFLOW",
+            "repository": "owner/repo",
+            "base": "main",
+            "path": ".github/workflows/test.yml",
+            "deleteCommit": "abc123",
+            "previousHead": "before",
+            "currentHead": "after",
+            "verification": "PASSED"
+        });
+        let (title, text, source, recoveries) =
+            format_recovery_execution_result(&verified, true);
+        assert!(title.contains("VERIFIED"));
+        assert!(text.contains("RECOVERY VERIFIED"));
+        assert!(text.contains("RECOVERY OPERATION  op-recovery"));
+        assert_eq!(source.as_deref(), Some("op-source"));
+        assert_eq!(recoveries, vec!["op-recovery"]);
     }
 
     #[test]

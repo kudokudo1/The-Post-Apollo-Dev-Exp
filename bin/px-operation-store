@@ -256,6 +256,43 @@ def get_record(conn: sqlite3.Connection, operation_id: str) -> dict:
     return normalize_record(row)
 
 
+def operation_relationships(conn: sqlite3.Connection, record: dict) -> dict:
+    arguments = record.get("arguments") or {}
+    source_operation_id = ""
+    if isinstance(arguments, dict):
+        source_operation_id = str(arguments.get("sourceOperationId") or "")
+
+    recovery_operation_ids = []
+    rows = conn.execute(
+        """
+        SELECT * FROM operations
+        ORDER BY started_at DESC, operation_id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        candidate = normalize_record(row)
+        candidate_arguments = candidate.get("arguments") or {}
+        if not isinstance(candidate_arguments, dict):
+            continue
+        if str(candidate_arguments.get("sourceOperationId") or "") == record["id"]:
+            recovery_operation_ids.append(candidate["id"])
+
+    return {
+        "sourceOperationId": source_operation_id or None,
+        "recoveryOperationIds": recovery_operation_ids,
+        "latestRecoveryOperationId": (
+            recovery_operation_ids[0] if recovery_operation_ids else None
+        ),
+    }
+
+
+def operation_detail(conn: sqlite3.Connection, operation_id: str) -> dict:
+    record = get_record(conn, operation_id)
+    record["relationships"] = operation_relationships(conn, record)
+    record["recoveryFacts"] = recovery_payload(record)
+    return record
+
+
 def start_operation(conn: sqlite3.Connection, args) -> dict:
     mutation = str(args.mutation or "").strip().lower()
     recovery = str(args.recovery or "").strip().upper()
@@ -716,7 +753,7 @@ def main() -> int:
             elif args.command == "finish":
                 payload = finish_operation(conn, args)
             elif args.command == "get":
-                payload = get_record(conn, args.operation_id)
+                payload = operation_detail(conn, args.operation_id)
             elif args.command == "list":
                 payload = list_operations(conn, args)
             elif args.command == "stale":
