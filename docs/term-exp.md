@@ -233,6 +233,25 @@ workflow path, blob SHA, YAML hash, install commit, and verified base SHA.
 Only an operation whose recovery facts advertise a certified executor can arm
 the action.
 
+Operation inspection now renders a structured operation card instead of dumping
+the top-level journal JSON. The card surfaces operation id, action/title,
+mutation class, lifecycle status, verification state, recovery class, owner
+state, timestamps, result summary, relationships, recovery capability, command,
+execution evidence, and verification evidence in stable sections.
+
+The operation output surface also exposes direct journal navigation:
+
+```text
+f  recovery facts for the current operation
+s  source operation, when this is a recovery operation
+r  latest recovery operation, when the current operation has recoveries
+```
+
+PX supplies these source/recovery relationships; TERM EXP only presents and
+navigates them. Interrupted records render explicitly as
+`INTERRUPTED // OUTCOME UNKNOWN` with the reconciliation reason and next-action
+guidance instead of visually collapsing into ordinary FAILED history.
+
 Recovery classes describe guarantees, not wishes:
 
 - `NONE` — no recovery operation is declared;
@@ -320,3 +339,9 @@ does **not** create a second outer mutation journal record. The certified PX
 recovery executor remains the sole owner of the recovery journal and
 post-recovery verification. Its returned `recoveryOperationId` and verification
 result are displayed directly in TERM EXP.
+
+Recovery results now use explicit presentation states rather than a generic JSON
+result: `REFUSED`, `VERIFIED`, or `VERIFY FAILED`. The result shows the
+source operation, recovery operation, strategy, target repository/base/path,
+delete commit, branch transition, and verification outcome. A refusal states
+that no recovery success is claimed.
