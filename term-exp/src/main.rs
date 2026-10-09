@@ -1634,30 +1634,29 @@ fn run_px_self_journaled_mutation(app: &mut App, model: &Model, action: &Action)
         let (title, text, source, recoveries) =
             format_recovery_execution_result(&payload, output.status.success());
 
-        let current = recoveries
-            .first()
-            .cloned()
+        let recovery_operation = recoveries.first().cloned();
+        let current = recovery_operation
+            .clone()
             .or_else(|| source.clone())
             .unwrap_or_default();
 
         if current.is_empty() {
             app.open_output(title, text);
-        } else {
-            let source_link = if recoveries.is_empty() {
-                None
-            } else {
-                source.clone()
-            };
+        } else if recovery_operation.is_some() {
             app.open_operation_output(
                 title,
                 text,
                 current,
-                source_link,
-                if recoveries.is_empty() {
-                    Vec::new()
-                } else {
-                    recoveries
-                },
+                source.clone(),
+                Vec::new(),
+            );
+        } else {
+            app.open_operation_output(
+                title,
+                text,
+                current,
+                None,
+                Vec::new(),
             );
         }
         return;
