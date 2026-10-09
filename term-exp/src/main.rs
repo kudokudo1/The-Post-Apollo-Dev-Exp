@@ -3645,6 +3645,88 @@ mod tests {
     }
 
     #[test]
+    fn operation_detail_formats_interruption_and_navigation_without_top_level_dump() {
+        let detail = serde_json::json!({
+            "id": "op-source",
+            "actionId": "workflow.create",
+            "title": "Create Workflow",
+            "mutation": "remote",
+            "recovery": "CONTENT_RECOVERABLE",
+            "status": "INTERRUPTED",
+            "journalStatus": "FAILED",
+            "verificationStatus": "UNAVAILABLE",
+            "resultSummary": "operation journal interrupted; execution outcome is UNKNOWN",
+            "startedAt": "2026-10-09 10:00:00",
+            "completedAt": "2026-10-09 10:05:00",
+            "interrupted": true,
+            "executionOutcome": "UNKNOWN",
+            "ownerState": "STALE",
+            "after": {
+                "interruption": {
+                    "reason": "operation owner process no longer exists",
+                    "next": "inspect domain state before retrying"
+                }
+            },
+            "relationships": {
+                "sourceOperationId": null,
+                "recoveryOperationIds": ["op-recovery"],
+                "latestRecoveryOperationId": "op-recovery"
+            },
+            "recoveryFacts": {
+                "strategy": "DELETE_CREATED_WORKFLOW",
+                "planAvailable": true,
+                "executorAvailable": true
+            },
+            "command": ["create", "dev", "smoke"]
+        });
+
+        let text = format_operation_detail(&detail);
+        assert!(text.contains("STATUS     INTERRUPTED // OUTCOME UNKNOWN"));
+        assert!(text.contains("OUTCOME    UNKNOWN"));
+        assert!(text.contains("RECOVERIES 1   [r = latest]"));
+        assert!(text.contains("op-recovery"));
+        assert!(text.contains("RECOVERY SUMMARY   [f]"));
+        assert!(!text.trim_start().starts_with('{'));
+    }
+
+    #[test]
+    fn recovery_result_distinguishes_refused_and_verified() {
+        let refused = serde_json::json!({
+            "recovered": false,
+            "operationId": "op-source",
+            "reason": "workflow content changed"
+        });
+        let (title, text, source, recoveries) =
+            format_recovery_execution_result(&refused, false);
+        assert!(title.contains("REFUSED"));
+        assert!(text.contains("RECOVERY REFUSED"));
+        assert!(text.contains("workflow content changed"));
+        assert_eq!(source.as_deref(), Some("op-source"));
+        assert!(recoveries.is_empty());
+
+        let verified = serde_json::json!({
+            "recovered": true,
+            "operationId": "op-source",
+            "recoveryOperationId": "op-recovery",
+            "strategy": "DELETE_CREATED_WORKFLOW",
+            "repository": "owner/repo",
+            "base": "main",
+            "path": ".github/workflows/test.yml",
+            "deleteCommit": "abc123",
+            "previousHead": "before",
+            "currentHead": "after",
+            "verification": "PASSED"
+        });
+        let (title, text, source, recoveries) =
+            format_recovery_execution_result(&verified, true);
+        assert!(title.contains("VERIFIED"));
+        assert!(text.contains("RECOVERY VERIFIED"));
+        assert!(text.contains("RECOVERY OPERATION  op-recovery"));
+        assert_eq!(source.as_deref(), Some("op-source"));
+        assert_eq!(recoveries, vec!["op-recovery"]);
+    }
+
+    #[test]
     fn resolver_payload_keeps_exact_invocation() {
         let payload = r#"{
             "status":"FOUND",
