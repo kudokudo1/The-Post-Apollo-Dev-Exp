@@ -899,7 +899,11 @@ fn format_operation_detail(detail: &serde_json::Value) -> String {
 
     let after = detail.get("after").unwrap_or(&serde_json::Value::Null);
     if let Some(stdout) = after.get("stdout") {
-        if !stdout.is_null() && stdout != "" {
+        let visible = stdout
+            .as_str()
+            .map(|value| !value.is_empty())
+            .unwrap_or(!stdout.is_null());
+        if visible {
             text.push_str(&format!("\n\nSTDOUT EVIDENCE\n{}", pretty_json(stdout)));
         }
     }
