@@ -88,6 +88,10 @@ data_dir = pathlib.Path(sys.argv[3])
 doctor = json.loads(sys.argv[4])
 patient = json.loads(sys.argv[5])
 room = json.loads(sys.argv[6])
+authority_test = json.loads(sys.argv[7])
+authority_push = json.loads(sys.argv[8])
+authority_default = json.loads(sys.argv[9])
+authority_default_edit = json.loads(sys.argv[10])
 bound = json.loads(sys.argv[7])
 session = json.loads(sys.argv[8])
 outgoing = json.loads(sys.argv[9])
@@ -302,8 +306,28 @@ assignment_active_json="$("$ROOT/bin/px" hospital assignment-activate "$assignme
 assignment_updated_json="$("$ROOT/bin/px" hospital assignment-update "$assignment_id" --phase VERIFY --checklist "- [x] service\n- [x] consumers\n- [ ] tests" --json)"
 assignments_json="$("$ROOT/bin/px" hospital assignments --room-id T6 --status ALL --json)"
 room_after_assignment_json="$("$ROOT/bin/px" hospital room T6 --json)"
+authority_test_json="$("$ROOT/bin/px" hospital assignment-authority --room-id T6 --permission TEST --json)"
+authority_push_json="$("$ROOT/bin/px" hospital assignment-authority --room-id T6 --permission PUSH --json)"
+authority_default_json="$("$ROOT/bin/px" hospital assignment-authority --room-id T7 --permission READ --json)"
+authority_default_edit_json="$("$ROOT/bin/px" hospital assignment-authority --room-id T7 --permission EDIT --json)"
 
-python3 - "$assignment_json" "$assignment_ready_json" "$assignment_active_json" "$assignment_updated_json" "$assignments_json" "$room_after_assignment_json" <<'PY'
+set +e
+authority_require_output="$("$ROOT/bin/px" hospital assignment-authority --room-id T6 --permission PUSH --require --json 2>&1)"
+authority_require_status=$?
+set -e
+[[ "$authority_require_status" -ne 0 ]] || {
+    printf 'expected PUSH authority requirement to fail\n' >&2
+    exit 1
+}
+case "$authority_require_output" in
+    *"HOSPITAL AUTHORITY REFUSED // PUSH NOT GRANTED"*) ;;
+    *)
+        printf 'unexpected authority refusal: %s\n' "$authority_require_output" >&2
+        exit 1
+        ;;
+esac
+
+python3 - "$assignment_json" "$assignment_ready_json" "$assignment_active_json" "$assignment_updated_json" "$assignments_json" "$room_after_assignment_json" "$authority_test_json" "$authority_push_json" "$authority_default_json" "$authority_default_edit_json" <<'PY'
 import json
 import sys
 
@@ -324,6 +348,17 @@ assert updated["phase"] == "VERIFY", updated
 assert "- [x] service" in updated["checklist"], updated
 assert [row["id"] for row in rows] == [created["id"]], rows
 assert room["assignmentId"] == created["id"], room
+
+assert authority_test["allowed"] is True, authority_test
+assert authority_test["permission"] == "TEST", authority_test
+assert authority_test["source"] == "ACTIVE_ASSIGNMENT", authority_test
+assert authority_test["assignmentId"] == created["id"], authority_test
+assert authority_push["allowed"] is False, authority_push
+assert authority_push["permission"] == "PUSH", authority_push
+assert authority_default["allowed"] is True, authority_default
+assert authority_default["permissions"] == ["READ"], authority_default
+assert authority_default["source"] == "READ_ONLY_DEFAULT", authority_default
+assert authority_default_edit["allowed"] is False, authority_default_edit
 PY
 
 suggestion_json="$(printf '%s' 'Keep operator authority over durable memory promotion.' | "$ROOT/bin/px" hospital chart-suggestion-add --scope ROOM --room-id T6 --entry-kind DECISION --title "Chart authority" --priority 88 --doctor-id doctor-t6 --provider-id codex --source-room-id T6 --source-session-id session-t6-1 --source-message-id "$incoming_id" --body-stdin --json)"

@@ -2461,6 +2461,20 @@ room_branch_for() {
     die "room or branch not found: $room"
 }
 
+require_hospital_assignment_authority() {
+    local repo="${1:-}"
+    local team="${2:-}"
+    local permission="${3:-}"
+
+    [[ -n "$repo" ]] || die "Hospital authority repository required"
+    [[ -n "$team" ]] || die "Hospital authority team required"
+    [[ -n "$permission" ]] || die "Hospital authority permission required"
+
+    need python3
+    python3 "$ROOT/bin/px-hospital-store" assignment-authority         --team "$team"         --repository "$repo"         --permission "$permission"         --require         --json >/dev/null
+}
+
+
 room_inspect() {
     local key="${1:-}"
     local team="${2:-}"
@@ -2575,6 +2589,7 @@ room_rehearse() {
     need mktemp
 
     repo="$(repo_for "$key")"
+    require_hospital_assignment_authority "$repo" "$team" "TEST"
     branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
     [[ "$branch" == "$expected_branch" ]] || die "REHEARSAL INVALID // registered room branch changed"
 
@@ -2713,6 +2728,7 @@ room_merge() {
     need mktemp
 
     repo="$(repo_for "$key")"
+    require_hospital_assignment_authority "$repo" "$team" "INTEGRATE"
     branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
     [[ "$branch" == "$expected_branch" ]] || die "ARM INVALID // registered room branch changed"
 
@@ -2839,6 +2855,7 @@ room_integrate() {
     need git
 
     repo="$(repo_for "$key")"
+    require_hospital_assignment_authority "$repo" "$team" "INTEGRATE"
     branch="$(room_branch_for "$repo" "$team")" || die "unknown room: $team for $repo"
     [[ "$branch" == "$expected_branch" ]] || die "ARM INVALID // registered room branch changed"
 

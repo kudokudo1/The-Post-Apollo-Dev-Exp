@@ -238,4 +238,15 @@ human="$("$ROOT/bin/px" actions github)"
 grep -q $'^ID\tCATEGORY\tTITLE$' <<<"$human"
 grep -q $'^github.workflow.run\tGitHub\tRun Workflow$' <<<"$human"
 
+test_authority_count="$(grep -F -c 'require_hospital_assignment_authority "$repo" "$team" "TEST"' "$ROOT/bin/px")"
+integrate_authority_count="$(grep -F -c 'require_hospital_assignment_authority "$repo" "$team" "INTEGRATE"' "$ROOT/bin/px")"
+[[ "$test_authority_count" -eq 1 ]] || {
+    printf 'expected exactly one TEST authority gate, got %s\n' "$test_authority_count" >&2
+    exit 1
+}
+[[ "$integrate_authority_count" -eq 2 ]] || {
+    printf 'expected merge + integrate authority gates, got %s\n' "$integrate_authority_count" >&2
+    exit 1
+}
+
 printf 'PX action registry self-test: PASS\n'
