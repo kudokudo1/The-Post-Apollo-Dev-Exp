@@ -7,6 +7,22 @@ trap 'rm -rf "$TMP"' EXIT
 
 export PX_HOSPITAL_DATA_DIR="$TMP/hospital-data"
 export PX_AGENT_LOCK_DIR="$TMP/agent-locks"
+
+prepare_git_bed() {
+    local directory="$1"
+    local branch="$2"
+    mkdir -p "$directory"
+    git -C "$directory" init -q
+    git -C "$directory" config user.email "hospital-test@example.invalid"
+    git -C "$directory" config user.name "Hospital Test"
+    printf 'base\n' > "$directory/tracked.txt"
+    git -C "$directory" add tracked.txt
+    git -C "$directory" commit -qm "baseline"
+    git -C "$directory" checkout -qb "$branch"
+    git -C "$directory" remote add origin \
+        https://github.com/kudokudo1/taskbars-post-apollo.git
+}
+
 BED="$TMP/t6-bed"
 mkdir -p "$BED"
 
@@ -16,6 +32,8 @@ git -C "$BED" config user.name "Hospital Test"
 printf 'base\n' >"$BED/tracked.txt"
 git -C "$BED" add tracked.txt
 git -C "$BED" commit -qm "baseline"
+git -C "$BED" checkout -qb feature/application-audio
+git -C "$BED" remote add origin https://github.com/kudokudo1/taskbars-post-apollo.git
 
 cat > "$TMP/providers.json" <<EOF
 {
@@ -297,7 +315,7 @@ assert "INTEGRATE REQUIRED" in probe["px_integrate"]["stderr"], probe
 PY
 
 CANCEL_BED="$TMP/t8-bed"
-mkdir -p "$CANCEL_BED"
+prepare_git_bed "$CANCEL_BED" feature/cancel-test
 
 "$ROOT/bin/px" hospital room-bind T8 \
     --repository kudokudo1/taskbars-post-apollo \
@@ -772,7 +790,8 @@ PY
 
 ORCH_T9_BED="$TMP/t9-bed"
 ORCH_T10_BED="$TMP/t10-bed"
-mkdir -p "$ORCH_T9_BED" "$ORCH_T10_BED"
+prepare_git_bed "$ORCH_T9_BED" feature/orch-t9
+prepare_git_bed "$ORCH_T10_BED" feature/orch-t10
 
 "$ROOT/bin/px" hospital room-bind T9 \
     --repository kudokudo1/taskbars-post-apollo \
@@ -986,7 +1005,7 @@ cat > "$TMP/providers.json" <<EOF
 EOF
 
 LEGACY_BED="$TMP/t7-bed"
-mkdir -p "$LEGACY_BED"
+prepare_git_bed "$LEGACY_BED" feature/legacy-hermes
 
 "$ROOT/bin/px" hospital room-bind T7 \
     --repository kudokudo1/taskbars-post-apollo \
