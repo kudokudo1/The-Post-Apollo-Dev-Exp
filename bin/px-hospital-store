@@ -615,18 +615,52 @@ def patient_put(conn: sqlite3.Connection, args) -> dict:
     return dict(row)
 
 
+def room_assignment_for_bind(
+    conn: sqlite3.Connection, args, existing: sqlite3.Row | None
+) -> str:
+    """Preserve Assignment linkage on omission; never unlink by incidental rebind.
+
+    Assignment activation/status is the canonical lifecycle-changing operation.
+    The convenience Room bind may reaffirm the current ACTIVE Assignment or
+    restore an already ACTIVE Assignment to an unlinked Room of the same identity.
+    """
+    current = str(existing["current_assignment_id"] or "") if existing else ""
+    supplied = getattr(args, "assignment_id", None)
+    if supplied is None:
+        return current
+    requested = str(supplied).strip()
+    if not requested:
+        raise RuntimeError(
+            "Hospital Room binding cannot clear an Assignment; "
+            "use the explicit Assignment status/lifecycle operation"
+        )
+    if not requested.isdecimal():
+        raise RuntimeError("Hospital Room Assignment ID must be numeric")
+    assignment = assignment_record(conn, int(requested))
+    if str(assignment.get("roomId") or "") != str(args.room_id):
+        raise RuntimeError("Hospital Room Assignment belongs to a different Room")
+    if str(assignment.get("status") or "").upper() != "ACTIVE":
+        raise RuntimeError("Hospital Room Assignment must already be ACTIVE")
+    if current and current != requested:
+        raise RuntimeError(
+            "Hospital Room Assignment replacement requires assignment-activate"
+        )
+    return requested
+
+
 def room_bind(conn: sqlite3.Connection, args) -> dict:
     patient_id = (args.patient_id or args.repository).strip()
     if not patient_id:
         raise RuntimeError("Hospital room bind requires a patient identity")
 
     existing = conn.execute(
-        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        "SELECT provider_id, current_assignment_id FROM rooms WHERE room_id = ?",
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
     if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
+    assignment_id = room_assignment_for_bind(conn, args, existing)
 
     conn.execute(
         """
@@ -671,7 +705,7 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
             args.bed_path or "",
             args.doctor_id or "",
             provider_id,
-            args.assignment_id or "",
+            assignment_id,
         ),
     )
 
@@ -683,12 +717,13 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
 
     existing = conn.execute(
-        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        "SELECT provider_id, current_assignment_id FROM rooms WHERE room_id = ?",
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
     if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
+    assignment_id = room_assignment_for_bind(conn, args, existing)
 
     conn.execute(
         """
@@ -715,7 +750,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
             args.bed_path or "",
             args.doctor_id or "",
             provider_id,
-            args.assignment_id or "",
+            assignment_id,
         ),
     )
     conn.commit()
@@ -2659,7 +2694,7 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--bed-path", default="")
     bind.add_argument("--doctor-id", default="")
     bind.add_argument("--provider-id", default="")
-    bind.add_argument("--assignment-id", default="")
+    bind.add_argument("--assignment-id", default=None)
     bind.add_argument("--json", action="store_true")
 
     room = sub.add_parser("room-put")
@@ -2670,7 +2705,7 @@ def build_parser() -> argparse.ArgumentParser:
     room.add_argument("--bed-path", default="")
     room.add_argument("--doctor-id", default="")
     room.add_argument("--provider-id", default="")
-    room.add_argument("--assignment-id", default="")
+    room.add_argument("--assignment-id", default=None)
     room.add_argument("--json", action="store_true")
 
     room_get = sub.add_parser("room")
