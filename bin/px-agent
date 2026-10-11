@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from hospital_target_preflight import preflight_edit_target
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "agent-providers.json"
@@ -1375,6 +1376,31 @@ def _run_turn_unlocked(args) -> dict:
     cwd = Path(cwd_text).expanduser()
     if not cwd.is_dir():
         raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
+
+    # This guard runs before any provider message, runtime mutation or Popen.
+    # Read-only Assignment defaults are not a sandbox: verify every provider
+    # turn, including resume and explicit working-directory overrides.
+    room_id = str(session.get("roomId") or "").strip()
+    if not room_id:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // ROOM_UNRESOLVED")
+    room = px_hospital("room", room_id)
+    room_bed_text = str(room.get("bedPath") or "").strip()
+    if not room_bed_text:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // REGISTERED_BED_UNRESOLVED")
+    registered_bed = Path(room_bed_text).expanduser().resolve()
+    if cwd.resolve() != registered_bed:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // TARGET_BED_MISMATCH")
+
+    # Hospital permits a dirty *matching* worktree so ongoing assignments can
+    # continue; no preflight ever cleans, resets or switches the worktree.
+    target = preflight_edit_target(
+        bed_path=str(cwd),
+        expected_branch=str(room.get("branch") or "").strip(),
+        expected_repository=str(room.get("repository") or "").strip(),
+        allow_dirty=True,
+    )
+    if not target.ok:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // " + target.code)
 
     if args.prompt_json_stdin:
         raw = sys.stdin.readline()
