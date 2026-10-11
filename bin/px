@@ -148,7 +148,488 @@ github_run_guard_record() {
     local run_id="$2"
 
     gh run view "$run_id" -R "$repo" \
-        --json databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
+        --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,startedAt,updatedAt,url
+}
+
+
+github_workflow_guard_record() {
+    local repo="$1"
+    local workflow_query="$2"
+    local rows matches count
+
+    rows="$(workflows_for "$repo")"
+    matches="$(jq -c --arg query "$workflow_query" '
+        [
+            .[]
+            | select(
+                (.path // "") == $query
+                or ((.id // "") | tostring) == $query
+                or (.name // "") == $query
+            )
+        ]
+    ' <<<"$rows")"
+    count="$(jq 'length' <<<"$matches")"
+
+    [[ "$count" -gt 0 ]] || die "workflow not found: $workflow_query"
+    [[ "$count" -eq 1 ]] || die "workflow selector is ambiguous: $workflow_query"
+
+    jq -c '.[0]' <<<"$matches"
+}
+
+github_ref_sha() {
+    local repo="$1"
+    local ref="$2"
+    local encoded
+
+    encoded="$(jq -rn --arg value "$ref" '$value | @uri')"
+    gh api "repos/$repo/commits/$encoded" --jq '.sha'
+}
+
+github_workflow_blob_sha() {
+    local repo="$1"
+    local workflow_path="$2"
+    local ref="$3"
+    local encoded_ref
+
+    encoded_ref="$(jq -rn --arg value "$ref" '$value | @uri')"
+    gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref" --jq '.sha'
+}
+
+github_remote_file_sha256() {
+    local repo="$1"
+    local path="$2"
+    local ref="$3"
+    local encoded_ref metadata encoding content
+
+    need base64
+    need sha256sum
+    need awk
+
+    encoded_ref="$(jq -rn --arg value "$ref" '$value | @uri')"
+    metadata="$(gh api "repos/$repo/contents/$path?ref=$encoded_ref")"
+    encoding="$(jq -r '.encoding // ""' <<<"$metadata")"
+    content="$(jq -r '.content // ""' <<<"$metadata" | tr -d '\n')"
+
+    [[ "$encoding" == "base64" ]]         || die "remote workflow content encoding is not base64"
+    [[ -n "$content" ]]         || die "remote workflow content is empty"
+
+    printf '%s' "$content"         | base64 --decode         | sha256sum         | awk '{print $1}'
+}
+
+github_dispatch_runs_for() {
+    local repo="$1"
+    local workflow_path="$2"
+    local ref_sha="$3"
+
+    gh run list -R "$repo" \
+        --workflow "$workflow_path" \
+        --event workflow_dispatch \
+        --commit "$ref_sha" \
+        --limit 50 \
+        --json attempt,databaseId,workflowName,status,conclusion,headBranch,headSha,event,createdAt,url
+}
+
+hospital_session_guard_record() {
+    local session_id="$1"
+
+    need python3
+    python3 "$ROOT/bin/px-hospital-store" session "$session_id" --json
+}
+
+hospital_session_guard_events() {
+    local session_id="$1"
+
+    need python3
+    python3 "$ROOT/bin/px-hospital-store" events "$session_id" --limit 1000 --json
+}
+
+recovery_refuse() {
+    local as_json="$1"
+    local operation_id="$2"
+    local reason="$3"
+
+    if [[ "$as_json" == "true" ]]; then
+        jq -n \
+            --arg operationId "$operation_id" \
+            --arg reason "$reason" \
+            '{
+                recovered:false,
+                operationId:$operationId,
+                reason:$reason
+            }'
+    else
+        printf 'RECOVERY REFUSED // %s\n' "$reason" >&2
+    fi
+
+    return 1
+}
+
+execute_operation_recovery() {
+    local operation_id="${1:-}"
+    shift || true
+
+    local as_json="false"
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --json) as_json="true" ;;
+            *) die "unknown operation recover option: $arg" ;;
+        esac
+    done
+
+    [[ -n "$operation_id" ]] || die "operation id required for recovery"
+
+    need python3
+    need jq
+    need gh
+    need base64
+    need sha256sum
+    need awk
+
+    local facts strategy plan_available executor_available
+    local repo base workflow_path install_commit recorded_blob
+    local verified_base_sha expected_yaml_sha recorded_yaml_sha
+    local encoded_base metadata current_blob current_yaml_sha current_head
+    local verified_history install_history
+    local recovery_command arguments_json before_json recovery_record recovery_id
+    local final_metadata final_blob delete_output delete_status=0
+    local after_json verification_json after_head head_history delete_commit
+    local lookup_tmp lookup_error="" finish_summary
+
+    facts="$(python3 "$ROOT/bin/px-operation-store" recovery "$operation_id" --json)"
+    strategy="$(jq -r '.strategy // ""' <<<"$facts")"
+    plan_available="$(jq -r '.planAvailable // false' <<<"$facts")"
+    executor_available="$(jq -r '.executorAvailable // false' <<<"$facts")"
+
+    if [[ "$strategy" != "DELETE_CREATED_WORKFLOW"
+            || "$plan_available" != "true"
+            || "$executor_available" != "true" ]]; then
+        recovery_refuse "$as_json" "$operation_id" \
+            "no executable workflow-creation recovery plan is available"
+    fi
+
+    repo="$(jq -r '.plan.repository // ""' <<<"$facts")"
+    base="$(jq -r '.plan.base // ""' <<<"$facts")"
+    workflow_path="$(jq -r '.plan.path // ""' <<<"$facts")"
+    install_commit="$(jq -r '.plan.installCommit // ""' <<<"$facts")"
+    recorded_blob="$(jq -r '.plan.remoteBlobSha // ""' <<<"$facts")"
+    verified_base_sha="$(jq -r '.plan.verifiedBaseSha // ""' <<<"$facts")"
+    expected_yaml_sha="$(jq -r '.plan.expectedYamlSha // ""' <<<"$facts")"
+
+    [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded repository identity is invalid"
+    case "$workflow_path" in
+        .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+        *) recovery_refuse "$as_json" "$operation_id" "recorded workflow path is invalid" ;;
+    esac
+    [[ "$workflow_path" != *".."* ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded workflow path contains parent traversal"
+    [[ -n "$base" && -n "$install_commit" && -n "$recorded_blob"
+        && -n "$verified_base_sha" && -n "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded recovery identity is incomplete"
+
+    recorded_yaml_sha="$(jq -j '.plan.yaml // ""' <<<"$facts" | sha256sum | awk '{print $1}')"
+    [[ "$recorded_yaml_sha" == "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded YAML no longer matches its verified hash"
+
+    encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+    lookup_tmp="$(mktemp)"
+    if metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>"$lookup_tmp")"; then
+        :
+    else
+        lookup_error="$(cat "$lookup_tmp")"
+        rm -f "$lookup_tmp"
+        recovery_refuse "$as_json" "$operation_id" \
+            "recorded workflow target is unavailable; it may already be absent or repository state changed // ${lookup_error:-unknown GitHub error}"
+    fi
+    rm -f "$lookup_tmp"
+
+    [[ "$(jq -r '.type // ""' <<<"$metadata")" == "file" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded workflow target is no longer a file"
+
+    current_blob="$(jq -r '.sha // ""' <<<"$metadata")"
+    [[ "$current_blob" == "$recorded_blob" ]] \
+        || recovery_refuse "$as_json" "$operation_id" \
+            "workflow content changed after the recorded creation // expected blob $recorded_blob // current $current_blob"
+
+    current_yaml_sha="$(github_remote_file_sha256 "$repo" "$workflow_path" "$base")"
+    [[ "$current_yaml_sha" == "$expected_yaml_sha" ]] \
+        || recovery_refuse "$as_json" "$operation_id" \
+            "workflow bytes changed after the recorded creation // expected $expected_yaml_sha // current $current_yaml_sha"
+
+    current_head="$(github_ref_sha "$repo" "$base")"
+    [[ -n "$current_head" ]] \
+        || recovery_refuse "$as_json" "$operation_id" "recorded base branch has no current head"
+
+    verified_history="$(gh api "repos/$repo/compare/$verified_base_sha...$current_head" --jq '.status')" \
+        || recovery_refuse "$as_json" "$operation_id" "could not validate verified base ancestry"
+    case "$verified_history" in
+        identical|ahead) ;;
+        *) recovery_refuse "$as_json" "$operation_id" \
+            "base history diverged after verification // status $verified_history" ;;
+    esac
+
+    install_history="$(gh api "repos/$repo/compare/$install_commit...$current_head" --jq '.status')" \
+        || recovery_refuse "$as_json" "$operation_id" "could not validate install commit ancestry"
+    case "$install_history" in
+        identical|ahead) ;;
+        *) recovery_refuse "$as_json" "$operation_id" \
+            "install commit is no longer in the base history // status $install_history" ;;
+    esac
+
+    recovery_command="$(jq -nc \
+        --arg repo "$repo" \
+        --arg path "$workflow_path" \
+        --arg base "$base" \
+        --arg blob "$recorded_blob" \
+        '["delete-workflow",$repo,$path,$base,"--expect-sha",$blob,"--json"]')"
+
+    arguments_json="$(jq -nc \
+        --arg sourceOperationId "$operation_id" \
+        --arg repository "$repo" \
+        --arg base "$base" \
+        --arg path "$workflow_path" \
+        --arg blobSha "$recorded_blob" \
+        '{
+            sourceOperationId:$sourceOperationId,
+            repository:$repository,
+            base:$base,
+            path:$path,
+            blobSha:$blobSha
+        }')"
+
+    before_json="$(jq -nc \
+        --arg sourceOperationId "$operation_id" \
+        --arg strategy "$strategy" \
+        --arg currentHead "$current_head" \
+        --arg currentBlobSha "$current_blob" \
+        --arg currentYamlSha "$current_yaml_sha" \
+        --arg verifiedHistory "$verified_history" \
+        --arg installHistory "$install_history" \
+        --argjson plan "$(jq -c '.plan' <<<"$facts")" \
+        '{
+            sourceOperationId:$sourceOperationId,
+            strategy:$strategy,
+            plan:$plan,
+            live:{
+                head:$currentHead,
+                blobSha:$currentBlobSha,
+                yamlSha:$currentYamlSha,
+                verifiedHistory:$verifiedHistory,
+                installHistory:$installHistory
+            }
+        }')"
+
+    recovery_record="$(python3 "$ROOT/bin/px-operation-store" start \
+        --action-id "px.operation.recover.workflow.create" \
+        --owner-pid "$BASHPID" \
+        --title "Recover Workflow Creation" \
+        --mutation remote \
+        --recovery EVIDENCE_ONLY \
+        --command-json "$recovery_command" \
+        --arguments-json "$arguments_json" \
+        --before-json "$before_json" \
+        --json)"
+    recovery_id="$(jq -r '.id // ""' <<<"$recovery_record")"
+    [[ -n "$recovery_id" ]] || die "recovery journal returned no operation id"
+
+    if final_metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>/dev/null)"; then
+        final_blob="$(jq -r '.sha // ""' <<<"$final_metadata")"
+    else
+        final_blob=""
+    fi
+
+    if [[ "$final_blob" != "$recorded_blob" ]]; then
+        after_json="$(jq -nc \
+            --arg refusal "STALE_TARGET" \
+            --arg expectedBlob "$recorded_blob" \
+            --arg currentBlob "$final_blob" \
+            '{refusal:$refusal,expectedBlob:$expectedBlob,currentBlob:$currentBlob}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status FAILED \
+            --exit-code 1 \
+            --verification-status NOT_RUN \
+            --after-json "$after_json" \
+            --verification-json '{}' \
+            --result-summary "recovery refused because workflow identity changed after journal start" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow identity changed immediately before recovery execution"
+    fi
+
+    lookup_tmp="$(mktemp)"
+    if delete_output="$("$ROOT/bin/px" delete-workflow \
+        "$repo" "$workflow_path" "$base" \
+        --expect-sha "$recorded_blob" --json 2>"$lookup_tmp")"; then
+        delete_status=0
+    else
+        delete_status=$?
+        lookup_error="$(cat "$lookup_tmp")"
+        rm -f "$lookup_tmp"
+        after_json="$(jq -nc \
+            --arg stdout "$delete_output" \
+            --arg stderr "$lookup_error" \
+            '{stdout:$stdout,stderr:$stderr}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status FAILED \
+            --exit-code "$delete_status" \
+            --verification-status NOT_RUN \
+            --after-json "$after_json" \
+            --verification-json '{}' \
+            --result-summary "workflow creation recovery execution failed" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow deletion failed // ${lookup_error:-unknown error}"
+    fi
+    rm -f "$lookup_tmp"
+
+    delete_commit="$(jq -r '.commit // ""' <<<"$delete_output")"
+    after_json="$(jq -nc --argjson delete "$delete_output" '{delete:$delete}')"
+
+    lookup_tmp="$(mktemp)"
+    if gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" >/dev/null 2>"$lookup_tmp"; then
+        lookup_error="workflow still exists after recovery deletion"
+        rm -f "$lookup_tmp"
+        verification_json="$(jq -nc \
+            --arg reason "$lookup_error" \
+            --arg previousHead "$current_head" \
+            '{passed:false,reason:$reason,previousHead:$previousHead}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status FAILED \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "$lookup_error" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" "$lookup_error"
+    else
+        lookup_error="$(cat "$lookup_tmp")"
+    fi
+    rm -f "$lookup_tmp"
+
+    if ! grep -qiE '404|not found' <<<"$lookup_error"; then
+        verification_json="$(jq -nc \
+            --arg reason "${lookup_error:-workflow absence could not be verified}" \
+            --arg previousHead "$current_head" \
+            '{passed:false,reason:$reason,previousHead:$previousHead}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status UNAVAILABLE \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "workflow deletion succeeded but absence could not be verified" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow deletion succeeded but absence could not be verified"
+    fi
+
+    after_head="$(github_ref_sha "$repo" "$base")"
+    [[ -n "$after_head" ]] || die "recovery verification could not resolve the base head"
+
+    head_history="$(gh api "repos/$repo/compare/$current_head...$after_head" --jq '.status')" \
+        || die "recovery verification could not compare branch heads"
+
+    if [[ "$after_head" == "$current_head" || "$head_history" != "ahead" ]]; then
+        verification_json="$(jq -nc \
+            --arg reason "base branch did not advance through the recovery deletion" \
+            --arg previousHead "$current_head" \
+            --arg currentHead "$after_head" \
+            --arg history "$head_history" \
+            '{passed:false,reason:$reason,previousHead:$previousHead,currentHead:$currentHead,history:$history}')"
+        python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+            --status COMPLETE --exit-code 0 \
+            --verification-status FAILED \
+            --after-json "$after_json" \
+            --verification-json "$verification_json" \
+            --result-summary "workflow recovery deletion could not be tied to an advancing branch" \
+            --json >/dev/null
+        recovery_refuse "$as_json" "$operation_id" \
+            "workflow was deleted but branch advancement could not be verified"
+    fi
+
+    if [[ -n "$delete_commit" ]]; then
+        install_history="$(gh api "repos/$repo/compare/$delete_commit...$after_head" --jq '.status')" \
+            || die "recovery verification could not validate delete commit ancestry"
+        case "$install_history" in
+            identical|ahead) ;;
+            *)
+                verification_json="$(jq -nc \
+                    --arg reason "delete commit is not in the current base history" \
+                    --arg deleteCommit "$delete_commit" \
+                    --arg currentHead "$after_head" \
+                    --arg history "$install_history" \
+                    '{passed:false,reason:$reason,deleteCommit:$deleteCommit,currentHead:$currentHead,history:$history}')"
+                python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+                    --status COMPLETE --exit-code 0 \
+                    --verification-status FAILED \
+                    --after-json "$after_json" \
+                    --verification-json "$verification_json" \
+                    --result-summary "workflow recovery delete commit was not retained in base history" \
+                    --json >/dev/null
+                recovery_refuse "$as_json" "$operation_id" \
+                    "delete commit is not in the current base history"
+                ;;
+        esac
+    fi
+
+    verification_json="$(jq -nc \
+        --argjson passed true \
+        --arg repository "$repo" \
+        --arg base "$base" \
+        --arg path "$workflow_path" \
+        --arg previousHead "$current_head" \
+        --arg currentHead "$after_head" \
+        --arg deleteCommit "$delete_commit" \
+        --arg history "$head_history" \
+        '{
+            passed:$passed,
+            repository:$repository,
+            base:$base,
+            path:$path,
+            fileAbsent:true,
+            previousHead:$previousHead,
+            currentHead:$currentHead,
+            deleteCommit:(if $deleteCommit == "" then null else $deleteCommit end),
+            history:$history
+        }')"
+
+    finish_summary="workflow creation recovery executed and verified"
+    python3 "$ROOT/bin/px-operation-store" finish "$recovery_id" \
+        --status COMPLETE --exit-code 0 \
+        --verification-status PASSED \
+        --after-json "$after_json" \
+        --verification-json "$verification_json" \
+        --result-summary "$finish_summary" \
+        --json >/dev/null
+
+    if [[ "$as_json" == "true" ]]; then
+        jq -n \
+            --arg operationId "$operation_id" \
+            --arg recoveryOperationId "$recovery_id" \
+            --arg strategy "$strategy" \
+            --arg repository "$repo" \
+            --arg base "$base" \
+            --arg path "$workflow_path" \
+            --arg deleteCommit "$delete_commit" \
+            --arg previousHead "$current_head" \
+            --arg currentHead "$after_head" \
+            '{
+                recovered:true,
+                operationId:$operationId,
+                recoveryOperationId:$recoveryOperationId,
+                strategy:$strategy,
+                repository:$repository,
+                base:$base,
+                path:$path,
+                deleteCommit:(if $deleteCommit == "" then null else $deleteCommit end),
+                previousHead:$previousHead,
+                currentHead:$currentHead,
+                verification:"PASSED"
+            }'
+    else
+        printf 'RECOVERY VERIFIED // %s // %s@%s\n' \
+            "$workflow_path" "$base" "${after_head:0:8}"
+    fi
 }
 
 mutation_preflight() {
@@ -161,6 +642,229 @@ mutation_preflight() {
     need jq
 
     case "$action_id" in
+        px.operation.recover.execute)
+            local operation_id facts strategy plan_available executor_available live_validation
+            local source_action source_status recovery_class reason allowed="true"
+            local plan_repo plan_base plan_path plan_blob plan_yaml_sha plan_install plan_verified
+            local token summary frozen_command
+
+            operation_id="$(jq -r '.operation_id // ""' <<<"$arguments_json")"
+            [[ -n "$operation_id" ]] || die "px.operation.recover.execute preflight requires operation_id"
+
+            facts="$(python3 "$ROOT/bin/px-operation-store" recovery "$operation_id" --json)"
+            strategy="$(jq -r '.strategy // ""' <<<"$facts")"
+            plan_available="$(jq -r '.planAvailable // false' <<<"$facts")"
+            executor_available="$(jq -r '.executorAvailable // false' <<<"$facts")"
+            live_validation="$(jq -r '.requiresLiveValidation // false' <<<"$facts")"
+            source_action="$(jq -r '.actionId // ""' <<<"$facts")"
+            source_status="$(jq -r '.status // ""' <<<"$facts")"
+            recovery_class="$(jq -r '.recovery // ""' <<<"$facts")"
+            reason="$(jq -r '.reason // ""' <<<"$facts")"
+
+            if [[ "$strategy" != "DELETE_CREATED_WORKFLOW"
+                    || "$plan_available" != "true"
+                    || "$executor_available" != "true" ]]; then
+                allowed="false"
+                [[ -n "$reason" ]] || reason="NO EXECUTABLE RECOVERY PLAN"
+            fi
+
+            plan_repo="$(jq -r '.plan.repository // ""' <<<"$facts")"
+            plan_base="$(jq -r '.plan.base // ""' <<<"$facts")"
+            plan_path="$(jq -r '.plan.path // ""' <<<"$facts")"
+            plan_blob="$(jq -r '.plan.remoteBlobSha // ""' <<<"$facts")"
+            plan_yaml_sha="$(jq -r '.plan.expectedYamlSha // ""' <<<"$facts")"
+            plan_install="$(jq -r '.plan.installCommit // ""' <<<"$facts")"
+            plan_verified="$(jq -r '.plan.verifiedBaseSha // ""' <<<"$facts")"
+
+            if [[ "$allowed" == "true" ]]; then
+                if [[ -z "$plan_repo" || -z "$plan_base" || -z "$plan_path"
+                        || -z "$plan_blob" || -z "$plan_yaml_sha"
+                        || -z "$plan_install" || -z "$plan_verified" ]]; then
+                    allowed="false"
+                    reason="RECOVERY PLAN IDENTITY IS INCOMPLETE"
+                fi
+            fi
+
+            token="$(jq -nc \
+                --arg operationId "$operation_id" \
+                --arg actionId "$source_action" \
+                --arg status "$source_status" \
+                --arg recovery "$recovery_class" \
+                --arg strategy "$strategy" \
+                --arg repository "$plan_repo" \
+                --arg base "$plan_base" \
+                --arg path "$plan_path" \
+                --arg blobSha "$plan_blob" \
+                --arg yamlSha "$plan_yaml_sha" \
+                --arg installCommit "$plan_install" \
+                --arg verifiedBaseSha "$plan_verified" \
+                --argjson requiresLiveValidation "$live_validation" \
+                '{
+                    operationId:$operationId,
+                    actionId:$actionId,
+                    status:$status,
+                    recovery:$recovery,
+                    strategy:$strategy,
+                    repository:$repository,
+                    base:$base,
+                    path:$path,
+                    blobSha:$blobSha,
+                    yamlSha:$yamlSha,
+                    installCommit:$installCommit,
+                    verifiedBaseSha:$verifiedBaseSha,
+                    requiresLiveValidation:$requiresLiveValidation
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg operationId "$operation_id" \
+                '["operation","recover",$operationId,"--json"]')"
+
+            if [[ -n "$plan_path" ]]; then
+                summary="RECOVER // $strategy // $plan_repo // $plan_path // $plan_base // BLOB ${plan_blob:0:12}"
+            else
+                summary="RECOVER // $operation_id // ${strategy:-NO STRATEGY}"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$facts" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
+        ai.turn|ai.quick.continue|ai.quick.report|ai.quick.checklist|ai.quick.next)
+            local session_id session_json events_json baseline_event_id
+            local status active_pid room_id doctor_id provider_id provider_session_id
+            local working_directory updated_at prompt quick_command action_label
+            local allowed="true" reason="" summary="" token frozen_command
+
+            session_id="$(jq -r '.session_id // ""' <<<"$arguments_json")"
+            [[ -n "$session_id" ]] || die "$action_id preflight requires session_id"
+
+            session_json="$(hospital_session_guard_record "$session_id")"
+            events_json="$(hospital_session_guard_events "$session_id")"
+            baseline_event_id="$(jq -r '[.[] | ((.id // 0) | tonumber? // 0)] | max // 0' <<<"$events_json")"
+
+            status="$(jq -r '.status // "IDLE"' <<<"$session_json")"
+            active_pid="$(jq -r '.activePid // 0' <<<"$session_json")"
+            room_id="$(jq -r '.roomId // ""' <<<"$session_json")"
+            doctor_id="$(jq -r '.doctorId // ""' <<<"$session_json")"
+            provider_id="$(jq -r '.providerId // ""' <<<"$session_json")"
+            provider_session_id="$(jq -r '.providerSessionId // ""' <<<"$session_json")"
+            working_directory="$(jq -r '.workingDirectory // ""' <<<"$session_json")"
+            updated_at="$(jq -r '.updatedAt // ""' <<<"$session_json")"
+
+            if [[ "${status^^}" == "OPERATING" || "$active_pid" -gt 0 ]]; then
+                allowed="false"
+                reason="DOCTOR ALREADY OPERATING"
+            elif [[ -z "$room_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO ROOM"
+            elif [[ -z "$doctor_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO DOCTOR"
+            elif [[ -z "$provider_id" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO PROVIDER"
+            elif [[ -z "$working_directory" ]]; then
+                allowed="false"
+                reason="SESSION HAS NO WORKING DIRECTORY"
+            fi
+
+            case "$action_id" in
+                ai.turn)
+                    prompt="$(jq -r '.prompt // ""' <<<"$arguments_json")"
+                    [[ -n "${prompt//[[:space:]]/}" ]] || die "ai.turn preflight requires prompt"
+                    action_label="MESSAGE DOCTOR"
+                    frozen_command="$(jq -nc \
+                        --arg session "$session_id" \
+                        --arg prompt "$prompt" \
+                        '["agent","turn",$session,"--prompt",$prompt,"--json"]')"
+                    ;;
+                ai.quick.continue)
+                    quick_command="CONTINUE"
+                    action_label="QUICK CONTINUE"
+                    ;;
+                ai.quick.report)
+                    quick_command="REPORT"
+                    action_label="QUICK REPORT"
+                    ;;
+                ai.quick.checklist)
+                    quick_command="CHECKLIST"
+                    action_label="QUICK CHECKLIST"
+                    ;;
+                ai.quick.next)
+                    quick_command="NEXT"
+                    action_label="QUICK NEXT"
+                    ;;
+            esac
+
+            if [[ "$action_id" != "ai.turn" ]]; then
+                frozen_command="$(jq -nc \
+                    --arg session "$session_id" \
+                    --arg command "$quick_command" \
+                    '["agent","quick",$session,$command,"--json"]')"
+            fi
+
+            token="$(jq -nc \
+                --arg actionId "$action_id" \
+                --arg sessionId "$session_id" \
+                --arg roomId "$room_id" \
+                --arg doctorId "$doctor_id" \
+                --arg providerId "$provider_id" \
+                --arg providerSessionId "$provider_session_id" \
+                --arg workingDirectory "$working_directory" \
+                --arg status "$status" \
+                --arg updatedAt "$updated_at" \
+                --argjson activePid "$active_pid" \
+                --argjson baselineEventId "$baseline_event_id" \
+                '{
+                    actionId:$actionId,
+                    sessionId:$sessionId,
+                    roomId:$roomId,
+                    doctorId:$doctorId,
+                    providerId:$providerId,
+                    providerSessionId:$providerSessionId,
+                    workingDirectory:$workingDirectory,
+                    status:$status,
+                    activePid:$activePid,
+                    updatedAt:$updatedAt,
+                    baselineEventId:$baselineEventId
+                }')"
+
+            summary="$action_label // ROOM $room_id // DOCTOR $doctor_id // PROVIDER $provider_id // SESSION $session_id"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$session_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
         github.run.cancel)
             need gh
 
@@ -196,12 +900,16 @@ mutation_preflight() {
                 [[ -n "$conclusion" ]] && reason+=" // ${conclusion^^}"
             fi
 
-            token="$(jq -nc \
+            token="$(jq -c \
                 --arg repository "$repo" \
                 --arg runId "$run_id" \
-                --arg workflow "$workflow" \
-                --arg headSha "$head_sha" \
-                '{repository:$repository,runId:$runId,workflow:$workflow,headSha:$headSha}')"
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
 
             summary="CANCEL // $workflow // #$run_id // ${status^^}"
             [[ -n "$head_branch" ]] && summary+=" // $head_branch"
@@ -224,6 +932,396 @@ mutation_preflight() {
                     target:$target
                 }'
             ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json actual_id
+            local workflow status conclusion head_branch head_sha token run_attempt
+            local allowed="true" reason="" summary=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun preflight requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun preflight requires run_id"
+
+            repo="$(repo_for "$repository_key")"
+            run_json="$(github_run_guard_record "$repo" "$run_id")"
+
+            actual_id="$(jq -r '.databaseId // ""' <<<"$run_json")"
+            [[ "$actual_id" == "$run_id" ]] \
+                || die "GitHub returned run $actual_id while guarding rerun $run_id"
+
+            workflow="$(jq -r '.workflowName // "UNKNOWN WORKFLOW"' <<<"$run_json")"
+            status="$(jq -r '.status // ""' <<<"$run_json")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+            head_branch="$(jq -r '.headBranch // ""' <<<"$run_json")"
+            head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+            run_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+            if [[ -z "$status" ]]; then
+                allowed="false"
+                reason="RUN STATUS IS UNKNOWN"
+            elif [[ "${status,,}" != "completed" ]]; then
+                allowed="false"
+                reason="RUN MUST BE COMPLETED BEFORE RERUN // STATUS ${status^^}"
+            fi
+
+            token="$(jq -c \
+                --arg repository "$repo" \
+                --arg runId "$run_id" \
+                '{
+                    repository:$repository,
+                    runId:$runId,
+                    workflow:(.workflowName // ""),
+                    headSha:(.headSha // ""),
+                    attempt:(.attempt // 0)
+                }' <<<"$run_json")"
+
+            summary="RERUN // $workflow // #$run_id // ATTEMPT $run_attempt"
+            [[ -n "$conclusion" ]] && summary+=" // ${conclusion^^}"
+            [[ -n "$head_branch" ]] && summary+=" // $head_branch"
+            [[ -n "$head_sha" ]] && summary+=" // ${head_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    target:$target
+                }'
+            ;;
+        github.workflow.run)
+            need gh
+
+            local repository_key repo workflow_query ref_value effective_ref
+            local workflow_json workflow_id workflow_name workflow_path workflow_state
+            local ref_sha workflow_blob_sha baseline baseline_ids token summary frozen_command
+            local allowed="true" reason=""
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            workflow_query="$(jq -r '.workflow // ""' <<<"$arguments_json")"
+            ref_value="$(jq -r '.ref // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.workflow.run preflight requires repository"
+            [[ -n "$workflow_query" ]] || die "github.workflow.run preflight requires workflow"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_json="$(github_workflow_guard_record "$repo" "$workflow_query")"
+            workflow_id="$(jq -r '.id // ""' <<<"$workflow_json")"
+            workflow_name="$(jq -r '.name // ""' <<<"$workflow_json")"
+            workflow_path="$(jq -r '.path // ""' <<<"$workflow_json")"
+            workflow_state="$(jq -r '.state // ""' <<<"$workflow_json")"
+
+            [[ -n "$workflow_path" ]] || die "workflow has no canonical path: $workflow_query"
+
+            if [[ -n "$ref_value" ]]; then
+                effective_ref="$ref_value"
+            else
+                effective_ref="$(default_branch_for "$repo")"
+            fi
+
+            [[ -n "$effective_ref" ]] || die "workflow dispatch ref could not be resolved"
+
+            ref_sha="$(github_ref_sha "$repo" "$effective_ref")"
+            [[ -n "$ref_sha" ]] || die "workflow dispatch ref has no commit SHA"
+
+            workflow_blob_sha="$(github_workflow_blob_sha "$repo" "$workflow_path" "$effective_ref")"
+            [[ -n "$workflow_blob_sha" ]] || die "workflow file has no blob SHA at $effective_ref"
+
+            baseline="$(github_dispatch_runs_for "$repo" "$workflow_path" "$ref_sha")"
+            baseline_ids="$(jq -c '[.[].databaseId] | sort' <<<"$baseline")"
+
+            if [[ "${workflow_state,,}" != "active" ]]; then
+                allowed="false"
+                reason="WORKFLOW IS NOT ACTIVE // ${workflow_state^^}"
+            fi
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowId "$workflow_id" \
+                --arg workflowName "$workflow_name" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowState "$workflow_state" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                --arg ref "$effective_ref" \
+                --arg refSha "$ref_sha" \
+                --argjson beforeRunIds "$baseline_ids" \
+                '{
+                    repository:$repository,
+                    workflowId:$workflowId,
+                    workflowName:$workflowName,
+                    workflowPath:$workflowPath,
+                    workflowState:$workflowState,
+                    workflowBlobSha:$workflowBlobSha,
+                    ref:$ref,
+                    refSha:$refSha,
+                    beforeRunIds:$beforeRunIds
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflow "$workflow_path" \
+                --arg ref "$effective_ref" \
+                '["run",$repository,$workflow,$ref]')"
+
+            summary="DISPATCH // $workflow_name // $workflow_path // $effective_ref@${ref_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson allowed "$allowed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$workflow_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+            ;;
+        workflow.create)
+            need gh
+            need mktemp
+            need base64
+            need sha256sum
+            need awk
+
+            local repository_key repo template slug trigger script_path
+            local base base_sha workflow_path encoded_base lookup_tmp lookup_error=""
+            local tmp yaml_sha yaml_base64 validation_ok="true"
+            local allowed="true" reason="" token summary frozen_command target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            template="$(jq -r '.template // ""' <<<"$arguments_json")"
+            slug="$(jq -r '.slug // ""' <<<"$arguments_json")"
+            trigger="$(jq -r '.trigger // ""' <<<"$arguments_json")"
+            script_path="$(jq -r '.script_path // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "workflow.create preflight requires repository"
+            [[ -n "$template" ]] || die "workflow.create preflight requires template"
+            [[ -n "$slug" ]] || die "workflow.create preflight requires slug"
+
+            [[ -n "$trigger" ]] || trigger="manual"
+            validate_slug "$slug"
+
+            if [[ "$template" == "script-test" ]]; then
+                validate_script_path "$script_path"
+            elif [[ -n "$script_path" ]]; then
+                die "--script is only valid with script-test"
+            fi
+
+            repo="$(repo_for "$repository_key")"
+            base="$(default_branch_for "$repo")"
+            [[ -n "$base" ]] || die "workflow create default branch unavailable"
+            base_sha="$(github_ref_sha "$repo" "$base")"
+            [[ -n "$base_sha" ]] || die "workflow create base has no commit SHA"
+
+            workflow_path=".github/workflows/${slug}.yml"
+            encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+            lookup_tmp="$(mktemp)"
+
+            if gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" >/dev/null 2>"$lookup_tmp"; then
+                allowed="false"
+                reason="WORKFLOW TARGET ALREADY EXISTS // $workflow_path"
+            else
+                lookup_error="$(cat "$lookup_tmp")"
+                if ! grep -qiE '404|not found' <<<"$lookup_error"; then
+                    rm -f "$lookup_tmp"
+                    die "workflow create target lookup failed // ${lookup_error:-unknown GitHub error}"
+                fi
+            fi
+            rm -f "$lookup_tmp"
+
+            tmp="$(mktemp)"
+            render_workflow "$template" "$slug" "$trigger" "$base" "$script_path" > "$tmp"
+
+            if ! validate_workflow "$tmp"; then
+                validation_ok="false"
+            fi
+
+            yaml_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+            yaml_base64="$(base64 < "$tmp" | tr -d '\n')"
+
+            if [[ "$validation_ok" != "true"
+                    || "$VALIDATION_STATUS" != "pass" ]]; then
+                allowed="false"
+                if [[ -z "$reason" ]]; then
+                    reason="WORKFLOW VALIDATION DID NOT PASS // ${VALIDATION_STATUS^^}"
+                    [[ -n "$VALIDATION_MESSAGE" ]] && reason+=" // $VALIDATION_MESSAGE"
+                fi
+            fi
+
+            token="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg workflowPath "$workflow_path"                 --arg yamlSha "$yaml_sha"                 --arg yamlBase64 "$yaml_base64"                 '{
+                    repository:$repository,
+                    base:$base,
+                    baseSha:$baseSha,
+                    template:$template,
+                    slug:$slug,
+                    trigger:$trigger,
+                    scriptPath:$scriptPath,
+                    workflowPath:$workflowPath,
+                    yamlSha:$yamlSha,
+                    yamlBase64:$yamlBase64
+                }')"
+
+            frozen_command="$(jq -nc                 --arg repository "$repo"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg yamlSha "$yaml_sha"                 '[
+                    "create",
+                    $repository,
+                    $template,
+                    $slug,
+                    $trigger
+                ]
+                + (
+                    if $scriptPath == ""
+                    then []
+                    else ["--script=" + $scriptPath]
+                    end
+                )
+                + [
+                    "--install",
+                    "--json",
+                    "--expect-base=" + $base,
+                    "--expect-base-sha=" + $baseSha,
+                    "--expect-yaml-sha=" + $yamlSha
+                ]')"
+
+            target="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg baseSha "$base_sha"                 --arg workflowPath "$workflow_path"                 --arg template "$template"                 --arg slug "$slug"                 --arg trigger "$trigger"                 --arg scriptPath "$script_path"                 --arg yamlSha "$yaml_sha"                 --arg validationStatus "$VALIDATION_STATUS"                 --arg validationValidator "$VALIDATION_VALIDATOR"                 '{
+                    repository:$repository,
+                    base:$base,
+                    baseSha:$baseSha,
+                    workflowPath:$workflowPath,
+                    template:$template,
+                    slug:$slug,
+                    trigger:$trigger,
+                    scriptPath:(if $scriptPath == "" then null else $scriptPath end),
+                    yamlSha:$yamlSha,
+                    validation:{
+                        status:$validationStatus,
+                        validator:$validationValidator
+                    }
+                }')"
+
+            summary="CREATE WORKFLOW // $workflow_path // $base@${base_sha:0:8} // YAML ${yaml_sha:0:8}"
+
+            jq -n                 --arg actionId "$action_id"                 --argjson allowed "$allowed"                 --arg summary "$summary"                 --arg reason "$reason"                 --arg token "$token"                 --argjson frozenCommand "$frozen_command"                 --argjson target "$target"                 '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:$allowed,
+                    summary:$summary,
+                    reason:$reason,
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+
+            rm -f "$tmp"
+            ;;
+        workflow.delete)
+            need gh
+
+            local repository_key repo workflow_query ref_value effective_ref
+            local workflow_json workflow_id workflow_name workflow_path workflow_state
+            local ref_sha workflow_blob_sha token summary frozen_command
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            workflow_query="$(jq -r '.workflow_path // ""' <<<"$arguments_json")"
+            ref_value="$(jq -r '.ref // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "workflow.delete preflight requires repository"
+            [[ -n "$workflow_query" ]] || die "workflow.delete preflight requires workflow_path"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_json="$(github_workflow_guard_record "$repo" "$workflow_query")"
+            workflow_id="$(jq -r '.id // ""' <<<"$workflow_json")"
+            workflow_name="$(jq -r '.name // ""' <<<"$workflow_json")"
+            workflow_path="$(jq -r '.path // ""' <<<"$workflow_json")"
+            workflow_state="$(jq -r '.state // ""' <<<"$workflow_json")"
+
+            [[ -n "$workflow_path" ]] || die "workflow delete target has no canonical path: $workflow_query"
+
+            if [[ -n "$ref_value" ]]; then
+                effective_ref="$ref_value"
+            else
+                effective_ref="$(default_branch_for "$repo")"
+            fi
+
+            [[ -n "$effective_ref" ]] || die "workflow delete ref could not be resolved"
+
+            ref_sha="$(github_ref_sha "$repo" "$effective_ref")"
+            [[ -n "$ref_sha" ]] || die "workflow delete ref has no commit SHA"
+
+            workflow_blob_sha="$(github_workflow_blob_sha "$repo" "$workflow_path" "$effective_ref")"
+            [[ -n "$workflow_blob_sha" ]] || die "workflow delete target has no blob SHA at $effective_ref"
+
+            token="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowId "$workflow_id" \
+                --arg workflowName "$workflow_name" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowState "$workflow_state" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                --arg ref "$effective_ref" \
+                --arg refSha "$ref_sha" \
+                '{
+                    repository:$repository,
+                    workflowId:$workflowId,
+                    workflowName:$workflowName,
+                    workflowPath:$workflowPath,
+                    workflowState:$workflowState,
+                    workflowBlobSha:$workflowBlobSha,
+                    ref:$ref,
+                    refSha:$refSha
+                }')"
+
+            frozen_command="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg ref "$effective_ref" \
+                --arg workflowBlobSha "$workflow_blob_sha" \
+                '[
+                    "delete-workflow",
+                    $repository,
+                    $workflowPath,
+                    $ref,
+                    "--expect-sha",
+                    $workflowBlobSha
+                ]')"
+
+            summary="DELETE WORKFLOW // $workflow_name // $workflow_path // $effective_ref@${ref_sha:0:8} // BLOB ${workflow_blob_sha:0:8}"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --arg summary "$summary" \
+                --arg token "$token" \
+                --argjson frozenCommand "$frozen_command" \
+                --argjson target "$workflow_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    allowed:true,
+                    summary:$summary,
+                    reason:"",
+                    token:$token,
+                    frozenCommand:$frozenCommand,
+                    target:$target
+                }'
+        ;;
         *)
             die "no PX mutation preflight policy for action: $action_id"
             ;;
@@ -233,6 +1331,7 @@ mutation_preflight() {
 mutation_verify() {
     local action_id="${1:-}"
     local arguments_json="${2:-}"
+    local preflight_token="${3:-}"
 
     [[ -n "$action_id" ]] || die "mutation action id required"
     [[ -n "$arguments_json" ]] || die "mutation arguments JSON required"
@@ -240,6 +1339,106 @@ mutation_verify() {
     need jq
 
     case "$action_id" in
+        ai.turn|ai.quick.continue|ai.quick.report|ai.quick.checklist|ai.quick.next)
+            local session_id token_session current_session events_json baseline_event_id after_events
+            local expected_room expected_doctor expected_provider expected_workdir
+            local status active_pid started_count completed_count failed_count cancelled_count
+            local checkpoint_count report_count event_summary
+            local passed="false" summary="" reason="" action_label
+
+            session_id="$(jq -r '.session_id // ""' <<<"$arguments_json")"
+            [[ -n "$session_id" ]] || die "$action_id verification requires session_id"
+            [[ -n "$preflight_token" ]] || die "$action_id verification requires preflight token"
+
+            token_session="$(jq -r '.sessionId // ""' <<<"$preflight_token")"
+            [[ "$token_session" == "$session_id" ]] || die "Doctor verification session changed"
+
+            baseline_event_id="$(jq -r '.baselineEventId // 0' <<<"$preflight_token")"
+            expected_room="$(jq -r '.roomId // ""' <<<"$preflight_token")"
+            expected_doctor="$(jq -r '.doctorId // ""' <<<"$preflight_token")"
+            expected_provider="$(jq -r '.providerId // ""' <<<"$preflight_token")"
+            expected_workdir="$(jq -r '.workingDirectory // ""' <<<"$preflight_token")"
+
+            current_session="$(hospital_session_guard_record "$session_id")"
+            events_json="$(hospital_session_guard_events "$session_id")"
+            after_events="$(jq -c --argjson baseline "$baseline_event_id" '
+                [.[] | select(((.id // 0) | tonumber? // 0) > $baseline)]
+            ' <<<"$events_json")"
+
+            status="$(jq -r '.status // ""' <<<"$current_session")"
+            active_pid="$(jq -r '.activePid // 0' <<<"$current_session")"
+            started_count="$(jq '[.[] | select(.type == "turn.started")] | length' <<<"$after_events")"
+            completed_count="$(jq '[.[] | select(.type == "turn.completed")] | length' <<<"$after_events")"
+            failed_count="$(jq '[.[] | select(.type == "turn.failed")] | length' <<<"$after_events")"
+            cancelled_count="$(jq '[.[] | select(.type == "turn.cancelled")] | length' <<<"$after_events")"
+            checkpoint_count="$(jq '[.[] | select(.type == "checkpoint.created")] | length' <<<"$after_events")"
+            report_count="$(jq '[.[] | select(.type == "room_report.created")] | length' <<<"$after_events")"
+            event_summary="$(jq -c '[.[] | {id,type,createdAt}]' <<<"$after_events")"
+
+            case "$action_id" in
+                ai.turn) action_label="MESSAGE DOCTOR" ;;
+                ai.quick.continue) action_label="QUICK CONTINUE" ;;
+                ai.quick.report) action_label="QUICK REPORT" ;;
+                ai.quick.checklist) action_label="QUICK CHECKLIST" ;;
+                ai.quick.next) action_label="QUICK NEXT" ;;
+            esac
+
+            if [[ "$(jq -r '.roomId // ""' <<<"$current_session")" != "$expected_room"
+                    || "$(jq -r '.doctorId // ""' <<<"$current_session")" != "$expected_doctor"
+                    || "$(jq -r '.providerId // ""' <<<"$current_session")" != "$expected_provider"
+                    || "$(jq -r '.workingDirectory // ""' <<<"$current_session")" != "$expected_workdir" ]]; then
+                reason="SESSION IDENTITY CHANGED DURING DOCTOR TURN"
+            elif [[ "${status^^}" != "WAITING" || "$active_pid" -gt 0 ]]; then
+                reason="DOCTOR DID NOT RETURN TO WAITING // STATUS ${status^^} // PID $active_pid"
+            elif [[ "$failed_count" -gt 0 || "$cancelled_count" -gt 0 ]]; then
+                reason="DOCTOR TURN FAILED OR WAS CANCELLED"
+            elif [[ "$started_count" -ne 1 || "$completed_count" -ne 1 ]]; then
+                reason="DOCTOR TURN ACTIVITY IS AMBIGUOUS // STARTED $started_count // COMPLETED $completed_count"
+            elif [[ "$action_id" == "ai.quick.report"
+                    && ( "$checkpoint_count" -ne 1 || "$report_count" -ne 1 ) ]]; then
+                reason="QUICK REPORT DID NOT PRODUCE EXACTLY ONE CHECKPOINT AND ROOM REPORT"
+            else
+                passed="true"
+                summary="$action_label VERIFIED // ROOM $expected_room // DOCTOR $expected_doctor // SESSION $session_id"
+            fi
+
+            if [[ "$passed" != "true" && -z "$summary" ]]; then
+                summary="$action_label VERIFY FAILED // SESSION $session_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson session "$current_session" \
+                --argjson events "$event_summary" \
+                --argjson started "$started_count" \
+                --argjson completed "$completed_count" \
+                --argjson failed "$failed_count" \
+                --argjson cancelled "$cancelled_count" \
+                --argjson checkpoints "$checkpoint_count" \
+                --argjson reports "$report_count" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:{
+                        session:$session,
+                        events:$events,
+                        counts:{
+                            started:$started,
+                            completed:$completed,
+                            failed:$failed,
+                            cancelled:$cancelled,
+                            checkpoints:$checkpoints,
+                            reports:$reports
+                        }
+                    }
+                }'
+            ;;
         github.run.cancel)
             need gh
 
@@ -296,6 +1495,314 @@ mutation_verify() {
                     target:$target
                 }'
             ;;
+        github.run.rerun)
+            need gh
+
+            local repository_key repo run_id run_json
+            local workflow="" status="" head_sha="" current_attempt=0
+            local original_attempt expected_workflow expected_head_sha
+            local summary="" reason="" passed="false"
+            local check
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            run_id="$(jq -r '.run_id // ""' <<<"$arguments_json")"
+
+            [[ -n "$repository_key" ]] || die "github.run.rerun verification requires repository"
+            [[ -n "$run_id" ]] || die "github.run.rerun verification requires run_id"
+            [[ -n "$preflight_token" ]] || die "github.run.rerun verification requires preflight token"
+
+            original_attempt="$(jq -r '.attempt // 0' <<<"$preflight_token")"
+            expected_workflow="$(jq -r '.workflow // ""' <<<"$preflight_token")"
+            expected_head_sha="$(jq -r '.headSha // ""' <<<"$preflight_token")"
+            repo="$(repo_for "$repository_key")"
+
+            for check in 1 2 3 4 5; do
+                run_json="$(github_run_guard_record "$repo" "$run_id")"
+                workflow="$(jq -r '.workflowName // ""' <<<"$run_json")"
+                status="$(jq -r '.status // ""' <<<"$run_json")"
+                head_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+                current_attempt="$(jq -r '.attempt // 0' <<<"$run_json")"
+
+                if [[ "$workflow" != "$expected_workflow"
+                        || "$head_sha" != "$expected_head_sha" ]]; then
+                    reason="RUN IDENTITY CHANGED DURING RERUN VERIFICATION"
+                    break
+                fi
+
+                if (( current_attempt > original_attempt )); then
+                    passed="true"
+                    summary="RERUN VERIFIED // $workflow // #$run_id // ATTEMPT $current_attempt // ${status^^}"
+                    break
+                fi
+
+                [[ "$check" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "$passed" != "true" && -z "$reason" ]]; then
+                reason="RUN ATTEMPT DID NOT ADVANCE // STILL $current_attempt"
+                summary="RERUN VERIFY FAILED // $workflow // #$run_id"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$run_json" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        github.workflow.run)
+            need gh
+
+            local repository_key repo workflow_path workflow_name ref_sha
+            local before_ids current candidates candidate_count target
+            local passed="false" summary="" reason=""
+            local check
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "github.workflow.run verification requires repository"
+            [[ -n "$preflight_token" ]] || die "github.workflow.run verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            workflow_name="$(jq -r '.workflowName // ""' <<<"$preflight_token")"
+            ref_sha="$(jq -r '.refSha // ""' <<<"$preflight_token")"
+            before_ids="$(jq -c '.beforeRunIds // []' <<<"$preflight_token")"
+
+            [[ -n "$workflow_path" ]] || die "dispatch verification token has no workflow path"
+            [[ -n "$ref_sha" ]] || die "dispatch verification token has no ref SHA"
+
+            target='{}'
+
+            for check in 1 2 3 4 5; do
+                current="$(github_dispatch_runs_for "$repo" "$workflow_path" "$ref_sha")"
+                candidates="$(jq -c \
+                    --argjson before "$before_ids" \
+                    '[.[] | select((.databaseId as $id | $before | index($id)) == null)]' \
+                    <<<"$current")"
+                candidate_count="$(jq 'length' <<<"$candidates")"
+
+                if [[ "$candidate_count" -eq 1 ]]; then
+                    target="$(jq -c '.[0]' <<<"$candidates")"
+                    passed="true"
+                    summary="DISPATCH VERIFIED // $workflow_name // #$(jq -r '.databaseId' <<<"$target")"
+                    break
+                fi
+
+                if [[ "$candidate_count" -gt 1 ]]; then
+                    reason="DISPATCH VERIFICATION AMBIGUOUS // $candidate_count NEW MATCHING RUNS"
+                    summary="DISPATCH VERIFY FAILED // $workflow_name"
+                    break
+                fi
+
+                [[ "$check" -eq 5 ]] || sleep 1
+            done
+
+            if [[ "$passed" != "true" && -z "$reason" ]]; then
+                reason="NO NEW MATCHING WORKFLOW_DISPATCH RUN APPEARED"
+                summary="DISPATCH VERIFY FAILED // $workflow_name"
+            fi
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$target" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        workflow.create)
+            need gh
+            need mktemp
+
+            local repository_key repo token_repo base expected_base_sha
+            local workflow_path expected_yaml_sha current_base current_base_sha
+            local metadata remote_yaml_sha remote_blob_sha encoded_base tmp lookup_error=""
+            local passed="false" summary="" reason="" target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "workflow.create verification requires repository"
+            [[ -n "$preflight_token" ]] || die "workflow.create verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            token_repo="$(jq -r '.repository // ""' <<<"$preflight_token")"
+            base="$(jq -r '.base // ""' <<<"$preflight_token")"
+            expected_base_sha="$(jq -r '.baseSha // ""' <<<"$preflight_token")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            expected_yaml_sha="$(jq -r '.yamlSha // ""' <<<"$preflight_token")"
+
+            [[ "$token_repo" == "$repo" ]] || die "workflow create verification repository changed"
+            [[ -n "$base" ]] || die "workflow create verification token has no base"
+            [[ -n "$expected_base_sha" ]] || die "workflow create verification token has no base SHA"
+            [[ -n "$workflow_path" ]] || die "workflow create verification token has no workflow path"
+            [[ -n "$expected_yaml_sha" ]] || die "workflow create verification token has no YAML SHA"
+
+            current_base="$(default_branch_for "$repo")"
+            current_base_sha="$(github_ref_sha "$repo" "$base")"
+            encoded_base="$(jq -rn --arg value "$base" '$value | @uri')"
+
+            if [[ "$current_base" != "$base" ]]; then
+                reason="DEFAULT BRANCH CHANGED // EXPECTED $base // CURRENT $current_base"
+                summary="CREATE VERIFY FAILED // $workflow_path"
+                metadata='{}'
+                remote_blob_sha=""
+                remote_yaml_sha=""
+            else
+                tmp="$(mktemp)"
+                if metadata="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_base" 2>"$tmp")"; then
+                    remote_blob_sha="$(jq -r '.sha // ""' <<<"$metadata")"
+                    remote_yaml_sha="$(github_remote_file_sha256 "$repo" "$workflow_path" "$base")"
+
+                    if [[ "$current_base_sha" == "$expected_base_sha" ]]; then
+                        reason="TARGET REF DID NOT ADVANCE AFTER WORKFLOW CREATE"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                    elif [[ "$remote_yaml_sha" != "$expected_yaml_sha" ]]; then
+                        reason="CREATED WORKFLOW CONTENT DOES NOT MATCH FROZEN YAML"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                    else
+                        passed="true"
+                        summary="CREATE VERIFIED // $workflow_path // $base@${current_base_sha:0:8}"
+                    fi
+                else
+                    lookup_error="$(cat "$tmp")"
+                    if grep -qiE '404|not found' <<<"$lookup_error"; then
+                        reason="CREATED WORKFLOW IS MISSING // $workflow_path"
+                        summary="CREATE VERIFY FAILED // $workflow_path"
+                        metadata='{}'
+                        remote_blob_sha=""
+                        remote_yaml_sha=""
+                    else
+                        rm -f "$tmp"
+                        die "workflow create verification lookup failed // ${lookup_error:-unknown GitHub error}"
+                    fi
+                fi
+                rm -f "$tmp"
+            fi
+
+            target="$(jq -nc                 --arg repository "$repo"                 --arg base "$base"                 --arg previousBaseSha "$expected_base_sha"                 --arg currentBaseSha "$current_base_sha"                 --arg workflowPath "$workflow_path"                 --arg expectedYamlSha "$expected_yaml_sha"                 --arg remoteYamlSha "$remote_yaml_sha"                 --arg remoteBlobSha "$remote_blob_sha"                 '{
+                    repository:$repository,
+                    base:$base,
+                    previousBaseSha:$previousBaseSha,
+                    currentBaseSha:$currentBaseSha,
+                    workflowPath:$workflowPath,
+                    expectedYamlSha:$expectedYamlSha,
+                    remoteYamlSha:(if $remoteYamlSha == "" then null else $remoteYamlSha end),
+                    remoteBlobSha:(if $remoteBlobSha == "" then null else $remoteBlobSha end)
+                }')"
+
+            jq -n                 --arg actionId "$action_id"                 --argjson passed "$passed"                 --arg summary "$summary"                 --arg reason "$reason"                 --argjson target "$target"                 '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+            ;;
+        workflow.delete)
+            need gh
+            need mktemp
+
+            local repository_key repo token_repo workflow_path workflow_name ref_value
+            local expected_blob expected_ref_sha current_ref_sha current_blob=""
+            local lookup_error="" encoded_ref tmp
+            local passed="false" summary="" reason="" target
+
+            repository_key="$(jq -r '.repository // ""' <<<"$arguments_json")"
+            [[ -n "$repository_key" ]] || die "workflow.delete verification requires repository"
+            [[ -n "$preflight_token" ]] || die "workflow.delete verification requires preflight token"
+
+            repo="$(repo_for "$repository_key")"
+            token_repo="$(jq -r '.repository // ""' <<<"$preflight_token")"
+            workflow_path="$(jq -r '.workflowPath // ""' <<<"$preflight_token")"
+            workflow_name="$(jq -r '.workflowName // ""' <<<"$preflight_token")"
+            ref_value="$(jq -r '.ref // ""' <<<"$preflight_token")"
+            expected_blob="$(jq -r '.workflowBlobSha // ""' <<<"$preflight_token")"
+            expected_ref_sha="$(jq -r '.refSha // ""' <<<"$preflight_token")"
+
+            [[ "$token_repo" == "$repo" ]] || die "workflow delete verification repository changed"
+            [[ -n "$workflow_path" ]] || die "workflow delete verification token has no workflow path"
+            [[ -n "$ref_value" ]] || die "workflow delete verification token has no ref"
+            [[ -n "$expected_blob" ]] || die "workflow delete verification token has no blob SHA"
+            [[ -n "$expected_ref_sha" ]] || die "workflow delete verification token has no ref SHA"
+
+            current_ref_sha="$(github_ref_sha "$repo" "$ref_value")"
+            [[ -n "$current_ref_sha" ]] || die "workflow delete verification ref has no commit SHA"
+
+            encoded_ref="$(jq -rn --arg value "$ref_value" '$value | @uri')"
+            tmp="$(mktemp)"
+            if current_blob="$(gh api "repos/$repo/contents/$workflow_path?ref=$encoded_ref" --jq '.sha' 2>"$tmp")"; then
+                reason="WORKFLOW STILL EXISTS // BLOB ${current_blob:0:8}"
+                summary="DELETE VERIFY FAILED // $workflow_name // $workflow_path"
+            else
+                lookup_error="$(cat "$tmp")"
+
+                if grep -qiE '404|not found' <<<"$lookup_error"; then
+                    if [[ "$current_ref_sha" == "$expected_ref_sha" ]]; then
+                        reason="TARGET REF DID NOT ADVANCE AFTER DELETE"
+                        summary="DELETE VERIFY FAILED // $workflow_name // $workflow_path"
+                    else
+                        passed="true"
+                        summary="DELETE VERIFIED // $workflow_name // $workflow_path // $ref_value@${current_ref_sha:0:8}"
+                    fi
+                else
+                    rm -f "$tmp"
+                    die "workflow delete verification lookup failed // ${lookup_error:-unknown GitHub error}"
+                fi
+            fi
+            rm -f "$tmp"
+
+            target="$(jq -nc \
+                --arg repository "$repo" \
+                --arg workflowPath "$workflow_path" \
+                --arg workflowName "$workflow_name" \
+                --arg ref "$ref_value" \
+                --arg previousRefSha "$expected_ref_sha" \
+                --arg currentRefSha "$current_ref_sha" \
+                --arg previousBlobSha "$expected_blob" \
+                --arg currentBlobSha "$current_blob" \
+                --argjson exists "$( [[ -n "$current_blob" ]] && printf true || printf false )" \
+                '{
+                    repository:$repository,
+                    workflowPath:$workflowPath,
+                    workflowName:$workflowName,
+                    ref:$ref,
+                    previousRefSha:$previousRefSha,
+                    currentRefSha:$currentRefSha,
+                    previousBlobSha:$previousBlobSha,
+                    currentBlobSha:(if $currentBlobSha == "" then null else $currentBlobSha end),
+                    exists:$exists
+                }')"
+
+            jq -n \
+                --arg actionId "$action_id" \
+                --argjson passed "$passed" \
+                --arg summary "$summary" \
+                --arg reason "$reason" \
+                --argjson target "$target" \
+                '{
+                    version:1,
+                    actionId:$actionId,
+                    passed:$passed,
+                    summary:$summary,
+                    reason:$reason,
+                    target:$target
+                }'
+        ;;
         *)
             die "no PX mutation verification policy for action: $action_id"
             ;;
@@ -536,6 +2043,11 @@ create_workflow() {
     local mode="--preview"
     local format="human"
     local script_path=""
+    local expected_base=""
+    local expected_base_sha=""
+    local expected_yaml_sha=""
+    local generated_yaml_sha=""
+    local current_base_sha=""
     local repo base tmp workflow_path arg
     local validation_ok=true
 
@@ -558,6 +2070,15 @@ create_workflow() {
             --script=*)
                 script_path="${arg#--script=}"
                 ;;
+            --expect-base=*)
+                expected_base="${arg#--expect-base=}"
+                ;;
+            --expect-base-sha=*)
+                expected_base_sha="${arg#--expect-base-sha=}"
+                ;;
+            --expect-yaml-sha=*)
+                expected_yaml_sha="${arg#--expect-yaml-sha=}"
+                ;;
             *)
                 die "unknown create option: $arg"
                 ;;
@@ -578,6 +2099,11 @@ create_workflow() {
     repo="$(repo_for "$alias")"
     base="$(default_branch_for "$repo")"
     [[ -n "$base" ]] || die "could not resolve default branch for $repo"
+
+    if [[ -n "$expected_base" && "$base" != "$expected_base" ]]; then
+        die "workflow create refused: default branch changed after confirmation // expected $expected_base // current $base"
+    fi
+
     workflow_path=".github/workflows/${slug}.yml"
 
     tmp="$(mktemp)"
@@ -586,6 +2112,18 @@ create_workflow() {
 
     if ! validate_workflow "$tmp"; then
         validation_ok=false
+    fi
+
+    if [[ -n "$expected_yaml_sha" ]]; then
+        need sha256sum
+        need awk
+        generated_yaml_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+        [[ "$generated_yaml_sha" == "$expected_yaml_sha" ]]             || die "workflow create refused: generated YAML changed after confirmation // expected $expected_yaml_sha // current $generated_yaml_sha"
+    fi
+
+    if [[ -n "$expected_base_sha" ]]; then
+        current_base_sha="$(github_ref_sha "$repo" "$base")"
+        [[ "$current_base_sha" == "$expected_base_sha" ]]             || die "workflow create refused: base moved after confirmation // expected $expected_base_sha // current $current_base_sha"
     fi
 
     INSTALL_BRANCH=""
@@ -1599,7 +3137,7 @@ Usage:
   px inspect <repo> <run-id>
   px logs <repo> <run-id>
   px mutation-preflight <action-id> <arguments-json>
-  px mutation-verify <action-id> <arguments-json>
+  px mutation-verify <action-id> <arguments-json> [preflight-token]
   px run <repo> <workflow> [ref]
   px watch <repo> <run-id>
   px rerun <repo> <run-id>
@@ -1616,10 +3154,12 @@ Usage:
   px term
   px tui
   px operations [--limit N] [--status RUNNING|COMPLETE|FAILED] [--json]
-  px operation <start|finish|get|list|recovery> ...
+  px operation <start|finish|get|list|stale|reconcile|recovery|recover> ...
   px templates
   px create <repo> <template> <slug> [trigger] [--preview|--install] [--json]
-  px delete-workflow <repo> <workflow-path> [ref]
+            [--script=PATH] [--expect-base=BRANCH] [--expect-base-sha=SHA]
+            [--expect-yaml-sha=SHA256]
+  px delete-workflow <repo> <workflow-path> [ref] [--expect-sha SHA] [--json]
   px hospital <init|status> [--json]
   px agent <providers|session-create|turn|status|cancel|quick> ...
 
@@ -1841,7 +3381,12 @@ case "$cmd" in
 
     operation)
         need python3
-        python3 "$ROOT/bin/px-operation-store" "$@"
+        if [[ "${1:-}" == "recover" ]]; then
+            shift
+            execute_operation_recovery "$@"
+        else
+            python3 "$ROOT/bin/px-operation-store" "$@"
+        fi
         ;;
 
     templates)
@@ -1867,6 +3412,24 @@ case "$cmd" in
         repo="$(repo_for "${1:-}")"
         workflow="${2:-}"
         ref="${3:-}"
+        expected_sha=""
+        delete_format="human"
+
+        if [[ "${4:-}" == "--expect-sha" ]]; then
+            expected_sha="${5:-}"
+            [[ -n "$expected_sha" ]] || die "workflow delete expected SHA is missing"
+            if [[ "${6:-}" == "--json" ]]; then
+                delete_format="json"
+                [[ -z "${7:-}" ]] || die "unknown delete-workflow argument: ${7}"
+            elif [[ -n "${6:-}" ]]; then
+                die "unknown delete-workflow argument: ${6}"
+            fi
+        elif [[ "${4:-}" == "--json" ]]; then
+            delete_format="json"
+            [[ -z "${5:-}" ]] || die "unknown delete-workflow argument: ${5}"
+        elif [[ -n "${4:-}" ]]; then
+            die "unknown delete-workflow argument: ${4}"
+        fi
 
         [[ -n "$workflow" ]] || die "workflow path required"
         workflow="${workflow#./}"
@@ -1896,12 +3459,34 @@ case "$cmd" in
         [[ -n "$sha" ]] \
             || die "workflow delete refused: content SHA missing"
 
-        gh api --method DELETE "repos/$repo/contents/$workflow" \
+        if [[ -n "$expected_sha" && "$sha" != "$expected_sha" ]]; then
+            die "workflow delete refused: content SHA changed after confirmation // expected $expected_sha // current $sha"
+        fi
+
+        delete_response="$(gh api --method DELETE "repos/$repo/contents/$workflow" \
             -f "message=Delete workflow $workflow" \
             -f "sha=$sha" \
-            -f "branch=$ref" >/dev/null
+            -f "branch=$ref")"
+        delete_commit="$(jq -r '.commit.sha // ""' <<<"$delete_response")"
 
-        printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        if [[ "$delete_format" == "json" ]]; then
+            jq -n \
+                --arg repository "$repo" \
+                --arg path "$workflow" \
+                --arg ref "$ref" \
+                --arg blobSha "$sha" \
+                --arg commit "$delete_commit" \
+                '{
+                    deleted:true,
+                    repository:$repository,
+                    path:$path,
+                    ref:$ref,
+                    blobSha:$blobSha,
+                    commit:(if $commit == "" then null else $commit end)
+                }'
+        else
+            printf 'deleted workflow: %s @ %s\n' "$workflow" "$ref"
+        fi
         ;;
 
     help|-h|--help)
