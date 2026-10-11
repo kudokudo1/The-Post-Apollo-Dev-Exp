@@ -7,6 +7,9 @@ on:
       - bin/px
       - bin/px-hospital-store
       - bin/px-agent
+      - bin/hospital_target_preflight.py
+      - tests/test_hospital_target_preflight.py
+      - tests/test-pxd-hospital-s1.sh
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -19,6 +22,9 @@ on:
       - bin/px
       - bin/px-hospital-store
       - bin/px-agent
+      - bin/hospital_target_preflight.py
+      - tests/test_hospital_target_preflight.py
+      - tests/test-pxd-hospital-s1.sh
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -39,10 +45,18 @@ jobs:
       - name: Validate agent runtime syntax
         run: |
           bash -n tests/test-px-agent-runtime.sh
+          bash -n tests/test-pxd-hospital-s1.sh
           python3 -m py_compile bin/px-hospital-store
           python3 -m py_compile bin/px-agent
+          python3 -m py_compile bin/hospital_target_preflight.py
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
           python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
       - name: Test supervised Hospital agent runtime
         run: bash ./tests/test-px-agent-runtime.sh
+
+      - name: Test Room Bed Git target preflight
+        run: python3 -m unittest discover -s tests -p test_hospital_target_preflight.py -v
+
+      - name: Test Room Assignment and provider-launch guards
+        run: bash ./tests/test-pxd-hospital-s1.sh
