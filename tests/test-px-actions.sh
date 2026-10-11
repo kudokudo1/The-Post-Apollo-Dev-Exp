@@ -28,7 +28,7 @@ jq -e '
       and ((.choices // []) | type == "array")
     )
     and (.mutation | IN("read", "local", "remote", "external"))
-    and ((.executionPolicy // "") | IN("", "px-guarded"))
+    and ((.executionPolicy // "") | IN("", "px-guarded", "px-self-journaled"))
     and (.recovery | IN("NONE", "EVIDENCE_ONLY", "REF_RECOVERABLE", "CONTENT_RECOVERABLE"))
     and (.requires | type == "array")
     and (.keywords | type == "array")
@@ -50,8 +50,11 @@ jq -e '
   and any(.actions[]; .id == "px.tool.resolve")
   and any(.actions[]; .id == "px.term.open")
   and any(.actions[]; .id == "px.operations.list")
+  and any(.actions[]; .id == "px.operations.stale")
   and any(.actions[]; .id == "px.operation.view")
+  and any(.actions[]; .id == "px.operation.reconcile")
   and any(.actions[]; .id == "px.operation.recovery")
+  and any(.actions[]; .id == "px.operation.recover.execute")
 ' <<<"$registry" >/dev/null
 
 
@@ -72,25 +75,81 @@ recovery_contract="$(jq -c '
 ' <<<"$registry")"
 [[ "$recovery_contract" == '{"read_non_none":0,"mutation_undeclared":0,"integrate":"EVIDENCE_ONLY"}' ]]
 
-guarded_remote_contract="$(jq -c '
+workflow_create_recovery="$(jq -r '
+  .actions[]
+  | select(.id == "workflow.create")
+  | .recovery
+' <<<"$registry")"
+[[ "$workflow_create_recovery" == "CONTENT_RECOVERABLE" ]]
+
+guarded_mutation_contract="$(jq -c '
   {
-    guarded: [
+    ids: (
+      [
+        .actions[]
+        | select((.executionPolicy // "") == "px-guarded")
+        | .id
+      ]
+      | sort
+    ),
+    invalid: [
       .actions[]
       | select((.executionPolicy // "") == "px-guarded")
-      | {id, mutation, recovery}
-    ],
-    cancel: (
+      | select(
+          ((.mutation != "remote") and (.mutation != "external"))
+          or (
+            if .id == "workflow.create"
+            then .recovery != "CONTENT_RECOVERABLE"
+            else .recovery != "EVIDENCE_ONLY"
+            end
+          )
+        )
+      | .id
+    ]
+  }
+' <<<"$registry")"
+[[ "$guarded_mutation_contract" == '{"ids":["ai.quick.checklist","ai.quick.continue","ai.quick.next","ai.quick.report","ai.turn","github.run.cancel","github.run.rerun","github.workflow.run","workflow.create","workflow.delete"],"invalid":[]}' ]]
+
+self_journaled_contract="$(jq -c '
+  {
+    ids: (
+      [
+        .actions[]
+        | select((.executionPolicy // "") == "px-self-journaled")
+        | .id
+      ]
+      | sort
+    ),
+    invalid: [
       .actions[]
-      | select(.id == "github.run.cancel")
+      | select((.executionPolicy // "") == "px-self-journaled")
+      | select(.mutation != "remote" or .recovery != "EVIDENCE_ONLY")
+      | .id
+    ]
+  }
+' <<<"$registry")"
+[[ "$self_journaled_contract" == '{"ids":["px.operation.recover.execute"],"invalid":[]}' ]]
+
+interrupted_operation_contract="$(jq -c '
+  {
+    stale: (
+      .actions[]
+      | select(.id == "px.operations.stale")
+      | {mutation,recovery,command}
+    ),
+    reconcile: (
+      .actions[]
+      | select(.id == "px.operation.reconcile")
       | {
-          policy: (.executionPolicy // ""),
           mutation,
-          recovery
+          recovery,
+          command,
+          argument: (.arguments[0] | {name,required,kind})
         }
     )
   }
 ' <<<"$registry")"
-[[ "$guarded_remote_contract" == '{"guarded":[{"id":"github.run.cancel","mutation":"remote","recovery":"EVIDENCE_ONLY"}],"cancel":{"policy":"px-guarded","mutation":"remote","recovery":"EVIDENCE_ONLY"}}' ]]
+[[ "$interrupted_operation_contract" == '{"stale":{"mutation":"read","recovery":"NONE","command":["operation","stale","--json"]},"reconcile":{"mutation":"local","recovery":"EVIDENCE_ONLY","command":["operation","reconcile","{operation_id}","--json"],"argument":{"name":"operation_id","required":true,"kind":"stale_operation"}}}' ]]
 
 trigger_choices="$(jq -c '
   .actions[]
@@ -100,6 +159,15 @@ trigger_choices="$(jq -c '
   | .choices
 ' <<<"$registry")"
 [[ "$trigger_choices" == '["manual","push","manual+push"]' ]]
+
+create_script_path="$(jq -c '
+  .actions[]
+  | select(.id == "workflow.create")
+  | .arguments[]
+  | select(.name == "script_path")
+  | {required,kind}
+' <<<"$registry")"
+[[ "$create_script_path" == '{"required":false,"kind":"path"}' ]]
 
 
 jq -e '
