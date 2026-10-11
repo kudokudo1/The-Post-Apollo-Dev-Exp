@@ -71,4 +71,4 @@ jobs:
         run: python3 tests/test-pxd-p1-assignment-integrity.py .
 
       - name: Verify P1 refuses invalid links before provider dispatch and message append
-        run: python3 -m unittest discover -s tests -p test-pxd-p1-provider-boundary.py -v
+        run: python3 tests/test-pxd-p1-provider-boundary.py -v
