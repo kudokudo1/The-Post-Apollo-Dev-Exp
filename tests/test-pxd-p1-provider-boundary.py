@@ -36,9 +36,10 @@ source_fixture = load(
 
 
 def git(path, *args):
-    subprocess.check_output(
+    subprocess.run(
         ["git", "-C", str(path), *args],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=True, timeout=10,
     )
 
 
