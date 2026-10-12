@@ -55,3 +55,41 @@ Preliminary automated pass does not prove semantic understanding. Nurse 2 must i
 The work still needs the operator's explicit choice to launch two real provider turns, independent Nurse 2 review of local evidence, and later installed-runtime/merge approval. The author has not launched a real provider from GitHub, nor edited the user's installed Hospital.
 
 Do not post local evidence to GitHub before reviewing and redacting any sensitive provider output.
+
+## HEAD NURSE .C / OPERATOR DECISION: CODEX SELECTED (2026-10-11)
+
+Provider choice is **codex**. This does not authorize a real AI call, installation, merge, or any production Bed access. The project registry includes Codex as an option, but a project registry is not proof that it is installed or logged in on the operator's Fedora host.
+
+Run the following *read-only checks in the same shell/environment that will execute the eventual provider*, whether that is Fedora host or Toolbox:
+
+    command -v codex
+    codex --version
+    codex login status
+    codex exec --help
+
+Do not paste credentials, tokens or complete account output into a PR. The operator can share only whether each check passed and its installed Codex version. If Codex is not installed/authenticated, **stop**, without silently switching to Hermes.
+
+A separate checkout/worktree of this **draft S3 branch**, rather than live installed PX, is required for the local exercise. Source-ref and runner instructions are in PR #64. Prefer an isolated user account/container because Codex read-only sandboxing constrains its tool actions but is **not** equivalent to process isolation; it may read accessible files and external provider usage may be metered.
+
+The S3 runner explicitly overrides its private Codex provider registry with `codex exec --sandbox read-only -c approval_policy=never --json -`. This differs from the normal installed PX provider configuration and prevents accidental edits/elevation inside the synthetic exercise. The runner makes no network fetch or Git push on its own.
+
+In the S3 checkout, no-write preflight (the workspace does not yet exist):
+
+    test ! -e "$HOME/s3-codex-acceptance-evidence"
+    python3 tests/manual/doctor_succession_real_provider.py \\
+      --workspace "$HOME/s3-codex-acceptance-evidence" \\
+      --provider codex
+    test ! -e "$HOME/s3-codex-acceptance-evidence"
+
+The expected JSON reports `mode: DRY_RUN_NO_PROVIDER`, `provider: codex`, `writesOnDryRun: 0` and `realCallsOnExecute: 2`. The dry run never validates actual local Codex login: perform the four local checks separately.
+
+**Do not run the following command yet.** Once the operator *separately authorizes* actual provider execution after reviewing the prep results, the final real-provider command will be:
+
+    python3 tests/manual/doctor_succession_real_provider.py \\
+      --workspace "$HOME/s3-codex-acceptance-evidence" \\
+      --provider codex --timeout 600 \\
+      --execute --ack-provider-access
+
+Use a fresh nonexistent workspace path, and preserve its entire private evidence folder for Nurse 2. A successful dry run or green CI does not establish that a fresh AI Doctor B understands Doctor A. Nurse 2 must examine the actual B answer with source report/chart IDs, provider identities and exact delivered stdin before acceptance.
+
+S3 real-provider execution, merge and installed runtime remain **NOT AUTHORIZED**.
