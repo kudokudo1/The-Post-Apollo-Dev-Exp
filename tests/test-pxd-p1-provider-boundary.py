@@ -136,6 +136,9 @@ class P1DispatchBoundary(unittest.TestCase):
     def test_invalid_link_blocked_before_message(self):
         self.assert_blocked("abc", "INVALID_LINK_ID")
 
+    def test_whitespace_corruption_blocked_before_message(self):
+        self.assert_blocked("   ", "INVALID_LINK_ID")
+
     def test_valid_active_room_reaches_append_not_provider(self):
         self.set_link(self.ids[0])
         with self.assertRaisesRegex(RuntimeError, "P1_TEST_MESSAGE_APPEND_BOUNDARY"):
