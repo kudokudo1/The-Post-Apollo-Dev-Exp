@@ -180,6 +180,42 @@ class SuccessionContextTests(unittest.TestCase):
                                "--limit", "13")
         self.assertEqual([x["id"] for x in result], [older])
 
+    def test_legacy_mixed_case_handoffs_deliver_despite_old_age(self):
+        # Simulate records written by older installations before write
+        # normalization: keep their raw SQLite report_kind values intact.
+        handoffs = {}
+        for kind in ("handoff", "Handoff", "  hAnDoFf  "):
+            handoffs[kind] = self.report(
+                "A", kind, "Older handoff " + kind,
+                "Required knowledge for " + kind
+            )
+        self.report("B", "handoff", "Other Room",
+                    "FOREIGN ROOM ONLY SOURCE")
+        for i in range(40):
+            self.report("A", "DOCTOR_NOTE",
+                        "irrelevant recent " + str(i), "ordinary message")
+        ctx = self.context("unrelated question")
+        ids = {row["id"] for row in ctx["requiredHandoffs"]}
+        self.assertEqual(ids, set(handoffs.values()))
+        rendered = agent.render_live_context(ctx)
+        for kind, item_id in handoffs.items():
+            self.assertIn("ROOM_REPORT #" + item_id, rendered, kind)
+            self.assertIn("Required knowledge for " + kind, rendered)
+        self.assertNotIn("FOREIGN ROOM ONLY SOURCE", rendered)
+        self.assertTrue(all(
+            row["kind"] == "HANDOFF" for row in ctx["requiredHandoffs"]
+        ))
+
+    def test_legacy_kind_query_is_case_insensitive(self):
+        for kind in ("handoff", "Handoff", "HANDOFF", " handoff "):
+            self.report("A", kind, "Prior shift", "Mandatory payload")
+        self.report("A", "DOCTOR_NOTE", "Not mandatory", "ordinary")
+        low = store.room_reports_list(self.db, "A", 13, None, "handoff")
+        upper = store.room_reports_list(self.db, "A", 13, None, "HANDOFF")
+        self.assertEqual([row["id"] for row in low],
+                         [row["id"] for row in upper])
+        self.assertEqual(len(upper), 4)
+
     def test_required_text_fully_rendered_below_limit(self):
         body = "a" * 1700
         self.report("A", "HANDOFF", "Brief", body)
