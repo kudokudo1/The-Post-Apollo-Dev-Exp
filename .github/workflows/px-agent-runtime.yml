@@ -14,6 +14,8 @@ on:
       - tests/test-pxd-p1-provider-boundary.py
       - tests/test-pxd-s2-required-continuity.py
       - tests/test-pxd-s2-disposable-cli.py
+      - tests/manual/doctor_succession_real_provider.py
+      - tests/test-pxd-s3-real-provider-runner.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -33,6 +35,8 @@ on:
       - tests/test-pxd-p1-provider-boundary.py
       - tests/test-pxd-s2-required-continuity.py
       - tests/test-pxd-s2-disposable-cli.py
+      - tests/manual/doctor_succession_real_provider.py
+      - tests/test-pxd-s3-real-provider-runner.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -61,6 +65,8 @@ jobs:
           python3 -m py_compile tests/test-pxd-p1-provider-boundary.py
           python3 -m py_compile tests/test-pxd-s2-required-continuity.py
           python3 -m py_compile tests/test-pxd-s2-disposable-cli.py
+          python3 -m py_compile tests/manual/doctor_succession_real_provider.py
+          python3 -m py_compile tests/test-pxd-s3-real-provider-runner.py
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
           python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
@@ -84,3 +90,6 @@ jobs:
 
       - name: Verify S2 Doctor A to B continuity via disposable real PX CLI
         run: python3 tests/test-pxd-s2-disposable-cli.py -v
+
+      - name: Verify S3 opt-in evidence runner without launching AI
+        run: python3 tests/test-pxd-s3-real-provider-runner.py -v
