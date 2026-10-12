@@ -132,6 +132,44 @@ class ActualCliSuccessionTest(unittest.TestCase):
         self.assertIn("ROOM_REPORT #"+report["id"],rendered)
         self.assertIn("ROOM_CHART #"+approved["id"],rendered)
 
+    def test_mixed_case_handoff_writes_deliver_to_fresh_doctor_b(self):
+        accepted = {}
+        for kind in ("handoff", "Handoff", "  hAnDoFf  "):
+            marker = "Legacy capitalization: " + kind
+            report = self.report(kind, "Required shift", marker)
+            self.assertEqual(report["kind"], "HANDOFF")
+            accepted[report["id"]] = marker
+        for i in range(40):
+            self.report("DOCTOR_NOTE", "New filler " + str(i),
+                        "No handoff instruction here")
+        self.report("handoff", "Other room evidence", "OTHER ROOM SECRET",
+                    room="R-X", session="")
+        context = self.px("agent", "context", "session-B")
+        delivered = {row["id"] for row in context["requiredHandoffs"]}
+        self.assertEqual(delivered, set(accepted))
+        rendered = context["renderedText"]
+        for report_id, marker in accepted.items():
+            self.assertIn("ROOM_REPORT #" + report_id, rendered)
+            self.assertIn(marker, rendered)
+        self.assertNotIn("OTHER ROOM SECRET", rendered)
+
+    def test_lowercase_handoff_overflow_still_refuses_provider_turn(self):
+        for i in range(13):
+            self.report("handoff", "Required lowcase " + str(i),
+                        "Do not silently omit this handoff")
+        error = self.px(
+            "agent", "turn", "session-B", "--prompt",
+            "Proceed even though Room has too many handoffs", fail=True
+        )
+        self.assertIn("TOO_MANY_MANDATORY_HANDOFFS", error)
+        self.assertEqual(
+            self.px("hospital", "messages", "R-A", "--limit", "20"), []
+        )
+        self.assertEqual(
+            self.px("hospital", "session", "session-B")["providerSessionId"],
+            ""
+        )
+
     def test_overflow_prevents_outgoing_message_or_provider(self):
         for i in range(13):
             self.report("HANDOFF","Shift "+str(i),"Required packet")
