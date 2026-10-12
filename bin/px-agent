@@ -966,14 +966,18 @@ def validated_room_assignment(room: dict) -> dict:
     This executes before context exposure, message persistence or provider spawn.
     """
     room_id = str(room.get("id") or "").strip()
-    assignment_id = str(room.get("assignmentId") or "").strip()
+    raw_assignment_id = room.get("assignmentId", "")
+    # A genuinely unassigned Room has the exact canonical empty string.
+    # Normalizing whitespace before this check turns corrupt pointers into
+    # READ-only defaults and masks the underlying Room integrity failure.
     if not room_id:
         raise RuntimeError(
             "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // ROOM_UNRESOLVED"
         )
-    if not assignment_id:
+    if raw_assignment_id == "":
         return {}
-    if not assignment_id.isdecimal():
+    assignment_id = str(raw_assignment_id).strip()
+    if not assignment_id or not assignment_id.isdecimal():
         raise RuntimeError(
             "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // INVALID_LINK_ID"
         )
