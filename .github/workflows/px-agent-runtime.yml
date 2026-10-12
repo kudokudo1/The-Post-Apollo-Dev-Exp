@@ -7,6 +7,16 @@ on:
       - bin/px
       - bin/px-hospital-store
       - bin/px-agent
+      - bin/hospital_target_preflight.py
+      - tests/test_hospital_target_preflight.py
+      - tests/test-pxd-hospital-s1.sh
+      - tests/test-pxd-p1-assignment-integrity.py
+      - tests/test-pxd-p1-provider-boundary.py
+      - tests/test-pxd-s2-required-continuity.py
+      - tests/test-pxd-s2-disposable-cli.py
+      - tests/test-pxd-rw-patient-continuity.py
+      - tests/manual/doctor_succession_real_provider.py
+      - tests/test-pxd-s3-real-provider-runner.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -19,6 +29,16 @@ on:
       - bin/px
       - bin/px-hospital-store
       - bin/px-agent
+      - bin/hospital_target_preflight.py
+      - tests/test_hospital_target_preflight.py
+      - tests/test-pxd-hospital-s1.sh
+      - tests/test-pxd-p1-assignment-integrity.py
+      - tests/test-pxd-p1-provider-boundary.py
+      - tests/test-pxd-s2-required-continuity.py
+      - tests/test-pxd-s2-disposable-cli.py
+      - tests/test-pxd-rw-patient-continuity.py
+      - tests/manual/doctor_succession_real_provider.py
+      - tests/test-pxd-s3-real-provider-runner.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -39,10 +59,61 @@ jobs:
       - name: Validate agent runtime syntax
         run: |
           bash -n tests/test-px-agent-runtime.sh
+          bash -n tests/test-pxd-hospital-s1.sh
           python3 -m py_compile bin/px-hospital-store
           python3 -m py_compile bin/px-agent
+          python3 -m py_compile bin/hospital_target_preflight.py
+          python3 -m py_compile tests/test-pxd-p1-assignment-integrity.py
+          python3 -m py_compile tests/test-pxd-p1-provider-boundary.py
+          python3 -m py_compile tests/test-pxd-s2-required-continuity.py
+          python3 -m py_compile tests/test-pxd-s2-disposable-cli.py
+          python3 -m py_compile tests/test-pxd-rw-patient-continuity.py
+          python3 -m py_compile tests/manual/doctor_succession_real_provider.py
+          python3 -m py_compile tests/test-pxd-s3-real-provider-runner.py
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
           python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
       - name: Test supervised Hospital agent runtime
         run: bash ./tests/test-px-agent-runtime.sh
+
+      - name: Test Room Bed Git target preflight
+        run: python3 -m unittest discover -s tests -p test_hospital_target_preflight.py -v
+
+      - name: Test Room Assignment and provider-launch guards
+        run: bash ./tests/test-pxd-hospital-s1.sh
+
+      - name: Verify P1 Room-scoped ACTIVE Assignment authority and Doctor context
+        run: python3 tests/test-pxd-p1-assignment-integrity.py .
+
+      - name: Verify P1 refuses invalid links before provider dispatch and message append
+        run: python3 tests/test-pxd-p1-provider-boundary.py -v
+
+      - name: Verify S2 required Doctor handoffs and approved decisions survive context limits
+        run: python3 tests/test-pxd-s2-required-continuity.py -v
+
+      - name: Verify S2 Doctor A to B continuity via disposable real PX CLI
+        run: python3 tests/test-pxd-s2-disposable-cli.py -v
+
+      - name: Verify required Patient decisions and full bodies reach Doctor B
+        run: python3 tests/test-pxd-rw-patient-continuity.py -v
+
+      - name: Verify S3 opt-in evidence runner without launching AI
+        run: python3 tests/test-pxd-s3-real-provider-runner.py -v
+
+      - name: Execute S3 Codex-selected no-write dry run
+        run: |
+          target="${RUNNER_TEMP}/s3-codex-dry-run-uncreated"
+          test ! -e "$target"
+          python3 tests/manual/doctor_succession_real_provider.py \
+            --workspace "$target" --provider codex \
+            > "${RUNNER_TEMP}/s3-codex-dry-run-result.json"
+          python3 - "${RUNNER_TEMP}/s3-codex-dry-run-result.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert data["provider"] == "codex", data
+          assert data["mode"] == "DRY_RUN_NO_PROVIDER", data
+          assert data["writesOnDryRun"] == 0, data
+          assert data["realCallsOnExecute"] == 2, data
+          print(json.dumps(data, indent=2))
+          PY
+          test ! -e "$target"

@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from hospital_target_preflight import preflight_edit_target
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "agent-providers.json"
@@ -822,6 +823,16 @@ HISTORY_REPORT_POOL_LIMIT = 30
 RETRIEVED_HISTORY_LIMIT = 6
 RETRIEVAL_TOKEN_MIN_LENGTH = 3
 
+# Required continuity has its own bounded lane. Overflow is an explicit
+# prelaunch error; neither lexical ranking nor old age may silently drop it.
+REQUIRED_HANDOFF_LIMIT = 12
+APPROVED_ROOM_CHART_LIMIT = 24
+# Separate mandatory Patient-level decisions; priority-ranked Patient previews
+# do not control whether operator-authored ACTIVE guidance is delivered.
+REQUIRED_PATIENT_CHART_LIMIT = 24
+REQUIRED_ITEM_TEXT_LIMIT = 1800
+REQUIRED_CONTINUITY_CHAR_BUDGET = 18000
+
 
 def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
     text = str(value or "").strip()
@@ -957,6 +968,305 @@ def select_relevant_room_history(
     return candidates[:RETRIEVED_HISTORY_LIMIT]
 
 
+def validated_room_assignment(room: dict) -> dict:
+    """Resolve only ACTIVE work owned by this exact persisted Room.
+
+    Empty linkage is genuinely unassigned and receives READ-only default.
+    Any nonempty malformed, missing, foreign or PAUSED link fails closed.
+    This executes before context exposure, message persistence or provider spawn.
+    """
+    room_id = str(room.get("id") or "").strip()
+    raw_assignment_id = room.get("assignmentId", "")
+    # A genuinely unassigned Room has the exact canonical empty string.
+    # Normalizing whitespace before this check turns corrupt pointers into
+    # READ-only defaults and masks the underlying Room integrity failure.
+    if not room_id:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // ROOM_UNRESOLVED"
+        )
+    if raw_assignment_id == "":
+        return {}
+    assignment_id = str(raw_assignment_id).strip()
+    if not assignment_id or not assignment_id.isdecimal():
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // INVALID_LINK_ID"
+        )
+    try:
+        assignment = px_hospital("assignment", assignment_id)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // MISSING_ASSIGNMENT"
+        ) from exc
+    if str(assignment.get("id") or "") != str(int(assignment_id)):
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // ID_MISMATCH"
+        )
+    if str(assignment.get("roomId") or "") != room_id:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // FOREIGN_ROOM"
+        )
+    if str(assignment.get("status") or "").upper() != "ACTIVE":
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // NONACTIVE_LINK"
+        )
+    return assignment
+
+
+def required_room_continuity(room_id: str) -> tuple[list, list]:
+    """Guarantee Room HANDOFF reports and ACTIVE operator-authored Room Chart.
+
+    Both queries filter at the durable store, independently of newest-N
+    history and priority Top-10 Chart. Use limit+1 to detect saturation.
+    Explicit overflow/malformed provenance aborts before provider dispatch.
+    """
+    reports = px_hospital(
+        "room-reports", room_id,
+        "--report-kind", "HANDOFF",
+        "--limit", str(REQUIRED_HANDOFF_LIMIT + 1),
+    )
+    approved = px_hospital(
+        "chart-entries",
+        "--scope", "ROOM",
+        "--room-id", room_id,
+        "--author-role", "operator",
+        "--status", "ACTIVE",
+        "--limit", str(APPROVED_ROOM_CHART_LIMIT + 1),
+    )
+    if not isinstance(reports, list) or not isinstance(approved, list):
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // MALFORMED_STORE_RESPONSE"
+        )
+    if len(reports) > REQUIRED_HANDOFF_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_MANDATORY_HANDOFFS"
+        )
+    if len(approved) > APPROVED_ROOM_CHART_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_APPROVED_ROOM_CHARTS"
+        )
+
+    total_chars = 0
+    seen = set()
+    for lane, rows in (("ROOM_REPORT", reports), ("ROOM_CHART", approved)):
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_RECORD"
+                )
+            identity = str(row.get("id") or "")
+            if not identity or (lane, identity) in seen:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_ID"
+                )
+            seen.add((lane, identity))
+            if str(row.get("roomId") or "") != room_id:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // FOREIGN_ROOM_RECORD"
+                )
+            if lane == "ROOM_REPORT":
+                valid = str(row.get("kind") or "").upper() == "HANDOFF"
+            else:
+                valid = (
+                    str(row.get("scope") or "").upper() == "ROOM"
+                    and str(row.get("status") or "").upper() == "ACTIVE"
+                    and str(row.get("authorRole") or "").lower() == "operator"
+                    and (
+                        not row.get("sourceRoomId")
+                        or str(row["sourceRoomId"]) == room_id
+                    )
+                )
+            if not valid:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // WRONG_REQUIRED_LANE"
+                )
+            text = (
+                str(row.get("title") or "")
+                + "\n" + str(row.get("body") or "")
+            )
+            if not str(row.get("body") or "").strip():
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // EMPTY_REQUIRED_RECORD"
+                )
+            if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // OVERSIZED_REQUIRED_RECORD"
+                )
+            total_chars += len(text)
+    if total_chars > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+    return reports, approved
+
+
+def required_patient_continuity(patient_id: str) -> list[dict]:
+    """Require complete ACTIVE operator-authored Patient Chart across all Rooms.
+
+    The normal Patient Chart is a six-entry priority preview, not an authority
+    source for required succession continuity. Application authorRole is
+    persisted provenance, not independent authentication of the operator.
+    Overflow/corruption refuses dispatch rather than silently dropping a rule.
+    """
+    if not patient_id:
+        return []
+    rows = px_hospital(
+        "chart-entries",
+        "--scope", "PATIENT",
+        "--patient-id", patient_id,
+        "--author-role", "operator",
+        "--status", "ACTIVE",
+        "--limit", str(REQUIRED_PATIENT_CHART_LIMIT + 1),
+    )
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // MALFORMED_PATIENT_CHART_RESPONSE"
+        )
+    if len(rows) > REQUIRED_PATIENT_CHART_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_APPROVED_PATIENT_CHARTS"
+        )
+
+    seen = set()
+    total_chars = 0
+    source_room_cache = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_PATIENT_RECORD"
+            )
+        identity = str(row.get("id") or "")
+        if not identity or identity in seen:
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_PATIENT_ID"
+            )
+        seen.add(identity)
+        if (
+            str(row.get("scope") or "").upper() != "PATIENT"
+            or str(row.get("patientId") or "") != patient_id
+            or str(row.get("roomId") or "")
+        ):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // FOREIGN_PATIENT_RECORD"
+            )
+        if (
+            str(row.get("status") or "").upper() != "ACTIVE"
+            or str(row.get("authorRole") or "").lower() != "operator"
+        ):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // WRONG_REQUIRED_PATIENT_LANE"
+            )
+        # A valid Patient-level decision may originate in another Room of
+        # this same Patient. A foreign Patient's source Room is never allowed.
+        source_room_id = str(row.get("sourceRoomId") or "")
+        source_session_id = str(row.get("sourceSessionId") or "")
+        if source_session_id:
+            try:
+                source_session = px_hospital("session", source_session_id)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_PATIENT_SOURCE_SESSION"
+                ) from exc
+            session_room_id = str(source_session.get("roomId") or "")
+            if not session_room_id or (
+                source_room_id and source_room_id != session_room_id
+            ):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // PATIENT_SOURCE_MISMATCH"
+                )
+            source_room_id = session_room_id
+        if source_room_id:
+            if source_room_id not in source_room_cache:
+                try:
+                    source_room_cache[source_room_id] = px_hospital(
+                        "room", source_room_id
+                    )
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        "HOSPITAL CONTINUITY REFUSED // INVALID_PATIENT_SOURCE_ROOM"
+                    ) from exc
+            if (
+                str(source_room_cache[source_room_id].get("patientId") or "")
+                != patient_id
+            ):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // FOREIGN_PATIENT_SOURCE_ROOM"
+                )
+
+        body = str(row.get("body") or "")
+        if not body.strip():
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // EMPTY_REQUIRED_PATIENT_RECORD"
+            )
+        text = str(row.get("title") or "") + "\n" + body
+        if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // OVERSIZED_REQUIRED_PATIENT_RECORD"
+            )
+        total_chars += len(text)
+    if total_chars > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+    return rows
+
+
+def render_required_patient_continuity(approved: list) -> list[str]:
+    lines = ["REQUIRED PATIENT CONTINUITY // NOT PRIORITY-RANKED"]
+    if not approved:
+        return lines + ["- NONE"]
+    for entry in approved:
+        lines.extend([
+            "- [PATIENT_CHART #" + str(entry["id"])
+            + " ACTIVE OPERATOR-APPROVED " + str(entry.get("kind") or "NOTE")
+            + " | PATIENT " + str(entry.get("patientId") or "")
+            + " | SOURCE ROOM " + str(entry.get("sourceRoomId") or "NONE")
+            + " | SOURCE REPORT " + str(entry.get("sourceReportId") or "NONE")
+            + "] " + str(entry.get("title") or ""),
+            "  " + str(entry.get("body") or "").replace("\n", "\n  "),
+        ])
+    return lines
+
+
+def validate_required_context_budget(
+    reports: list, room_chart: list, patient_chart: list
+) -> None:
+    """Shared cap across both mandatory lanes; never omit a portion."""
+    total = sum(
+        len(str(row.get("title") or "") + "\n" + str(row.get("body") or ""))
+        for rows in (reports, room_chart, patient_chart)
+        for row in rows
+    )
+    if total > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+
+
+def render_required_room_continuity(reports: list, approved: list) -> list[str]:
+    lines = ["REQUIRED ROOM CONTINUITY // NOT RELEVANCE-RANKED"]
+    if not reports and not approved:
+        return lines + ["- NONE"]
+    # Full bounded body is used: clipping a mandatory decision would silently
+    # discard its substance, even if its report ID appeared in the prompt.
+    for report in reports:
+        lines.extend([
+            "- [ROOM_REPORT #" + str(report["id"])
+            + " HANDOFF | SESSION " + str(report.get("sessionId") or "NONE")
+            + " | CREATED " + str(report.get("createdAt") or "UNKNOWN") + "] "
+            + str(report.get("title") or ""),
+            "  " + str(report.get("body") or "").replace("\n", "\n  "),
+        ])
+    for entry in approved:
+        lines.extend([
+            "- [ROOM_CHART #" + str(entry["id"])
+            + " ACTIVE OPERATOR-APPROVED " + str(entry.get("kind") or "NOTE")
+            + " | SOURCE " + str(entry.get("sourceReportId") or "NONE")
+            + "] " + str(entry.get("title") or ""),
+            "  " + str(entry.get("body") or "").replace("\n", "\n  "),
+        ])
+    return lines
+
+
 def live_context_payload(
     session_id: str,
     working_directory: str = "",
@@ -966,12 +1276,7 @@ def live_context_payload(
     room_id = str(session.get("roomId") or "")
     room = px_hospital("room", room_id)
     patient_id = str(room.get("patientId") or "")
-    assignment_id = str(room.get("assignmentId") or "")
-    assignment = (
-        px_hospital("assignment", assignment_id)
-        if assignment_id
-        else {}
-    )
+    assignment = validated_room_assignment(room)
     cwd_text = (
         str(working_directory or "").strip()
         or str(session.get("workingDirectory") or "").strip()
@@ -995,6 +1300,12 @@ def live_context_payload(
         "--room-id", room_id,
         "--status", "ACTIVE",
         "--limit", str(ROOM_CHART_LIMIT),
+    )
+
+    required_handoffs, approved_room_chart = required_room_continuity(room_id)
+    approved_patient_chart = required_patient_continuity(patient_id)
+    validate_required_context_budget(
+        required_handoffs, approved_room_chart, approved_patient_chart
     )
 
     recent_messages = px_hospital(
@@ -1049,6 +1360,9 @@ def live_context_payload(
         "git": git_evidence,
         "patientChart": patient_chart,
         "roomChart": room_chart,
+        "requiredHandoffs": required_handoffs,
+        "approvedRoomChart": approved_room_chart,
+        "approvedPatientChart": approved_patient_chart,
         "recentMessages": recent_messages,
         "retrievedContext": retrieved_context,
     }
@@ -1177,6 +1491,19 @@ def render_live_context(payload: dict) -> str:
             payload.get("roomChart") or [],
         )
     )
+    lines.extend([""])
+    lines.extend(
+        render_required_room_continuity(
+            payload.get("requiredHandoffs") or [],
+            payload.get("approvedRoomChart") or [],
+        )
+    )
+    lines.extend([""])
+    lines.extend(
+        render_required_patient_continuity(
+            payload.get("approvedPatientChart") or [],
+        )
+    )
     lines.extend(["", "RECENT CANONICAL TRANSCRIPT"])
 
     if recent:
@@ -1247,6 +1574,18 @@ def context_summary(payload: dict) -> dict:
         "authorityDenied": list(
             (payload.get("authority") or {}).get("denied") or []
         ),
+        "requiredHandoffRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("requiredHandoffs") or [])
+        ],
+        "approvedRoomChartRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("approvedRoomChart") or [])
+        ],
+        "approvedPatientChartRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("approvedPatientChart") or [])
+        ],
         "authorityEnforcement": str(
             (payload.get("authority") or {}).get("enforcement")
             or "COMMAND_GUARD"
@@ -1375,6 +1714,31 @@ def _run_turn_unlocked(args) -> dict:
     cwd = Path(cwd_text).expanduser()
     if not cwd.is_dir():
         raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
+
+    # This guard runs before any provider message, runtime mutation or Popen.
+    # Read-only Assignment defaults are not a sandbox: verify every provider
+    # turn, including resume and explicit working-directory overrides.
+    room_id = str(session.get("roomId") or "").strip()
+    if not room_id:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // ROOM_UNRESOLVED")
+    room = px_hospital("room", room_id)
+    room_bed_text = str(room.get("bedPath") or "").strip()
+    if not room_bed_text:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // REGISTERED_BED_UNRESOLVED")
+    registered_bed = Path(room_bed_text).expanduser().resolve()
+    if cwd.resolve() != registered_bed:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // TARGET_BED_MISMATCH")
+
+    # Hospital permits a dirty *matching* worktree so ongoing assignments can
+    # continue; no preflight ever cleans, resets or switches the worktree.
+    target = preflight_edit_target(
+        bed_path=str(cwd),
+        expected_branch=str(room.get("branch") or "").strip(),
+        expected_repository=str(room.get("repository") or "").strip(),
+        allow_dirty=True,
+    )
+    if not target.ok:
+        raise RuntimeError("HOSPITAL TARGET REFUSED // " + target.code)
 
     if args.prompt_json_stdin:
         raw = sys.stdin.readline()

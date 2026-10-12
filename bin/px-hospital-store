@@ -615,18 +615,52 @@ def patient_put(conn: sqlite3.Connection, args) -> dict:
     return dict(row)
 
 
+def room_assignment_for_bind(
+    conn: sqlite3.Connection, args, existing: sqlite3.Row | None
+) -> str:
+    """Preserve Assignment linkage on omission; never unlink by incidental rebind.
+
+    Assignment activation/status is the canonical lifecycle-changing operation.
+    The convenience Room bind may reaffirm the current ACTIVE Assignment or
+    restore an already ACTIVE Assignment to an unlinked Room of the same identity.
+    """
+    current = str(existing["current_assignment_id"] or "") if existing else ""
+    supplied = getattr(args, "assignment_id", None)
+    if supplied is None:
+        return current
+    requested = str(supplied).strip()
+    if not requested:
+        raise RuntimeError(
+            "Hospital Room binding cannot clear an Assignment; "
+            "use the explicit Assignment status/lifecycle operation"
+        )
+    if not requested.isdecimal():
+        raise RuntimeError("Hospital Room Assignment ID must be numeric")
+    assignment = assignment_record(conn, int(requested))
+    if str(assignment.get("roomId") or "") != str(args.room_id):
+        raise RuntimeError("Hospital Room Assignment belongs to a different Room")
+    if str(assignment.get("status") or "").upper() != "ACTIVE":
+        raise RuntimeError("Hospital Room Assignment must already be ACTIVE")
+    if current and current != requested:
+        raise RuntimeError(
+            "Hospital Room Assignment replacement requires assignment-activate"
+        )
+    return requested
+
+
 def room_bind(conn: sqlite3.Connection, args) -> dict:
     patient_id = (args.patient_id or args.repository).strip()
     if not patient_id:
         raise RuntimeError("Hospital room bind requires a patient identity")
 
     existing = conn.execute(
-        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        "SELECT provider_id, current_assignment_id FROM rooms WHERE room_id = ?",
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
     if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
+    assignment_id = room_assignment_for_bind(conn, args, existing)
 
     conn.execute(
         """
@@ -671,7 +705,7 @@ def room_bind(conn: sqlite3.Connection, args) -> dict:
             args.bed_path or "",
             args.doctor_id or "",
             provider_id,
-            args.assignment_id or "",
+            assignment_id,
         ),
     )
 
@@ -683,12 +717,13 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
 
     existing = conn.execute(
-        "SELECT provider_id FROM rooms WHERE room_id = ?",
+        "SELECT provider_id, current_assignment_id FROM rooms WHERE room_id = ?",
         (args.room_id,),
     ).fetchone()
     provider_id = str(args.provider_id or "").strip()
     if not provider_id and existing is not None:
         provider_id = str(existing["provider_id"] or "")
+    assignment_id = room_assignment_for_bind(conn, args, existing)
 
     conn.execute(
         """
@@ -715,7 +750,7 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
             args.bed_path or "",
             args.doctor_id or "",
             provider_id,
-            args.assignment_id or "",
+            assignment_id,
         ),
     )
     conn.commit()
@@ -1230,7 +1265,7 @@ def normalize_room_report(row: sqlite3.Row) -> dict:
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["assignment_id"] or ""),
-        "kind": str(row["report_kind"] or "DOCTOR_NOTE"),
+        "kind": str(row["report_kind"] or "DOCTOR_NOTE").strip().upper(),
         "title": str(row["title"] or ""),
         "body": str(row["body_md"] or ""),
         "repository": str(row["repository"] or ""),
@@ -1339,6 +1374,10 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
     if not body.strip():
         raise RuntimeError("Hospital Room Report body is empty")
 
+    report_kind = str(args.report_kind or "DOCTOR_NOTE").strip().upper()
+    if not report_kind:
+        raise RuntimeError("Hospital Room Report kind is empty")
+
     try:
         changed_files = json.loads(args.changed_files_json or "[]")
     except json.JSONDecodeError as exc:
@@ -1386,7 +1425,7 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
             doctor_id,
             provider_id,
             assignment_id,
-            args.report_kind,
+            report_kind,
             args.title or "",
             body,
             repository,
@@ -1434,6 +1473,7 @@ def room_reports_list(
     room_id: str,
     limit: int,
     before_id: int | None,
+    report_kind: str = "",
 ) -> list:
     exists = conn.execute(
         "SELECT 1 FROM rooms WHERE room_id = ?",
@@ -1447,26 +1487,24 @@ def room_reports_list(
             "Hospital Room Report limit must be between 1 and 500"
         )
 
-    if before_id is None:
-        rows = conn.execute(
-            """
-            SELECT * FROM room_reports
-            WHERE room_id = ?
-            ORDER BY report_id DESC
-            LIMIT ?
-            """,
-            (room_id, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT * FROM room_reports
-            WHERE room_id = ? AND report_id < ?
-            ORDER BY report_id DESC
-            LIMIT ?
-            """,
-            (room_id, before_id, limit),
-        ).fetchall()
+    clauses = ["room_id = ?"]
+    values: list = [room_id]
+    if before_id is not None:
+        clauses.append("report_id < ?")
+        values.append(before_id)
+    if report_kind:
+        # Old Room Reports may persist mixed-case kinds. Normalize both
+        # operands, so HANDOFF is always delivered regardless of casing.
+        clauses.append("UPPER(TRIM(report_kind)) = ?")
+        values.append(str(report_kind).strip().upper())
+
+    values.append(limit)
+    rows = conn.execute(
+        "SELECT * FROM room_reports WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY report_id DESC LIMIT ?",
+        tuple(values),
+    ).fetchall()
 
     rows = list(reversed(rows))
     return [normalize_room_report(row) for row in rows]
@@ -1819,6 +1857,9 @@ def chart_entries_list(conn: sqlite3.Connection, args) -> list:
     if args.entry_kind:
         clauses.append("entry_kind = ?")
         values.append(str(args.entry_kind).strip().upper())
+    if getattr(args, "author_role", ""):
+        clauses.append("LOWER(author_role) = ?")
+        values.append(str(args.author_role).strip().lower())
 
     query = (
         "SELECT * FROM chart_entries WHERE "
@@ -2327,6 +2368,117 @@ def normalize_assignment(row: sqlite3.Row) -> dict:
     }
 
 
+def assignment_authority(
+    conn: sqlite3.Connection,
+    room_id: str = "",
+    team: str = "",
+    repository: str = "",
+    permission: str = "",
+) -> dict:
+    room_id = str(room_id or "").strip()
+    team = str(team or "").strip()
+    repository = str(repository or "").strip()
+    requested = str(permission or "READ").strip().upper().replace("-", "_")
+
+    if requested not in ASSIGNMENT_PERMISSIONS:
+        raise RuntimeError(
+            "Hospital authority permission must be one of "
+            + ", ".join(ASSIGNMENT_PERMISSIONS)
+        )
+
+    if room_id:
+        row = conn.execute(
+            """
+            SELECT r.room_id, r.team, r.current_assignment_id,
+                   p.repository
+            FROM rooms r
+            LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE r.room_id = ?
+            """,
+            (room_id,),
+        ).fetchone()
+    else:
+        if not team:
+            raise RuntimeError(
+                "Hospital authority requires --room-id or --team"
+            )
+        clauses = ["r.team = ?"]
+        values = [team]
+        if repository:
+            clauses.append("p.repository = ?")
+            values.append(repository)
+        rows = conn.execute(
+            f"""
+            SELECT r.room_id, r.team, r.current_assignment_id,
+                   p.repository
+            FROM rooms r
+            LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.updated_at DESC, r.room_id ASC
+            """,
+            tuple(values),
+        ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError(
+                "Hospital authority target is ambiguous; include repository"
+            )
+        row = rows[0] if rows else None
+
+    if row is None:
+        raise RuntimeError("unknown Hospital authority Room")
+
+    resolved_room_id = str(row["room_id"] or "")
+    raw_assignment_id = row["current_assignment_id"]
+    # Only the canonical stored empty string represents an unassigned Room.
+    # A whitespace-only or NULL link is corruption, not READ-only default.
+    assignment_id = str(raw_assignment_id).strip()
+    assignment = {}
+    if raw_assignment_id != "":
+        # A nonempty Room pointer is not equivalent to an unassigned Room.
+        # It must never grant another Room's rights or silently downgrade
+        # a dangling / PAUSED link into the READ-only default.
+        if not assignment_id or not assignment_id.isdecimal():
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // INVALID_LINK_ID"
+            )
+        try:
+            candidate = assignment_record(conn, int(assignment_id))
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // MISSING_ASSIGNMENT"
+            ) from exc
+        if str(candidate.get("roomId") or "") != resolved_room_id:
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // FOREIGN_ROOM"
+            )
+        if str(candidate.get("status") or "").upper() != "ACTIVE":
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // NONACTIVE_LINK"
+            )
+        assignment = candidate
+
+    permissions = (
+        list(assignment.get("permissions") or [])
+        if assignment
+        else ["READ"]
+    )
+    if "READ" not in permissions:
+        permissions.insert(0, "READ")
+
+    allowed = requested in permissions
+    return {
+        "roomId": str(row["room_id"] or ""),
+        "team": str(row["team"] or ""),
+        "repository": str(row["repository"] or ""),
+        "assignmentId": str(assignment.get("id") or ""),
+        "assignmentStatus": str(assignment.get("status") or ""),
+        "permissions": permissions,
+        "permission": requested,
+        "allowed": allowed,
+        "source": "ACTIVE_ASSIGNMENT" if assignment else "READ_ONLY_DEFAULT",
+    }
+
+
 def assignment_record(
     conn: sqlite3.Connection,
     assignment_id: int,
@@ -2659,7 +2811,7 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--bed-path", default="")
     bind.add_argument("--doctor-id", default="")
     bind.add_argument("--provider-id", default="")
-    bind.add_argument("--assignment-id", default="")
+    bind.add_argument("--assignment-id", default=None)
     bind.add_argument("--json", action="store_true")
 
     room = sub.add_parser("room-put")
@@ -2670,7 +2822,7 @@ def build_parser() -> argparse.ArgumentParser:
     room.add_argument("--bed-path", default="")
     room.add_argument("--doctor-id", default="")
     room.add_argument("--provider-id", default="")
-    room.add_argument("--assignment-id", default="")
+    room.add_argument("--assignment-id", default=None)
     room.add_argument("--json", action="store_true")
 
     room_get = sub.add_parser("room")
@@ -2755,6 +2907,18 @@ def build_parser() -> argparse.ArgumentParser:
     assignment_create_parser.add_argument("--created-by-role", default="operator")
     assignment_create_parser.add_argument("--created-by-id", default="operator")
     assignment_create_parser.add_argument("--json", action="store_true")
+
+    authority_parser = sub.add_parser("assignment-authority")
+    authority_parser.add_argument("--room-id", default="")
+    authority_parser.add_argument("--team", default="")
+    authority_parser.add_argument("--repository", default="")
+    authority_parser.add_argument(
+        "--permission",
+        default="READ",
+        choices=ASSIGNMENT_PERMISSIONS,
+    )
+    authority_parser.add_argument("--require", action="store_true")
+    authority_parser.add_argument("--json", action="store_true")
 
     assignment_get = sub.add_parser("assignment")
     assignment_get.add_argument("assignment_id", type=int)
@@ -2851,6 +3015,7 @@ def build_parser() -> argparse.ArgumentParser:
     chart_list.add_argument("--patient-id", default="")
     chart_list.add_argument("--room-id", default="")
     chart_list.add_argument("--entry-kind", default="")
+    chart_list.add_argument("--author-role", default="")
     chart_list.add_argument(
         "--status",
         default="ACTIVE",
@@ -2962,6 +3127,7 @@ def build_parser() -> argparse.ArgumentParser:
     room_reports.add_argument("room_id")
     room_reports.add_argument("--limit", type=int, default=50)
     room_reports.add_argument("--before-id", type=int)
+    room_reports.add_argument("--report-kind", default="")
     room_reports.add_argument("--json", action="store_true")
 
     checkpoint = sub.add_parser("checkpoint-append")
@@ -3068,6 +3234,24 @@ def main() -> int:
                 )
             elif args.command == "assignment-create":
                 emit_data(assignment_create(conn, args), args.json)
+            elif args.command == "assignment-authority":
+                authority = assignment_authority(
+                    conn,
+                    args.room_id,
+                    args.team,
+                    args.repository,
+                    args.permission,
+                )
+                if args.require and not authority["allowed"]:
+                    raise RuntimeError(
+                        "HOSPITAL AUTHORITY REFUSED // "
+                        + authority["permission"]
+                        + " NOT GRANTED // ROOM "
+                        + authority["roomId"]
+                        + " // ASSIGNMENT "
+                        + (authority["assignmentId"] or "NONE")
+                    )
+                emit_data(authority, args.json)
             elif args.command == "assignment":
                 emit_data(
                     assignment_record(conn, args.assignment_id),
@@ -3122,6 +3306,7 @@ def main() -> int:
                         args.room_id,
                         args.limit,
                         args.before_id,
+                        args.report_kind,
                     ),
                     args.json,
                 )
