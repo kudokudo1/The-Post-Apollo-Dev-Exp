@@ -123,6 +123,10 @@ def main():
     check('dangling Assignment link has explicit failure',lambda:requires_integrity_failure(
         lambda:store.assignment_authority(db,room_id='A',permission='READ')))
 
+    set_link(db,'   ')
+    check('whitespace-only stored link rejects READ default',lambda:requires_integrity_failure(
+        lambda:store.assignment_authority(db,room_id='A',permission='READ')))
+
     def mock_hospital(cmd,*params):
         if cmd=='session':
             return store.session_record(db,params[0])
@@ -142,6 +146,9 @@ def main():
         lambda:agent.live_context_payload('fresh-doctor-B', query_text='continue')))
     set_link(db,paused)
     check('Doctor B context rejects PAUSED work and permissions',lambda:requires_integrity_failure(
+        lambda:agent.live_context_payload('fresh-doctor-B', query_text='continue')))
+    set_link(db,'   ')
+    check('Doctor B context rejects whitespace-only stored link',lambda:requires_integrity_failure(
         lambda:agent.live_context_payload('fresh-doctor-B', query_text='continue')))
     set_link(db,a)
     def own_context():
