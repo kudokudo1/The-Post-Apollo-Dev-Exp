@@ -57,7 +57,7 @@ target = os.environ.get("PX_S3_CAPTURE_TARGET", "")
 args = sys.argv[1:]
 if target and "--help" not in args:
     # Only the provider turn itself receives this path. Probes/help bypass.
-    with open(target, "xb") as captured:
+    with open(target, "x+b") as captured:
         os.fchmod(captured.fileno(), 0o600)
         while True:
             chunk = os.read(0, 65536)
