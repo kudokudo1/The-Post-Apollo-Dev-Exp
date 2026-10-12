@@ -1,0 +1,56 @@
+name: PX / NURSE 2 EXACT RW VERIFICATION
+on:
+  pull_request:
+    paths:
+      - tests/verification/nurse2-pr66/**
+      - .github/workflows/px-nurse2-rw-exact.yml
+
+permissions:
+  contents: read
+
+jobs:
+  nurse2-rw-exact:
+    name: Independent Nurse 2 eight-case exact SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout independent verification scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: verification
+          persist-credentials: false
+
+      - name: Checkout immutable reviewed PX source
+        uses: actions/checkout@v4
+        with:
+          ref: 7ce911836c9fcbe1039e675e2575c86e92a31d1e
+          path: px-source
+          persist-credentials: false
+
+      - name: Verify source SHA and execute unmodified Nurse 2 runner
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          test "$(git -C px-source rev-parse HEAD)" = "7ce911836c9fcbe1039e675e2575c86e92a31d1e"
+          python3 -B verification/tests/verification/nurse2-pr66/nurse2_pr66_exact_harness_runner.py \
+            px-source --output "${{ runner.temp }}/nurse2-pr66-exact-eight-cases.json"
+
+      - name: Expose complete per-case evidence in job log
+        if: always()
+        run: |
+          for f in "${{ runner.temp }}/nurse2-pr66-exact-eight-cases.json" \
+                   "${{ runner.temp }}/nurse2-pr66-exact-eight-cases.log"; do
+            if test -f "$f"; then echo "=== $f ==="; cat "$f"; else echo "MISSING $f"; fi
+          done
+
+      - name: Preserve JSON and log as private-to-runner CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nurse2-pr66-exact-eight-cases
+          path: |
+            ${{ runner.temp }}/nurse2-pr66-exact-eight-cases.json
+            ${{ runner.temp }}/nurse2-pr66-exact-eight-cases.log
+          if-no-files-found: warn
+          retention-days: 30
