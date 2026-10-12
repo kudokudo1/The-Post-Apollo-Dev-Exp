@@ -823,6 +823,13 @@ HISTORY_REPORT_POOL_LIMIT = 30
 RETRIEVED_HISTORY_LIMIT = 6
 RETRIEVAL_TOKEN_MIN_LENGTH = 3
 
+# Required continuity has its own bounded lane. Overflow is an explicit
+# prelaunch error; neither lexical ranking nor old age may silently drop it.
+REQUIRED_HANDOFF_LIMIT = 12
+APPROVED_ROOM_CHART_LIMIT = 24
+REQUIRED_ITEM_TEXT_LIMIT = 1800
+REQUIRED_CONTINUITY_CHAR_BUDGET = 18000
+
 
 def clip_context_text(value, limit: int = CONTEXT_ITEM_TEXT_LIMIT) -> str:
     text = str(value or "").strip()
@@ -1002,6 +1009,118 @@ def validated_room_assignment(room: dict) -> dict:
     return assignment
 
 
+def required_room_continuity(room_id: str) -> tuple[list, list]:
+    """Guarantee Room HANDOFF reports and ACTIVE operator-authored Room Chart.
+
+    Both queries filter at the durable store, independently of newest-N
+    history and priority Top-10 Chart. Use limit+1 to detect saturation.
+    Explicit overflow/malformed provenance aborts before provider dispatch.
+    """
+    reports = px_hospital(
+        "room-reports", room_id,
+        "--report-kind", "HANDOFF",
+        "--limit", str(REQUIRED_HANDOFF_LIMIT + 1),
+    )
+    approved = px_hospital(
+        "chart-entries",
+        "--scope", "ROOM",
+        "--room-id", room_id,
+        "--author-role", "operator",
+        "--status", "ACTIVE",
+        "--limit", str(APPROVED_ROOM_CHART_LIMIT + 1),
+    )
+    if not isinstance(reports, list) or not isinstance(approved, list):
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // MALFORMED_STORE_RESPONSE"
+        )
+    if len(reports) > REQUIRED_HANDOFF_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_MANDATORY_HANDOFFS"
+        )
+    if len(approved) > APPROVED_ROOM_CHART_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_APPROVED_ROOM_CHARTS"
+        )
+
+    total_chars = 0
+    seen = set()
+    for lane, rows in (("ROOM_REPORT", reports), ("ROOM_CHART", approved)):
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_RECORD"
+                )
+            identity = str(row.get("id") or "")
+            if not identity or (lane, identity) in seen:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_ID"
+                )
+            seen.add((lane, identity))
+            if str(row.get("roomId") or "") != room_id:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // FOREIGN_ROOM_RECORD"
+                )
+            if lane == "ROOM_REPORT":
+                valid = str(row.get("kind") or "").upper() == "HANDOFF"
+            else:
+                valid = (
+                    str(row.get("scope") or "").upper() == "ROOM"
+                    and str(row.get("status") or "").upper() == "ACTIVE"
+                    and str(row.get("authorRole") or "").lower() == "operator"
+                    and (
+                        not row.get("sourceRoomId")
+                        or str(row["sourceRoomId"]) == room_id
+                    )
+                )
+            if not valid:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // WRONG_REQUIRED_LANE"
+                )
+            text = (
+                str(row.get("title") or "")
+                + "\n" + str(row.get("body") or "")
+            )
+            if not str(row.get("body") or "").strip():
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // EMPTY_REQUIRED_RECORD"
+                )
+            if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // OVERSIZED_REQUIRED_RECORD"
+                )
+            total_chars += len(text)
+    if total_chars > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+    return reports, approved
+
+
+def render_required_room_continuity(reports: list, approved: list) -> list[str]:
+    lines = ["REQUIRED ROOM CONTINUITY // NOT RELEVANCE-RANKED"]
+    if not reports and not approved:
+        return lines + ["- NONE"]
+    # Full bounded body is used: clipping a mandatory decision would silently
+    # discard its substance, even if its report ID appeared in the prompt.
+    for report in reports:
+        lines.extend([
+            "- [ROOM_REPORT #" + str(report["id"])
+            + " HANDOFF | SESSION " + str(report.get("sessionId") or "NONE")
+            + " | CREATED " + str(report.get("createdAt") or "UNKNOWN") + "] "
+            + str(report.get("title") or ""),
+            "  " + str(report.get("body") or "").replace("\n", "\n  "),
+        ])
+    for entry in approved:
+        lines.extend([
+            "- [ROOM_CHART #" + str(entry["id"])
+            + " ACTIVE OPERATOR-APPROVED " + str(entry.get("kind") or "NOTE")
+            + " | SOURCE " + str(entry.get("sourceReportId") or "NONE")
+            + "] " + str(entry.get("title") or ""),
+            "  " + str(entry.get("body") or "").replace("\n", "\n  "),
+        ])
+    return lines
+
+
 def live_context_payload(
     session_id: str,
     working_directory: str = "",
@@ -1036,6 +1155,8 @@ def live_context_payload(
         "--status", "ACTIVE",
         "--limit", str(ROOM_CHART_LIMIT),
     )
+
+    required_handoffs, approved_room_chart = required_room_continuity(room_id)
 
     recent_messages = px_hospital(
         "messages",
@@ -1089,6 +1210,8 @@ def live_context_payload(
         "git": git_evidence,
         "patientChart": patient_chart,
         "roomChart": room_chart,
+        "requiredHandoffs": required_handoffs,
+        "approvedRoomChart": approved_room_chart,
         "recentMessages": recent_messages,
         "retrievedContext": retrieved_context,
     }
@@ -1217,6 +1340,13 @@ def render_live_context(payload: dict) -> str:
             payload.get("roomChart") or [],
         )
     )
+    lines.extend([""])
+    lines.extend(
+        render_required_room_continuity(
+            payload.get("requiredHandoffs") or [],
+            payload.get("approvedRoomChart") or [],
+        )
+    )
     lines.extend(["", "RECENT CANONICAL TRANSCRIPT"])
 
     if recent:
@@ -1287,6 +1417,14 @@ def context_summary(payload: dict) -> dict:
         "authorityDenied": list(
             (payload.get("authority") or {}).get("denied") or []
         ),
+        "requiredHandoffRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("requiredHandoffs") or [])
+        ],
+        "approvedRoomChartRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("approvedRoomChart") or [])
+        ],
         "authorityEnforcement": str(
             (payload.get("authority") or {}).get("enforcement")
             or "COMMAND_GUARD"
