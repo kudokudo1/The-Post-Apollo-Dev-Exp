@@ -93,3 +93,21 @@ jobs:
 
       - name: Verify S3 opt-in evidence runner without launching AI
         run: python3 tests/test-pxd-s3-real-provider-runner.py -v
+
+      - name: Execute S3 Codex-selected no-write dry run
+        run: |
+          target="${RUNNER_TEMP}/s3-codex-dry-run-uncreated"
+          test ! -e "$target"
+          python3 tests/manual/doctor_succession_real_provider.py \
+            --workspace "$target" --provider codex \
+            > "${RUNNER_TEMP}/s3-codex-dry-run-result.json"
+          python3 - "${RUNNER_TEMP}/s3-codex-dry-run-result.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert data["provider"] == "codex", data
+          assert data["mode"] == "DRY_RUN_NO_PROVIDER", data
+          assert data["writesOnDryRun"] == 0, data
+          assert data["realCallsOnExecute"] == 2, data
+          print(json.dumps(data, indent=2))
+          PY
+          test ! -e "$target"
