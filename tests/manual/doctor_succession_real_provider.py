@@ -130,6 +130,17 @@ def valid_provider(provider_id):
         raise RuntimeError(f"real provider executable unavailable: {command}")
     if "mock" in command.lower() or "fixture" in command.lower():
         raise RuntimeError("mock/fixture provider is not valid for real-provider acceptance")
+    if provider_id == "hermes":
+        help_result = subprocess.run(
+            [executable, "chat", "--help"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        help_text = (help_result.stdout + help_result.stderr).lower()
+        if "--query-file" not in help_text:
+            raise RuntimeError(
+                "Hermes CLI lacks --query-file stdin support; exact provider "
+                "input capture is unavailable. Do not claim acceptance."
+            )
     return registry, record, str(Path(executable).resolve())
 
 
