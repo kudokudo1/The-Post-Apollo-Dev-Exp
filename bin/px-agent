@@ -827,6 +827,9 @@ RETRIEVAL_TOKEN_MIN_LENGTH = 3
 # prelaunch error; neither lexical ranking nor old age may silently drop it.
 REQUIRED_HANDOFF_LIMIT = 12
 APPROVED_ROOM_CHART_LIMIT = 24
+# Separate mandatory Patient-level decisions; priority-ranked Patient previews
+# do not control whether operator-authored ACTIVE guidance is delivered.
+REQUIRED_PATIENT_CHART_LIMIT = 24
 REQUIRED_ITEM_TEXT_LIMIT = 1800
 REQUIRED_CONTINUITY_CHAR_BUDGET = 18000
 
@@ -1096,6 +1099,149 @@ def required_room_continuity(room_id: str) -> tuple[list, list]:
     return reports, approved
 
 
+def required_patient_continuity(patient_id: str) -> list[dict]:
+    """Require complete ACTIVE operator-authored Patient Chart across all Rooms.
+
+    The normal Patient Chart is a six-entry priority preview, not an authority
+    source for required succession continuity. Application authorRole is
+    persisted provenance, not independent authentication of the operator.
+    Overflow/corruption refuses dispatch rather than silently dropping a rule.
+    """
+    if not patient_id:
+        return []
+    rows = px_hospital(
+        "chart-entries",
+        "--scope", "PATIENT",
+        "--patient-id", patient_id,
+        "--author-role", "operator",
+        "--status", "ACTIVE",
+        "--limit", str(REQUIRED_PATIENT_CHART_LIMIT + 1),
+    )
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // MALFORMED_PATIENT_CHART_RESPONSE"
+        )
+    if len(rows) > REQUIRED_PATIENT_CHART_LIMIT:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // TOO_MANY_APPROVED_PATIENT_CHARTS"
+        )
+
+    seen = set()
+    total_chars = 0
+    source_room_cache = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_PATIENT_RECORD"
+            )
+        identity = str(row.get("id") or "")
+        if not identity or identity in seen:
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // INVALID_REQUIRED_PATIENT_ID"
+            )
+        seen.add(identity)
+        if (
+            str(row.get("scope") or "").upper() != "PATIENT"
+            or str(row.get("patientId") or "") != patient_id
+            or str(row.get("roomId") or "")
+        ):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // FOREIGN_PATIENT_RECORD"
+            )
+        if (
+            str(row.get("status") or "").upper() != "ACTIVE"
+            or str(row.get("authorRole") or "").lower() != "operator"
+        ):
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // WRONG_REQUIRED_PATIENT_LANE"
+            )
+        # A valid Patient-level decision may originate in another Room of
+        # this same Patient. A foreign Patient's source Room is never allowed.
+        source_room_id = str(row.get("sourceRoomId") or "")
+        source_session_id = str(row.get("sourceSessionId") or "")
+        if source_session_id:
+            try:
+                source_session = px_hospital("session", source_session_id)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // INVALID_PATIENT_SOURCE_SESSION"
+                ) from exc
+            session_room_id = str(source_session.get("roomId") or "")
+            if not session_room_id or (
+                source_room_id and source_room_id != session_room_id
+            ):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // PATIENT_SOURCE_MISMATCH"
+                )
+            source_room_id = session_room_id
+        if source_room_id:
+            if source_room_id not in source_room_cache:
+                try:
+                    source_room_cache[source_room_id] = px_hospital(
+                        "room", source_room_id
+                    )
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        "HOSPITAL CONTINUITY REFUSED // INVALID_PATIENT_SOURCE_ROOM"
+                    ) from exc
+            if (
+                str(source_room_cache[source_room_id].get("patientId") or "")
+                != patient_id
+            ):
+                raise RuntimeError(
+                    "HOSPITAL CONTINUITY REFUSED // FOREIGN_PATIENT_SOURCE_ROOM"
+                )
+
+        body = str(row.get("body") or "")
+        if not body.strip():
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // EMPTY_REQUIRED_PATIENT_RECORD"
+            )
+        text = str(row.get("title") or "") + "\n" + body
+        if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+            raise RuntimeError(
+                "HOSPITAL CONTINUITY REFUSED // OVERSIZED_REQUIRED_PATIENT_RECORD"
+            )
+        total_chars += len(text)
+    if total_chars > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+    return rows
+
+
+def render_required_patient_continuity(approved: list) -> list[str]:
+    lines = ["REQUIRED PATIENT CONTINUITY // NOT PRIORITY-RANKED"]
+    if not approved:
+        return lines + ["- NONE"]
+    for entry in approved:
+        lines.extend([
+            "- [PATIENT_CHART #" + str(entry["id"])
+            + " ACTIVE OPERATOR-APPROVED " + str(entry.get("kind") or "NOTE")
+            + " | PATIENT " + str(entry.get("patientId") or "")
+            + " | SOURCE ROOM " + str(entry.get("sourceRoomId") or "NONE")
+            + " | SOURCE REPORT " + str(entry.get("sourceReportId") or "NONE")
+            + "] " + str(entry.get("title") or ""),
+            "  " + str(entry.get("body") or "").replace("\n", "\n  "),
+        ])
+    return lines
+
+
+def validate_required_context_budget(
+    reports: list, room_chart: list, patient_chart: list
+) -> None:
+    """Shared cap across both mandatory lanes; never omit a portion."""
+    total = sum(
+        len(str(row.get("title") or "") + "\n" + str(row.get("body") or ""))
+        for rows in (reports, room_chart, patient_chart)
+        for row in rows
+    )
+    if total > REQUIRED_CONTINUITY_CHAR_BUDGET:
+        raise RuntimeError(
+            "HOSPITAL CONTINUITY REFUSED // REQUIRED_CONTEXT_OVER_BUDGET"
+        )
+
+
 def render_required_room_continuity(reports: list, approved: list) -> list[str]:
     lines = ["REQUIRED ROOM CONTINUITY // NOT RELEVANCE-RANKED"]
     if not reports and not approved:
@@ -1157,6 +1303,10 @@ def live_context_payload(
     )
 
     required_handoffs, approved_room_chart = required_room_continuity(room_id)
+    approved_patient_chart = required_patient_continuity(patient_id)
+    validate_required_context_budget(
+        required_handoffs, approved_room_chart, approved_patient_chart
+    )
 
     recent_messages = px_hospital(
         "messages",
@@ -1212,6 +1362,7 @@ def live_context_payload(
         "roomChart": room_chart,
         "requiredHandoffs": required_handoffs,
         "approvedRoomChart": approved_room_chart,
+        "approvedPatientChart": approved_patient_chart,
         "recentMessages": recent_messages,
         "retrievedContext": retrieved_context,
     }
@@ -1347,6 +1498,12 @@ def render_live_context(payload: dict) -> str:
             payload.get("approvedRoomChart") or [],
         )
     )
+    lines.extend([""])
+    lines.extend(
+        render_required_patient_continuity(
+            payload.get("approvedPatientChart") or [],
+        )
+    )
     lines.extend(["", "RECENT CANONICAL TRANSCRIPT"])
 
     if recent:
@@ -1424,6 +1581,10 @@ def context_summary(payload: dict) -> dict:
         "approvedRoomChartRefs": [
             str(row.get("id") or "")
             for row in (payload.get("approvedRoomChart") or [])
+        ],
+        "approvedPatientChartRefs": [
+            str(row.get("id") or "")
+            for row in (payload.get("approvedPatientChart") or [])
         ],
         "authorityEnforcement": str(
             (payload.get("authority") or {}).get("enforcement")
