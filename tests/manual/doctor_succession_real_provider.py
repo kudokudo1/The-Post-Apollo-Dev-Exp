@@ -157,6 +157,19 @@ def bootstrap(workspace, provider):
     wrapper.chmod(0o700)
     reg["providers"] = {provider: dict(selected)}
     reg["providers"][provider]["command"] = str(wrapper)
+    if provider == "codex":
+        # Bound the demonstration's model-generated tool actions even if
+        # the user's global Codex config normally allows workspace writes.
+        # No grant to edit, commit, push, or elevate approval privileges.
+        reg["providers"][provider]["startArgs"] = [
+            "exec", "--sandbox", "read-only",
+            "-c", "approval_policy=never", "--json", "-"
+        ]
+        reg["providers"][provider]["resumeArgs"] = [
+            "exec", "resume", "{provider_session_id}",
+            "--sandbox", "read-only", "-c", "approval_policy=never",
+            "--json", "-"
+        ]
     reg_file = workspace / "provider-registry.json"
     write_private(reg_file, reg)
     env["PX_AGENT_PROVIDER_CONFIG"] = str(reg_file)
