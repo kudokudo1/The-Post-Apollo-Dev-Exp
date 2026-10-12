@@ -71,12 +71,29 @@ def execute(checkout: Path, output: Path):
     log=p.stdout+"\n"+p.stderr
     output.with_suffix('.log').write_text(log)
     found=[]
+    pending = None
     for line in log.splitlines():
-        match=re.match(r"^(test_\w+)\s+\([^)]*\)\s+\.\.\.\s+(ok|FAIL|ERROR|skipped.*)$",line)
+        # unittest -v may print the test method's docstring on its own line,
+        # before a separate "... ok" status line (observed for RW-08).
+        match = re.match(
+            r"^(test_\w+)\s+\([^)]*\)(?:\s+\.\.\.\s+(ok|FAIL|ERROR|skipped.*))?\s*$",
+            line,
+        )
         if match and match.group(1) in status["cases"]:
-            case,result=match.groups()
-            status["cases"][case]={"result":{"ok":"PASS","FAIL":"FAIL","ERROR":"ERROR"}.get(result,"SKIPPED")}
-            found.append(case)
+            pending = match.group(1)
+            result = match.group(2)
+        elif pending:
+            followup = re.search(r"\.\.\.\s+(ok|FAIL|ERROR|skipped.*)$", line)
+            result = followup.group(1) if followup else None
+        else:
+            result = None
+        if pending and result is not None:
+            status["cases"][pending] = {
+                "result": {"ok":"PASS","FAIL":"FAIL","ERROR":"ERROR"}.get(result,"SKIPPED")
+            }
+            found.append(pending)
+            pending = None
+
     status["success"] = (p.returncode == 0 and len(found) == len(EXPECTED) and
                          all(v["result"]=="PASS" for v in status["cases"].values()))
     status["notes"].append("Harness exit code: "+str(p.returncode))
