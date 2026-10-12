@@ -12,6 +12,8 @@ on:
       - tests/test-pxd-hospital-s1.sh
       - tests/test-pxd-p1-assignment-integrity.py
       - tests/test-pxd-p1-provider-boundary.py
+      - tests/test-pxd-s2-required-continuity.py
+      - tests/test-pxd-s2-disposable-cli.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -29,6 +31,8 @@ on:
       - tests/test-pxd-hospital-s1.sh
       - tests/test-pxd-p1-assignment-integrity.py
       - tests/test-pxd-p1-provider-boundary.py
+      - tests/test-pxd-s2-required-continuity.py
+      - tests/test-pxd-s2-disposable-cli.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -55,6 +59,8 @@ jobs:
           python3 -m py_compile bin/hospital_target_preflight.py
           python3 -m py_compile tests/test-pxd-p1-assignment-integrity.py
           python3 -m py_compile tests/test-pxd-p1-provider-boundary.py
+          python3 -m py_compile tests/test-pxd-s2-required-continuity.py
+          python3 -m py_compile tests/test-pxd-s2-disposable-cli.py
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
           python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
@@ -72,3 +78,9 @@ jobs:
 
       - name: Verify P1 refuses invalid links before provider dispatch and message append
         run: python3 tests/test-pxd-p1-provider-boundary.py -v
+
+      - name: Verify S2 required Doctor handoffs and approved decisions survive context limits
+        run: python3 tests/test-pxd-s2-required-continuity.py -v
+
+      - name: Verify S2 Doctor A to B continuity via disposable real PX CLI
+        run: python3 tests/test-pxd-s2-disposable-cli.py -v

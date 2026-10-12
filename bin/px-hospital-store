@@ -1265,7 +1265,7 @@ def normalize_room_report(row: sqlite3.Row) -> dict:
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["assignment_id"] or ""),
-        "kind": str(row["report_kind"] or "DOCTOR_NOTE"),
+        "kind": str(row["report_kind"] or "DOCTOR_NOTE").strip().upper(),
         "title": str(row["title"] or ""),
         "body": str(row["body_md"] or ""),
         "repository": str(row["repository"] or ""),
@@ -1374,6 +1374,10 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
     if not body.strip():
         raise RuntimeError("Hospital Room Report body is empty")
 
+    report_kind = str(args.report_kind or "DOCTOR_NOTE").strip().upper()
+    if not report_kind:
+        raise RuntimeError("Hospital Room Report kind is empty")
+
     try:
         changed_files = json.loads(args.changed_files_json or "[]")
     except json.JSONDecodeError as exc:
@@ -1421,7 +1425,7 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
             doctor_id,
             provider_id,
             assignment_id,
-            args.report_kind,
+            report_kind,
             args.title or "",
             body,
             repository,
@@ -1469,6 +1473,7 @@ def room_reports_list(
     room_id: str,
     limit: int,
     before_id: int | None,
+    report_kind: str = "",
 ) -> list:
     exists = conn.execute(
         "SELECT 1 FROM rooms WHERE room_id = ?",
@@ -1482,26 +1487,24 @@ def room_reports_list(
             "Hospital Room Report limit must be between 1 and 500"
         )
 
-    if before_id is None:
-        rows = conn.execute(
-            """
-            SELECT * FROM room_reports
-            WHERE room_id = ?
-            ORDER BY report_id DESC
-            LIMIT ?
-            """,
-            (room_id, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT * FROM room_reports
-            WHERE room_id = ? AND report_id < ?
-            ORDER BY report_id DESC
-            LIMIT ?
-            """,
-            (room_id, before_id, limit),
-        ).fetchall()
+    clauses = ["room_id = ?"]
+    values: list = [room_id]
+    if before_id is not None:
+        clauses.append("report_id < ?")
+        values.append(before_id)
+    if report_kind:
+        # Old Room Reports may persist mixed-case kinds. Normalize both
+        # operands, so HANDOFF is always delivered regardless of casing.
+        clauses.append("UPPER(TRIM(report_kind)) = ?")
+        values.append(str(report_kind).strip().upper())
+
+    values.append(limit)
+    rows = conn.execute(
+        "SELECT * FROM room_reports WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY report_id DESC LIMIT ?",
+        tuple(values),
+    ).fetchall()
 
     rows = list(reversed(rows))
     return [normalize_room_report(row) for row in rows]
@@ -1854,6 +1857,9 @@ def chart_entries_list(conn: sqlite3.Connection, args) -> list:
     if args.entry_kind:
         clauses.append("entry_kind = ?")
         values.append(str(args.entry_kind).strip().upper())
+    if getattr(args, "author_role", ""):
+        clauses.append("LOWER(author_role) = ?")
+        values.append(str(args.author_role).strip().lower())
 
     query = (
         "SELECT * FROM chart_entries WHERE "
@@ -3009,6 +3015,7 @@ def build_parser() -> argparse.ArgumentParser:
     chart_list.add_argument("--patient-id", default="")
     chart_list.add_argument("--room-id", default="")
     chart_list.add_argument("--entry-kind", default="")
+    chart_list.add_argument("--author-role", default="")
     chart_list.add_argument(
         "--status",
         default="ACTIVE",
@@ -3120,6 +3127,7 @@ def build_parser() -> argparse.ArgumentParser:
     room_reports.add_argument("room_id")
     room_reports.add_argument("--limit", type=int, default=50)
     room_reports.add_argument("--before-id", type=int)
+    room_reports.add_argument("--report-kind", default="")
     room_reports.add_argument("--json", action="store_true")
 
     checkpoint = sub.add_parser("checkpoint-append")
@@ -3298,6 +3306,7 @@ def main() -> int:
                         args.room_id,
                         args.limit,
                         args.before_id,
+                        args.report_kind,
                     ),
                     args.json,
                 )
