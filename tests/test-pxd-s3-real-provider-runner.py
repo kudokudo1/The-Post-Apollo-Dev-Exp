@@ -29,6 +29,26 @@ class RealProviderRunnerSafetyTests(unittest.TestCase):
             self.assertEqual(result["writesOnDryRun"], 0)
             self.assertFalse(dest.exists())
 
+    def test_selected_codex_dry_run_is_no_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "codex-disposable-not-created"
+            p = self.script(
+                "--workspace", str(dest), "--provider", "codex"
+            )
+            self.assertEqual(p.returncode, 0, p.stderr)
+            result = json.loads(p.stdout)
+            self.assertEqual(result["provider"], "codex")
+            self.assertEqual(result["mode"], "DRY_RUN_NO_PROVIDER")
+            self.assertEqual(result["writesOnDryRun"], 0)
+            self.assertFalse(dest.exists())
+
+    def test_codex_execution_policy_is_explicitly_read_only(self):
+        src = SCRIPT.read_text()
+        self.assertIn('if provider == "codex":', src)
+        self.assertIn('"exec", "--sandbox", "read-only"', src)
+        self.assertIn('"approval_policy=never"', src)
+        self.assertNotIn("dangerously-bypass-approvals-and-sandbox", src)
+
     def test_real_launch_requires_explicit_ack(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "not-created"
