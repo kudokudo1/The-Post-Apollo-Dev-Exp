@@ -10,6 +10,8 @@ on:
       - bin/hospital_target_preflight.py
       - tests/test_hospital_target_preflight.py
       - tests/test-pxd-hospital-s1.sh
+      - tests/test-pxd-p1-assignment-integrity.py
+      - tests/test-pxd-p1-provider-boundary.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -25,6 +27,8 @@ on:
       - bin/hospital_target_preflight.py
       - tests/test_hospital_target_preflight.py
       - tests/test-pxd-hospital-s1.sh
+      - tests/test-pxd-p1-assignment-integrity.py
+      - tests/test-pxd-p1-provider-boundary.py
       - config/agent-providers.json
       - tests/test-px-agent-runtime.sh
       - tests/fixtures/mock-hermes-agent.py
@@ -49,6 +53,8 @@ jobs:
           python3 -m py_compile bin/px-hospital-store
           python3 -m py_compile bin/px-agent
           python3 -m py_compile bin/hospital_target_preflight.py
+          python3 -m py_compile tests/test-pxd-p1-assignment-integrity.py
+          python3 -m py_compile tests/test-pxd-p1-provider-boundary.py
           python3 -m py_compile tests/fixtures/mock-hermes-agent.py
           python3 -m py_compile tests/fixtures/mock-hermes-legacy.py
 
@@ -60,3 +66,9 @@ jobs:
 
       - name: Test Room Assignment and provider-launch guards
         run: bash ./tests/test-pxd-hospital-s1.sh
+
+      - name: Verify P1 Room-scoped ACTIVE Assignment authority and Doctor context
+        run: python3 tests/test-pxd-p1-assignment-integrity.py .
+
+      - name: Verify P1 refuses invalid links before provider dispatch and message append
+        run: python3 tests/test-pxd-p1-provider-boundary.py -v

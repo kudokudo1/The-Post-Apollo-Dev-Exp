@@ -2421,12 +2421,35 @@ def assignment_authority(
     if row is None:
         raise RuntimeError("unknown Hospital authority Room")
 
-    assignment_id = str(row["current_assignment_id"] or "")
+    resolved_room_id = str(row["room_id"] or "")
+    raw_assignment_id = row["current_assignment_id"]
+    # Only the canonical stored empty string represents an unassigned Room.
+    # A whitespace-only or NULL link is corruption, not READ-only default.
+    assignment_id = str(raw_assignment_id).strip()
     assignment = {}
-    if assignment_id:
-        candidate = assignment_record(conn, int(assignment_id))
-        if str(candidate.get("status") or "").upper() == "ACTIVE":
-            assignment = candidate
+    if raw_assignment_id != "":
+        # A nonempty Room pointer is not equivalent to an unassigned Room.
+        # It must never grant another Room's rights or silently downgrade
+        # a dangling / PAUSED link into the READ-only default.
+        if not assignment_id or not assignment_id.isdecimal():
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // INVALID_LINK_ID"
+            )
+        try:
+            candidate = assignment_record(conn, int(assignment_id))
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // MISSING_ASSIGNMENT"
+            ) from exc
+        if str(candidate.get("roomId") or "") != resolved_room_id:
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // FOREIGN_ROOM"
+            )
+        if str(candidate.get("status") or "").upper() != "ACTIVE":
+            raise RuntimeError(
+                "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // NONACTIVE_LINK"
+            )
+        assignment = candidate
 
     permissions = (
         list(assignment.get("permissions") or [])

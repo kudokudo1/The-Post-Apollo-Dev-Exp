@@ -958,6 +958,50 @@ def select_relevant_room_history(
     return candidates[:RETRIEVED_HISTORY_LIMIT]
 
 
+def validated_room_assignment(room: dict) -> dict:
+    """Resolve only ACTIVE work owned by this exact persisted Room.
+
+    Empty linkage is genuinely unassigned and receives READ-only default.
+    Any nonempty malformed, missing, foreign or PAUSED link fails closed.
+    This executes before context exposure, message persistence or provider spawn.
+    """
+    room_id = str(room.get("id") or "").strip()
+    raw_assignment_id = room.get("assignmentId", "")
+    # A genuinely unassigned Room has the exact canonical empty string.
+    # Normalizing whitespace before this check turns corrupt pointers into
+    # READ-only defaults and masks the underlying Room integrity failure.
+    if not room_id:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // ROOM_UNRESOLVED"
+        )
+    if raw_assignment_id == "":
+        return {}
+    assignment_id = str(raw_assignment_id).strip()
+    if not assignment_id or not assignment_id.isdecimal():
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // INVALID_LINK_ID"
+        )
+    try:
+        assignment = px_hospital("assignment", assignment_id)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // MISSING_ASSIGNMENT"
+        ) from exc
+    if str(assignment.get("id") or "") != str(int(assignment_id)):
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // ID_MISMATCH"
+        )
+    if str(assignment.get("roomId") or "") != room_id:
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // FOREIGN_ROOM"
+        )
+    if str(assignment.get("status") or "").upper() != "ACTIVE":
+        raise RuntimeError(
+            "HOSPITAL ASSIGNMENT INTEGRITY REFUSED // NONACTIVE_LINK"
+        )
+    return assignment
+
+
 def live_context_payload(
     session_id: str,
     working_directory: str = "",
@@ -967,12 +1011,7 @@ def live_context_payload(
     room_id = str(session.get("roomId") or "")
     room = px_hospital("room", room_id)
     patient_id = str(room.get("patientId") or "")
-    assignment_id = str(room.get("assignmentId") or "")
-    assignment = (
-        px_hospital("assignment", assignment_id)
-        if assignment_id
-        else {}
-    )
+    assignment = validated_room_assignment(room)
     cwd_text = (
         str(working_directory or "").strip()
         or str(session.get("workingDirectory") or "").strip()
