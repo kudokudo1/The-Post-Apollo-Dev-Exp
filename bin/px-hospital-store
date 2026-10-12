@@ -1265,7 +1265,7 @@ def normalize_room_report(row: sqlite3.Row) -> dict:
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["assignment_id"] or ""),
-        "kind": str(row["report_kind"] or "DOCTOR_NOTE"),
+        "kind": str(row["report_kind"] or "DOCTOR_NOTE").strip().upper(),
         "title": str(row["title"] or ""),
         "body": str(row["body_md"] or ""),
         "repository": str(row["repository"] or ""),
@@ -1374,6 +1374,10 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
     if not body.strip():
         raise RuntimeError("Hospital Room Report body is empty")
 
+    report_kind = str(args.report_kind or "DOCTOR_NOTE").strip().upper()
+    if not report_kind:
+        raise RuntimeError("Hospital Room Report kind is empty")
+
     try:
         changed_files = json.loads(args.changed_files_json or "[]")
     except json.JSONDecodeError as exc:
@@ -1421,7 +1425,7 @@ def room_report_append(conn: sqlite3.Connection, args) -> dict:
             doctor_id,
             provider_id,
             assignment_id,
-            args.report_kind,
+            report_kind,
             args.title or "",
             body,
             repository,
@@ -1489,7 +1493,9 @@ def room_reports_list(
         clauses.append("report_id < ?")
         values.append(before_id)
     if report_kind:
-        clauses.append("report_kind = ?")
+        # Old Room Reports may persist mixed-case kinds. Normalize both
+        # operands, so HANDOFF is always delivered regardless of casing.
+        clauses.append("UPPER(TRIM(report_kind)) = ?")
         values.append(str(report_kind).strip().upper())
 
     values.append(limit)
