@@ -1,0 +1,96 @@
+name: PX / RWF STAGING (NO PROVIDERS)
+on:
+  push:
+    branches:
+      - pxd/rwf-representative-staging-20261015
+    paths:
+      - tests/test-pxd-rwf-representative.py
+      - .github/workflows/px-rwf-staging.yml
+  pull_request:
+    paths:
+      - tests/test-pxd-rwf-representative.py
+      - .github/workflows/px-rwf-staging.yml
+permissions:
+  contents: read
+jobs:
+  representative-workflow:
+    name: RWF 10-case representative Hospital staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact proposed source without cached credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce approved executable source and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in bin/px bin/px-agent bin/px-hospital-store bin/hospital_target_preflight.py config/agent-providers.json; do
+            expected="$(git rev-parse "3e0f047c3c7297c45a4cadd1367c6e906bd27dd6:$path")"
+            got="$(git rev-parse "HEAD:$path")"
+            test "$expected" = "$got"
+          done
+          python3 -B - <<'PY'
+          from pathlib import Path
+          compile(Path('tests/test-pxd-rwf-representative.py').read_bytes(), 'tests/test-pxd-rwf-representative.py','exec')
+          print('APPROVED EXECUTABLE SOURCE MATCH / HARNESS SYNTAX PASS')
+          PY
+      - name: Run ten isolated CLI cases with no native provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="${RUNNER_TEMP}/rwf-staging"
+          mkdir -m 700 -p "$scratch/home" "$scratch/tmp" "$scratch/state" "$scratch/config" "$scratch/cache" "$scratch/run" "$scratch/evidence"
+          env -i \
+            PATH="$PATH" HOME="$scratch/home" USER=rwf-verifier LOGNAME=rwf-verifier \
+            LANG=C.UTF-8 LC_ALL=C.UTF-8 TMPDIR="$scratch/tmp" \
+            XDG_DATA_HOME="$scratch/state" XDG_CONFIG_HOME="$scratch/config" \
+            XDG_CACHE_HOME="$scratch/cache" XDG_RUNTIME_DIR="$scratch/run" \
+            PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+            PX_RWF_EVIDENCE_DIR="$scratch/evidence" \
+            python3 -B tests/test-pxd-rwf-representative.py 2>&1 | tee "$scratch/rwf-tests.log"
+      - name: Summarize per-case synthetic evidence
+        if: always()
+        shell: bash
+        run: |
+          python3 -B - "$RUNNER_TEMP/rwf-staging" <<'PY'
+          import json,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          evidence=p/'evidence'
+          data=[]
+          for i in range(1,11):
+              f=evidence/f'RWF-{i:02d}.json'
+              if f.exists():
+                  data.append(json.loads(f.read_text()))
+              else:
+                  data.append({'case':f'RWF-{i:02d}','status':'NOT_RUN','evidence':[]})
+          result={
+              'contract':'Nurse 2 RWF-01 through RWF-10',
+              'sourceExecutableCommit':'3e0f047c3c7297c45a4cadd1367c6e906bd27dd6',
+              'total':10,'passed':sum(x['status']=='PASS' for x in data),
+              'failedOrMissing':sum(x['status']!='PASS' for x in data),
+              'realProvidersLaunched':False,'liveHospitalAccessed':False,
+              'classification':'SYNTHETIC_CLI_ONLY_NOT_MODEL_COMPREHENSION',
+              'results':data,
+          }
+          p.mkdir(parents=True,exist_ok=True)
+          (p/'result-summary.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('RWF RESULTS',result['passed'],'/10')
+          for x in data:
+              print(x['case'],x['status'],len(x['evidence']),'synthetic checks')
+          PY
+      - name: Upload synthetic evidence for independent Nurse 2 review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwf-staging-synthetic-ten-cases
+          path: |
+            ${{ runner.temp }}/rwf-staging/result-summary.json
+            ${{ runner.temp }}/rwf-staging/evidence/*.json
+            ${{ runner.temp }}/rwf-staging/rwf-tests.log
+          if-no-files-found: warn
