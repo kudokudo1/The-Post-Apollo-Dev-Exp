@@ -53,27 +53,48 @@ Do not equate success of the synthetic tests with authenticated Codex safety.
 - [EXEC-S2 harness](../../tests/test-pxd-exec-s2-credential-boundary.py)
   models fake client authentication followed by an isolated tool with close_fds=True.
 
-## 3 // Proposed trust-boundary graph
+## 3 // Proposed trust-boundary graph (S3-C1 clarified)
 
-    Operator / Hospital authorization (trusted)
-                  |
-                  v
-    PX supervisor / policy decision (trusted, no model action authority)
-       |                                     |
-       | allowed context + prompt            | allowlisted tool request
-       v                                     v
-    Trusted model-only client             OS-isolated tool broker
-    (may hold model auth)                 (never holds model auth)
-       |                                     |
-       | model response / request            v
-       +---------------------------->  disposable isolated tool
-                                       (bounded Bed mounts, no network)
-                                                |
-                                                v
-                                       verified outcome/evidence
-       |
-       v
-    PX stores sanitized Doctor message, status, and trusted audit events
+    Operator / live Hospital authorization
+                    |
+                    v
+    PX supervisor (trusted: authority, scheduling, audit)
+           |                          ^
+           | authorized context       | proposed model output and
+           | + prompt                 | UNTRUSTED tool request
+           v                          |
+    Trusted model-only client --------+
+    (holds model credentials; no native tool execution)
+                                      |
+    [PX: validate live Room/Patient/Assignment, tool type,
+     arguments, grants, generation and request identity]
+                                      |
+                           ONLY APPROVED REQUESTS
+                                      v
+                   PX-controlled isolated tool broker
+                    (no credentials; no bypass routes)
+                                      |
+                                      v
+                         OS-isolated disposable tool
+                      (bounded Bed grants, no tool network)
+                                      |
+                           result treated as UNTRUSTED DATA
+                                      v
+                    PX validates, audits and forwards
+                          sanitized result to model
+                                      |
+                           final Doctor response via PX
+
+**Invariant S3-C1:** There is NO direct model-to-broker, model-to-tool,
+provider-plugin-to-tool, or tool-to-next-tool dispatch path. Every tool
+request, including calls spawned by a provider's native interface, a resumed
+session, or chained tool output, MUST enter PX's supervised authorization gate
+and then PX's isolated broker. The model client never owns a broker socket
+or executable tool handle. The broker rejects commands lacking a current
+PX-authorized, single-use, scope-bound dispatch identity; tool processes
+cannot self-authorize or invoke one another as a way around PX. A provider
+that cannot reliably disable/mediate *all* native tool paths fails the
+provider-feasibility gate and cannot be used for this profile.
 
 The model-only client is NOT by itself a safe tool. Codex/Hermes may contain native
 tool abilities. Prior to any real credential integration, independently establish
@@ -87,40 +108,69 @@ No provider may receive real credentials as an experiment under this contract.
 
 ## 4 // Required preflight and refusal ordering
 
-Proposed secure turn order (first turn AND resume):
+Proposed secure turn lifecycle (first turn AND resume), with three distinct
+stages. This section resolves S3-C2; no stage may be silently skipped.
 
-1. Acquire the existing single-session lock. Read live session, Room, Patient,
-   active Assignment, permissions, Bed path and expected repository/branch.
-2. Validate active authority and registered Bed/branch target, including symlink
-   containment, mount roots, changed authority since last turn, and requested
-   working-directory overrides. Permissions must come from *current* Hospital
-   state, never historical provider/session content.
-3. Select a reviewed, explicitly enabled execution profile and exact provider
-   executable/version/flags; reject unknown, downgraded, disabled or changed
-   profile. Verify fixed trusted launcher and directory ownership and permissions.
-4. Verify the credential-owner/tool-owner separation and prepare minimal
-   capability grants. Compute a sanitized environment allowlist; never
-   os.environ.copy() for an untrusted process.
-5. Re-evaluate first-turn versus resume status and session identity binding.
-   An existing native provider session MUST NOT widen Room, Bed, Patient,
-   tool capability or credential access; missing/foreign/mismatched resume ID
-   fails closed.
-6. Construct sandbox and transport topology with network and filesystem grants
-   matched to current permissions. Verify namespace and mount requirements,
-   tool binary trust, FD closure and audit sink availability.
-7. If ANY security preflight fails, do NOT spawn a provider, do NOT send a
-   prompt, do NOT append the outgoing operator message, and do NOT commit
-   a new native provider session ID. Return a stable refusal reason and
-   append only minimal, sanitized, supervisor-owned security evidence if the
-   audit sink is usable. Missing audit sink is itself a refusal.
-8. Only after all preflight passes: begin a supervised turn, append/store the
-   outgoing operator input as appropriate, and launch through the verified
-   boundary. On runtime failure, record FAILED safely, terminate the full
-   process group/descendants, never silently retry without preflight, and do
-   not treat partial output as a completed Doctor response.
-9. Revalidate authority for each tool request and at resume boundaries.
-   Cross-Patient or foreign Room calls must be denied even if prior provider
-   history asks otherwise. A pause/cancel revokes outstanding tool ability.
+**STAGE A // Static trusted-supervisor preflight (NO outgoing persistence):**
+
+1. Acquire the existing single-session lock. Read current session, Room,
+   Patient, active Assignment, permissions, Bed, repository and branch.
+2. Validate authority and registered target, including symlink/mount
+   containment, working-directory overrides, provider/session resume identity
+   and any changed authority. Old messages and stored permissions have NO
+   authorizing force.
+3. Select an explicitly enabled, reviewed provider execution profile
+   (binary/version/flags, trusted broker and launcher) and check credential
+   separation, sanitized environment allowlist, FD and socket constraints,
+   namespace/mount plan and functioning trusted audit sink.
+4. If any Stage A check fails, refuse without starting the model/provider
+   or broker, without sending the prompt, and **without appending the outgoing
+   operator message or turn.started**. Record a scrubbed refusal only in a
+   working supervisor-owned audit sink; if the sink is unavailable, fail
+   closed and return an error without pretending to have audited the event.
+
+**STAGE B // Actual sandbox startup and verified readiness (still NO
+outgoing persistence or provider launch):**
+
+5. Spawn the *isolated, idle tool broker* with zero tool requests or model
+   credentials. The PX supervisor verifies successful process startup,
+   required OS namespace/mount/FD restrictions, readiness of the controlled
+   transport, valid profile identity and zero unapproved tool-execution paths.
+   Readiness MUST be based on trusted supervisor/OS observations, not a
+   broker/tool's self-reported JSON or a mere successful configuration check.
+6. Handle startup failure, premature exit, malformed or timed-out readiness,
+   wrong profile, or broker loss as **pre-persistence refusal**: terminate
+   and reap all launched sandbox children, record a sanitized trusted denial
+   if possible, and do NOT append the outgoing message, turn.started, or
+   providerSessionId. No unsandboxed fallback.
+7. Immediately before persistence, atomically revalidate current Assignment
+   authority/generation, Room, Patient, Bed, profile, pause state and broker
+   readiness under the supervisor's dispatch barrier. Any change or inability
+   to obtain the barrier cancels the prepared broker and refuses as above.
+
+**STAGE C // Accepted turn and provider startup (after verified readiness):**
+
+8. **Only now** commit the outgoing operator message and trusted
+   turn.context/turn.started state as one clearly tracked accepted attempt,
+   or refuse before acceptance if these operations cannot be made
+   consistent. Then launch the *model-only* provider through the reviewed
+   transport. Native model startup and later tool requests remain subject
+   to the same boundary. No model prompt is transmitted before this point.
+9. A provider start failure **after** Stage C acceptance does not erase the
+   already persisted outgoing message: retain it with an explicit FAILED
+   turn and sanitized launch-failed audit event, with no completed Doctor
+   reply or new provider session ID. Replaying the message requires a new
+   preflight and deliberate turn/retry identity, never a silent duplicate.
+10. For every tool request, verify current authority at the dispatch barrier
+    and route it only via PX to the broker (see S3-C1/C3). Resume and
+    cancellation obey the same stages and failure semantics. A pause or
+    revocation stops queued work and actively interrupts running tools;
+    do not complete a turn from untrusted partial output.
+
+**Persistence boundary:** A/B errors have NO outgoing message and NO provider
+launch. Stage C errors retain a clearly FAILED accepted turn. Neither case
+may be labeled a successful Doctor response; both have supervisor-owned
+auditable decisions to the extent the trusted sink remains available.
 
 Preserve existing PX continuity behavior and source IDs. Do not silently
 delete, truncate, or reorder mandatory Room HANDOFF and approved Chart lanes
@@ -141,10 +191,15 @@ Untrusted tools must receive neither:
   host namespace access.
 
 Use a dedicated allowlisted, versioned IPC schema for *tool requests* and
-results, designed for mutually suspicious components. A tool request is
-untrusted input: validate action type, target/Room/Patient identity,
-capability, arguments and size in PX before dispatch. The broker alone decides
-whether and how to execute it. Never trust a model/tool statement such as
+results, designed for mutually suspicious components. The *only* entry to the
+broker is the PX supervisor's controlled dispatch channel, never the provider
+or its native tool/plugin API. Treat requests as untrusted input; PX validates
+action type, target/Room/Patient identity, current Assignment and revocation
+generation, capability, arguments, size and one-use request identity *before*
+granting a broker dispatch. The broker independently enforces the granted
+scope and refuses missing, stale, replayed, wider or unrecognized grants.
+An isolated tool's result returns to PX as untrusted data; it never authorizes
+a subsequent tool invocation. Never trust a model/tool statement such as
 "isolationPassed": true as a supervisor security assertion.
 
 **OPEN DESIGN GATE:** Is actual Codex login usable in a trusted model-only
@@ -185,11 +240,36 @@ Assignment authority and version, Bed repository/ref/path, granted mount
 profile, and tool capability set. Recompute live authority at each turn;
 do not treat stored metadata as permission forever.
 
-For resume, require compatible identity and a security preflight identical
-in strength to a first launch. If a provider's native resume mechanism
-automatically restores tools/config/plugins or loads host state not covered
-by the boundary, refuse instead of resuming insecurely. Do not fall back
-to an unconfined new session.
+For resume, require compatible identity and all three secure-turn stages
+from section 4, including a new verified sandbox readiness barrier. If a
+provider's native resume mechanism automatically restores tools/config/plugins
+or loads host state not covered by the boundary, refuse instead of resuming
+insecurely. Do not fall back to an unconfined new session.
+
+**Revocation S3-C3 // queued, dispatched and running tools:** A pause,
+cancellation, Assignment withdrawal, permission reduction, or Room/Patient
+identity change advances a supervisor-owned authority generation and revokes
+all outstanding one-use dispatch grants. PX must serialize each
+check-and-dispatch operation against changes to the live authority generation,
+and the broker must reject any grant whose generation is stale or revoked.
+A second authorization check is required at the last launch boundary, not
+merely when a request first enters a queue. The supervisor must signal
+revocation to the broker and *actively terminate/reap* already-running tool
+process groups/descendants, revoke writable grants, quarantine/discard
+in-flight results, and move the turn to a safe FAILED/CANCELLED state.
+Do not treat a revoked request's prior approval as a license to continue.
+If a tool cannot be stopped and verified dead or writable access cannot be
+revoked, block further activity and escalate: never claim successful
+revocation or a completed Doctor turn.
+
+**Race requirement:** A tool request cannot be authorized using an earlier
+snapshot if the Assignment changes between approval and broker dispatch.
+Authority checks, dispatch-grant generation, launch and revocation have an
+enforced serialization/atomicity strategy to be demonstrated by tests,
+including adversarial pauses between validation and launch. Stopping a
+running tool may take finite time; that interval and the possibility of
+side effects before termination are explicit residual risks, NOT proof
+of instantaneous revocation.
 
 The source-side command guards can remain defense in depth for legacy flows,
 but cannot be labeled "OS_ISOLATED" or used as the S3 proof.
@@ -200,6 +280,8 @@ Record scrubbed facts rather than secrets. Minimum proposed event names:
 - isolation.preflight.passed / isolation.preflight.refused
 - isolation.provider.started / isolation.provider.failed
 - isolation.tool.requested / isolation.tool.allowed / isolation.tool.refused
+- isolation.broker.ready / isolation.broker.startup_refused
+- isolation.authority.revoked / isolation.tool.interrupted / isolation.tool.reap_failed
 - isolation.resume.validated / isolation.resume.refused
 - isolation.cancelled / isolation.completed
 
@@ -218,22 +300,39 @@ arbitrary tool does not certify its own confinement.
 
 ## 9 // Acceptance matrix BEFORE execution (proposed)
 
-A. **Source preflight, fake-only**: outdated/inactive/wrong-Room/wrong-Patient
-Assignment, Bed mismatch, symlink escape, dirty valid Bed, unknown provider,
-missing/untrusted bwrap, altered provider binary, unexpected environment
-or socket, unavailable audit sink. Verify refusal before outgoing message
-append and before spawning any provider/tool. Positive dirty matching Bed
-continues where authority allows.
+A. **Preflight and readiness, fake-only (S3-C2)**: outdated/inactive/
+wrong-Room/wrong-Patient Assignment, Bed mismatch, symlink escape, dirty
+valid Bed, unknown provider, missing/untrusted bwrap, altered provider
+binary, unexpected environment/socket, unavailable audit sink; assert Stage A
+refuses without outgoing message, turn.started, model launch or tool launch.
+Inject broker spawn failure, namespace denial, malformed readiness signal,
+timed-out readiness, and post-readiness broker exit; assert Stage B rejects
+before outgoing persistence/model launch and reaps descendants. Positive
+Stage C test must show supervisor/OS readiness precedes outgoing message,
+then provider launch; inject post-acceptance model startup failure and
+assert one persisted FAILED attempt, no duplicate prompt, no new native
+session ID. Dirty matching Bed proceeds only where current authority allows.
 
-B. **Start and resume equivalence, fake-only**: fresh session, matching native
-ID, mismatching native ID, foreign Room/Patient identity, revoked authority,
-changed branch/path/profile, missing native resume capability, leaked prior
-mount grants, paused/cancelled and concurrent sessions. Zero fallback to
-unconfined operations.
+B. **Start and resume equivalence + revocation, fake-only (S3-C3)**:
+fresh session, matching native ID, mismatching native ID, foreign Room/
+Patient identity, revoked authority, changed branch/path/profile, missing
+native resume capability, leaked prior mount grants, paused/cancelled and
+concurrent sessions. Exercise permission revocation while a request is
+queued, after validation but before dispatch, during broker tool startup,
+and during a long-running writable action; assert no new launches under
+stale grants, queued requests rejected, running tool group/descendants
+terminated/reaped, writable grants revoked, untrusted partial results
+discarded, and failure/quarantine if shutdown cannot be proven. Verify
+operator message persistence respects Stage A/B/C for every resumed turn.
+Zero fallback to unconfined operations.
 
-C. **Credential/IPC negative tests, fake-only**: fake secret canaries,
-parent-held FD, inherited environment, unintended unix sockets, argv,
-stdout/stderr and logs, size/command injection and spoofed tool requests.
+C. **Credential/IPC + mediation negatives, fake-only (S3-C1)**: fake
+secret canaries, parent-held FD, inherited environment, unintended unix
+sockets, argv, stdout/stderr and logs, size/command injection and spoofed
+tool requests. Attempt direct provider-to-broker socket access,
+native-provider or plugin tool bypass, tool-to-tool chaining, stale/
+replayed grants and model/tool output that asks for unauthorized follow-up
+actions: all must fail at PX/broker boundaries without a launched tool.
 A child cannot access credential-bearing resources or trigger unauthorized
 network. Strictly allowlist and version each tool action.
 
@@ -272,12 +371,17 @@ No check here should claim DONE on the strength of a draft specification.
 
 ## 11 // Reviewer decision request
 
-Nurse 2: review and challenge the proposed separation, real Codex model-only
-feasibility prerequisite, pre-append fail-closed rule, resumability, audit
-trust and acceptance matrix. Mark questions **OPEN** rather than silently
-claiming provider capability. Head Nurse .C: coordinate collision review
-with active PX/Hospital work, and submit a small operator-readable approval
-packet for an eventual S3 implementation phase.
+Nurse 2: re-review **only** the S3-C1 tool-mediation graph and broker
+bypass prohibitions (sections 3/5/9C); S3-C2 explicit static-preflight,
+sandbox-readiness and provider-start persistence barrier (sections 4/9A);
+and S3-C3 generation-bound revocation and active-tool termination
+(sections 7/8/9B). Decide whether these three documentation findings are
+closed. Real Codex model-only feasibility remains an OPEN independent gate,
+not evidence supplied by revised prose.
+
+Head Nurse .C: reconcile the bounded revised contract and review with
+active PX/Hospital work, then submit a separate operator-readable S3
+implementation approval decision. No review result itself authorizes code.
 
 **Status on submission:** DESIGN PROPOSAL ONLY. S3 implementation HOLD;
 real provider security certification HOLD; production Doctors HOLD.
