@@ -25,6 +25,7 @@ This room provides the semantic **MODEL** view while preserving the developer to
 **Navigation / classification only.** This is a pointer to current project-specific documents, not a new source of PX truth. The [Syntagma rules entry](https://github.com/kudokudo1/Meta-Apollo-Logos-How-I-Think/blob/main/AGENTS.md) governs shared operator/agent behavior; this repository owns executable PX semantics.
 
 - **Architecture and API boundaries:** [PX control plane](./contracts/control-plane.md), [tool registry](./contracts/tool-registry.md), [tool resolver](./contracts/tool-resolver.md), [workflow factory](./contracts/workflow-factory.md).
+- **EXEC-S3 Doctor isolation integration (PROPOSED · REVIEW ONLY):** [contract draft](./contracts/exec-s3-doctor-execution-isolation.md). Not a live provider policy; implementation, merge, and production authorization remain separate.
 - **Operational interface and mixed architectural notes:** [TERM EXP](../OPERATE/term-exp.md) is an operational guide with architecture context. Its canonical home is OPERATE; executable PX behavior remains defined by the owning implementation.
 - **Evidence/acceptance procedure awaiting room reconciliation:** [Hospital S3 real-provider succession acceptance](../docs/hospital/S3_REAL_PROVIDER_SUCCESSION_ACCEPTANCE.md) contains a live-provider procedure and evidence gates. It is not a verified success result merely because the file exists.
 
