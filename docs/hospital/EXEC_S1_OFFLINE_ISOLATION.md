@@ -19,6 +19,14 @@ On a Linux system with unprivileged user namespaces and Bubblewrap installed, us
 
 The unit suite tests policy construction, symlink and invalid mount refusal, credential environment omissions and failure when Bubblewrap is unavailable.
 
+### EXEC-S1-H1 // Trusted executable selection
+
+Before launch, the harness selects only the fixed `/usr/bin/bwrap` path, validating that it is an executable, regular, root-owned file with no group/other write permission. It also validates that the fixed parent directories are real, root-owned and not group/other writable. It does **not** resolve a binary from inherited `PATH`, accept alternate absolute binary paths, or follow a symlink in the executable location. Missing or untrusted executable state fails closed before subprocess launch.
+
+The additional unit negative test places a harmless executable called `bwrap` at the start of a poisoned `PATH`. The actual harness is invoked while that path is active and the test asserts the decoy's marker file is **never written**. CI installs the trusted system Bubblewrap *before* running the negative test, so it also exercises the successful trusted-binary path.
+
+This hardens the pre-sandbox launcher within the S1 fixture; it does not protect against privileged host replacement, complete TOCTOU attacks, or certify a production executable-trust chain.
+
 The smoke suite creates a private temporary fake Patient, writable scratch and fake secrets. Its probe checks Patient read permitted, Patient writes denied, scratch write permitted, fake private token and auth file hidden, poisoned parent environment scrubbed, host-only paths hidden, network namespace different and direct IPv4 network connection unavailable. The harness deletes its disposable fixture when done. It never runs real providers or asks for secrets.
 
 If Bubblewrap is missing, user namespaces are blocked, or any check fails, the test returns a nonzero exit status and **does not fall back** to unrestricted execution. The separate GitHub workflow runs tests on a disposable CI host; that does not substitute for Fedora operator-machine verification.
