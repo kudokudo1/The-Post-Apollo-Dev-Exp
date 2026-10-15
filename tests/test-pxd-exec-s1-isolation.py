@@ -8,11 +8,15 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
+import shlex
+import stat
+from unittest import mock
 import subprocess
 import sys
 import tempfile
 import unittest
+
+TRUSTED_BWRAP = Path("/usr/bin/bwrap")
 
 ENVIRONMENT = {
     "HOME": "/tmp", "PATH": "/usr/bin:/bin", "TMPDIR": "/tmp",
@@ -23,6 +27,32 @@ ENVIRONMENT = {
 
 class IsolationUnavailable(RuntimeError):
     """Fail closed when a required isolation boundary cannot be established."""
+
+def trusted_bwrap_binary() -> str:
+    """Only invoke the root-owned system binary; never search inherited PATH.
+
+    Validate the executable and its fixed parent directories before spawn.
+    A substituted /usr/bin/bwrap or a writable parent fails closed.
+    """
+    for path in (Path("/"), Path("/usr"), Path("/usr/bin")):
+        try:
+            entry = path.lstat()
+        except OSError as exc:
+            raise IsolationUnavailable("EXEC-S1: trusted bwrap directory unavailable") from exc
+        if (not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0
+                or entry.st_mode & 0o022):
+            raise IsolationUnavailable("EXEC-S1: untrusted bwrap parent directory")
+    try:
+        entry = TRUSTED_BWRAP.lstat()
+    except OSError as exc:
+        raise IsolationUnavailable(
+            "EXEC-S1: trusted /usr/bin/bwrap missing; no unrestricted fallback"
+        ) from exc
+    if (not stat.S_ISREG(entry.st_mode) or entry.st_uid != 0
+            or entry.st_mode & 0o022 or not os.access(TRUSTED_BWRAP, os.X_OK)):
+        raise IsolationUnavailable("EXEC-S1: untrusted /usr/bin/bwrap executable")
+    return str(TRUSTED_BWRAP)
+
 
 def validated_fixture(root: Path) -> tuple[Path, Path, Path]:
     if not root.is_absolute() or root.is_symlink() or not root.is_dir():
@@ -36,15 +66,13 @@ def validated_fixture(root: Path) -> tuple[Path, Path, Path]:
             raise IsolationUnavailable("EXEC-S1: fixture escaped private root")
     return patient, scratch, private
 
-def build_command(root: Path, program: str, *, bwrap_binary: str = "/usr/bin/bwrap") -> list[str]:
+def build_command(root: Path, program: str) -> list[str]:
     """Build a fixed, test-only sandbox command. Never uses a shell interpreter."""
     patient, scratch, _ = validated_fixture(root)
-    if not Path(bwrap_binary).is_absolute():
-        raise IsolationUnavailable("EXEC-S1: bwrap path must be absolute")
     if not isinstance(program, str) or not program:
         raise IsolationUnavailable("EXEC-S1: explicit probe required")
     args = [
-        bwrap_binary,
+        str(TRUSTED_BWRAP),
         "--unshare-all", "--die-with-parent", "--new-session",
         "--cap-drop", "ALL",
         "--ro-bind", "/usr", "/usr",
@@ -99,9 +127,7 @@ raise SystemExit(0 if all(checks.values()) else 7)
 '''
 
 def smoke() -> dict:
-    binary = shutil.which("bwrap")
-    if not binary:
-        raise IsolationUnavailable("EXEC-S1: bwrap missing; no unrestricted fallback")
+    trusted_bwrap_binary()  # Check root-owned absolute executable; never trust PATH.
     if not Path("/usr/bin/python3").exists() or not Path("/usr").is_dir():
         raise IsolationUnavailable("EXEC-S1: read-only system runtime missing")
     with tempfile.TemporaryDirectory(prefix="px-exec-s1-") as temp:
@@ -127,7 +153,7 @@ def smoke() -> dict:
         probe = ("FAKE_CANARY_LOCATION = " + repr(fake_path) + "\n"
                  + "PARENT_NETWORK_NAMESPACE = " + repr(os.readlink("/proc/self/ns/net")) + "\n"
                  + PROBE)
-        cmd = build_command(root, probe, bwrap_binary=str(Path(binary).resolve()))
+        cmd = build_command(root, probe)
         try:
             result = subprocess.run(cmd, env=poisoned_parent, text=True,
                                     capture_output=True, timeout=20, check=False)
@@ -190,9 +216,29 @@ class TestPolicy(unittest.TestCase):
         with self.assertRaises(IsolationUnavailable):
             build_command(self.root, "print('probe')")
 
-    def test_relative_bwrap_rejected(self):
-        with self.assertRaises(IsolationUnavailable):
-            build_command(self.root, "print('probe')", bwrap_binary="bwrap")
+    def test_fixed_absolute_bwrap_path(self):
+        command = build_command(self.root, "print('probe')")
+        self.assertEqual(command[0], "/usr/bin/bwrap")
+        self.assertNotIn("bwrap", command)
+
+    def test_path_substitution_never_executed(self):
+        """Run the harness with a decoy bwrap first on PATH, and check marker."""
+        decoy_dir = self.root / "untrusted-path"
+        decoy_dir.mkdir()
+        marker = self.root / "DECOY_WAS_EXECUTED"
+        decoy = decoy_dir / "bwrap"
+        decoy.write_text("#!/bin/sh\nprintf DECOY > " + shlex.quote(str(marker)) + "\n")
+        decoy.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(decoy_dir)}):
+            child = subprocess.run(
+                [sys.executable, "-B", str(Path(__file__).resolve()), "--smoke"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        self.assertFalse(marker.exists(), "EXEC-S1-H1: substituted PATH executable ran")
+        if child.returncode:
+            self.assertIn("EXEC-S1:", child.stderr, child.stderr)
+        else:
+            self.assertIn('"state": "PASS"', child.stdout)
 
     def test_fake_secrets_not_in_allowlist(self):
         self.assertEqual(ENVIRONMENT["HOME"], "/tmp")
@@ -200,8 +246,14 @@ class TestPolicy(unittest.TestCase):
             self.assertNotIn(key, ENVIRONMENT)
 
     def test_missing_bwrap_fails_closed(self):
-        from unittest import mock
-        with mock.patch.object(shutil, "which", return_value=None):
+        real_lstat = os.lstat
+
+        def simulate_missing_trusted_binary(path, *args, **kwargs):
+            if os.fspath(path) == str(TRUSTED_BWRAP):
+                raise FileNotFoundError(str(path))
+            return real_lstat(path, *args, **kwargs)
+
+        with mock.patch("os.lstat", side_effect=simulate_missing_trusted_binary):
             with self.assertRaisesRegex(IsolationUnavailable, "no unrestricted fallback"):
                 smoke()
 
