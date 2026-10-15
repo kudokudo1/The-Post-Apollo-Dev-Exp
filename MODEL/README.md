@@ -16,9 +16,9 @@ This room provides the semantic **MODEL** view while preserving the developer to
 
 ### ✮˙๋࣭⭑ CONTENTS // CURRENT
 
-- `docs/`
-- control-plane concepts and contracts
-- repository / workflow relationship model
+- `MODEL/contracts/` — current PX control-plane, tool discovery/resolution and workflow contracts
+- `OPERATE/term-exp.md` — terminal interaction and recovery instructions, owned by OPERATE
+- `docs/hospital/` — active Hospital acceptance procedure maintained under its own workstream (not automatically verified)
 
 ### ✮˙๋࣭⭑ CONTRACT INDEX // EXISTING PATHS
 
