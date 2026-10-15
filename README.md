@@ -12,7 +12,7 @@ The developer control layer of the Post-Apollo Family — bringing projects, rep
 
 **PUBLIC FAMILY //** [META APOLLO LOGOS](https://github.com/kudokudo1/Meta-Apollo-Logos) · [FOREST](https://github.com/kudokudo1/The-Post-Apollo-Forest-Project) · [SWAYPX](https://github.com/kudokudo1/Post-Apollo-SwayPx) · [LAN MOUSE // 2-PLAYER MODE](https://github.com/kudokudo1/Lan-Mouse-2-Player-Mode)
 
-**RULES //** [Syntagma AI/operator entry](https://github.com/kudokudo1/Meta-Apollo-Logos-How-I-Think/blob/main/AGENTS.md) · [Meta Apollo design grammar](https://github.com/kudokudo1/Meta-Apollo-Logos/blob/main/MODEL/Repo-Design-Language.md) · [Local agent guidance](./AGENTS.md)
+**RULES //** [Syntagma // operator and AI working rules](https://github.com/kudokudo1/Meta-Apollo-Logos-How-I-Think/blob/main/AGENTS.md) · [Meta Apollo design grammar](https://github.com/kudokudo1/Meta-Apollo-Logos/blob/main/MODEL/Repo-Design-Language.md) · [Local technical contracts](./MODEL/README.md)
 
 ### 🧭 MAP // REPOSITORY
 
