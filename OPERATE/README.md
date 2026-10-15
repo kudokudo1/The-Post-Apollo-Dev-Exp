@@ -19,6 +19,7 @@ This room provides the semantic **OPERATE** view while preserving the developer 
 - CLI usage
 - workflow / run / watch / rerun / cancel operations
 - developer runbooks
+- [TERM EXP terminal interface and recovery](./term-exp.md) — CLI operation and journal recovery
 
 ## 🧭 MAP // WHERE TO GO NEXT
 
