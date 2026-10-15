@@ -246,14 +246,14 @@ class TestPolicy(unittest.TestCase):
             self.assertNotIn(key, ENVIRONMENT)
 
     def test_missing_bwrap_fails_closed(self):
-        real_lstat = os.lstat
+        original_lstat = Path.lstat
 
         def simulate_missing_trusted_binary(path, *args, **kwargs):
-            if os.fspath(path) == str(TRUSTED_BWRAP):
+            if path == TRUSTED_BWRAP:
                 raise FileNotFoundError(str(path))
-            return real_lstat(path, *args, **kwargs)
+            return original_lstat(path, *args, **kwargs)
 
-        with mock.patch("os.lstat", side_effect=simulate_missing_trusted_binary):
+        with mock.patch.object(Path, "lstat", simulate_missing_trusted_binary):
             with self.assertRaisesRegex(IsolationUnavailable, "no unrestricted fallback"):
                 smoke()
 
