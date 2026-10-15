@@ -1,0 +1,27 @@
+name: PX / EXEC-S1 OFFLINE ISOLATION
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - tests/test-pxd-exec-s1-isolation.py
+      - docs/hospital/EXEC_S1_OFFLINE_ISOLATION.md
+      - .github/workflows/px-exec-s1-isolation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  exec-s1:
+    name: Fake-secret sandbox negative tests (no AI providers)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static policy tests
+        run: |
+          python3 -m py_compile tests/test-pxd-exec-s1-isolation.py
+          python3 -B tests/test-pxd-exec-s1-isolation.py --unit
+      - name: Install sandbox prerequisite on disposable CI runner
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Execute fail-closed rootless isolation smoke
+        run: python3 -B tests/test-pxd-exec-s1-isolation.py --smoke
