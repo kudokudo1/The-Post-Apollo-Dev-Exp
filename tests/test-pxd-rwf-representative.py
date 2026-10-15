@@ -17,10 +17,73 @@ ROOT = Path(__file__).resolve().parents[1]
 PX = ROOT / "bin/px"
 
 
-def git(path, *args):
+def staging_environment(work):
+    """Allowlist environment before Git Bed creation or any PX init/migration.
+
+    Never copy inherited PX_HOSPITAL_DB (nor HOME/XDG/PX overrides) from the
+    operator environment. All SQLite and mutable test paths are inside work.
+    """
+    root = Path(work).resolve(strict=True)
+    for sub in ("state", "home", "tmp", "xdg-data", "xdg-config",
+                "xdg-cache", "xdg-runtime", "locks", "authority"):
+        (root / sub).mkdir(mode=0o700, exist_ok=True)
+    env = {
+        "HOME": str(root / "home"), "USER": "rwf-staging",
+        "LOGNAME": "rwf-staging", "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TMPDIR": str(root / "tmp"),
+        "XDG_DATA_HOME": str(root / "xdg-data"),
+        "XDG_CONFIG_HOME": str(root / "xdg-config"),
+        "XDG_CACHE_HOME": str(root / "xdg-cache"),
+        "XDG_RUNTIME_DIR": str(root / "xdg-runtime"),
+        "PX_HOSPITAL_DATA_DIR": str(root / "state"),
+        "PX_HOSPITAL_DB": str(root / "state" / "hospital.db"),
+        "PX_AGENT_LOCK_DIR": str(root / "locks"),
+        "PX_AGENT_AUTHORITY_DIR": str(root / "authority"),
+        "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    validate_staging_environment(root, env)
+    return env
+
+
+def validate_staging_environment(work, env):
+    """Fail closed before *every* subprocess, including px hospital init.
+
+    Reject symlink/relative-path tricks and post-setup environment tampering.
+    An unsafe override must never reach PX's SQLite connect/migrate code.
+    """
+    root = Path(work).resolve(strict=True)
+    expected = {
+        "HOME": root / "home", "TMPDIR": root / "tmp",
+        "PX_HOSPITAL_DB": root / "state" / "hospital.db",
+        "PX_HOSPITAL_DATA_DIR": root / "state",
+        "PX_AGENT_LOCK_DIR": root / "locks",
+        "PX_AGENT_AUTHORITY_DIR": root / "authority",
+        "XDG_DATA_HOME": root / "xdg-data",
+        "XDG_CONFIG_HOME": root / "xdg-config",
+        "XDG_CACHE_HOME": root / "xdg-cache",
+        "XDG_RUNTIME_DIR": root / "xdg-runtime",
+    }
+    for key, expected_path in expected.items():
+        value = env.get(key, "")
+        path = Path(value).expanduser()
+        if (not value or not path.is_absolute()
+                or path.resolve() != expected_path.resolve()
+                or not path.resolve().is_relative_to(root)):
+            raise RuntimeError("RWF-H1 STAGING_DB_OUTSIDE_ROOT // " + key)
+    provider_path = env.get("PX_AGENT_PROVIDER_CONFIG", "")
+    if provider_path:
+        config = Path(provider_path).expanduser()
+        if not config.is_absolute() or not config.resolve().is_relative_to(root):
+            raise RuntimeError("RWF-H1 STAGING_DB_OUTSIDE_ROOT // PX_AGENT_PROVIDER_CONFIG")
+    return expected["PX_HOSPITAL_DB"]
+
+
+def git(path, *args, env=None):
     subprocess.run(["git", "-C", str(path), *args],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   check=True, timeout=10)
+                   env=env, check=True, timeout=10)
 
 
 class ActualCliSuccessionTest(unittest.TestCase):
@@ -28,23 +91,19 @@ class ActualCliSuccessionTest(unittest.TestCase):
         self.t = tempfile.TemporaryDirectory()
         self.addCleanup(self.t.cleanup)
         self.work = Path(self.t.name)
+        # RWF-H1: sanitize before Git setup and, critically, before PX init.
+        self.env = staging_environment(self.work)
         self.bed = self.work / "bed"
         self.bed.mkdir()
-        git(self.bed, "init", "-q")
-        git(self.bed, "config", "user.name", "Hospital test")
-        git(self.bed, "config", "user.email", "hospital@example.invalid")
+        git(self.bed, "init", "-q", env=self.env)
+        git(self.bed, "config", "user.name", "Hospital test", env=self.env)
+        git(self.bed, "config", "user.email", "hospital@example.invalid", env=self.env)
         (self.bed / "tracked.txt").write_text("base\n")
-        git(self.bed, "add", "tracked.txt")
-        git(self.bed, "commit", "-qm", "baseline")
-        git(self.bed, "checkout", "-qb", "feature/succession")
+        git(self.bed, "add", "tracked.txt", env=self.env)
+        git(self.bed, "commit", "-qm", "baseline", env=self.env)
+        git(self.bed, "checkout", "-qb", "feature/succession", env=self.env)
         git(self.bed, "remote", "add", "origin",
-            "https://github.com/kudokudo1/taskbars-post-apollo.git")
-        self.env = os.environ.copy()
-        self.env.update({
-            "PX_HOSPITAL_DATA_DIR": str(self.work / "state"),
-            "PX_AGENT_LOCK_DIR": str(self.work / "locks"),
-            "PX_AGENT_AUTHORITY_DIR": str(self.work / "authority"),
-        })
+            "https://github.com/kudokudo1/taskbars-post-apollo.git", env=self.env)
         provider_config = self.work / "providers.json"
         mock = ROOT / "tests/fixtures/mock-hermes-agent.py"
         provider_config.write_text(json.dumps({
@@ -83,6 +142,7 @@ class ActualCliSuccessionTest(unittest.TestCase):
                 str(self.bed),"--session-id","session-B")
 
     def px(self,*args,stdin=None,fail=False):
+        validate_staging_environment(self.work, self.env)
         p=subprocess.run([str(PX),*args,"--json"],env=self.env,input=stdin,
                          text=True,capture_output=True,timeout=15)
         if fail:
@@ -222,8 +282,8 @@ class RWFRepresentative(unittest.TestCase):
         fx=ActualCliSuccessionTest("test_succession_across_all_four_omissions")
         fx.setUp()
         self.addCleanup(fx.doCleanups)
-        fx.env.pop("PX_HOSPITAL_DB",None)
-        assert (fx.work/"state").resolve().is_relative_to(fx.work.resolve())
+        validate_staging_environment(fx.work, fx.env)
+        assert Path(fx.env["PX_HOSPITAL_DB"]).resolve() == (fx.work/"state"/"hospital.db").resolve()
         marker=fx.work/"PROVIDER_WAS_LAUNCHED"
         guard=fx.work/"forbidden_provider.py"
         guard.write_text("from pathlib import Path\nPath("+repr(str(marker))+").write_text('INVALID DISPATCH')\nraise SystemExit(99)\n")
@@ -264,7 +324,7 @@ class RWFRepresentative(unittest.TestCase):
         fx.px("agent","session-create","--room-id","Q-X","--doctor-id","new-doctor-Q",
               "--provider-id","mock","--working-directory",str(fx.bed),"--session-id","session-Q")
 
-    def refuse(self,fx,reason):
+    def refuse(self,fx,reason,label=None):
         # First: genuine installed CLI, real scratch SQLite and Git Bed.
         err=fx.px("agent","turn","session-B","--prompt","synthetic continuation",fail=True)
         self.assertIn(reason,err)
@@ -298,11 +358,45 @@ class RWFRepresentative(unittest.TestCase):
         self.assertFalse(spawn)
         self.assertFalse(fx.marker.exists())
         self.assertEqual(fx.px("hospital","messages","R-A","--limit","100"),[])
-        self.ev["evidence"].append({"name":reason,"pass":True,
-              "detail":{"realCLITurnRefused":True,"promptConstructed":False,
+        self.ev["evidence"].append({"name":label or reason,"pass":True,
+              "detail":{"reason":reason,"realCLITurnRefused":True,"promptConstructed":False,
                         "outgoingMessages":0,"providerSpawnAttempts":0}})
 
     def test_rwf_01(self):
+        # RWF-H1 negative canary: deliberately inject a fake inherited live-like
+        # DB location. The outside file is deliberately NOT a SQLite database.
+        # If PX init ever inherits it, this test fails before accepting staging.
+        with tempfile.TemporaryDirectory(prefix="rwf-h1-outside-") as outside:
+            canary = Path(outside) / "OUTSIDE_CANARY_DO_NOT_OPEN.db"
+            marker = b"RWF-H1-OUTSIDE-ROOT-CANARY-NEVER-TOUCH"
+            canary.write_bytes(marker)
+            stat_before = canary.stat()
+            with mock.patch.dict(os.environ, {
+                "PX_HOSPITAL_DB": str(canary),
+                "PX_HOSPITAL_DATA_DIR": str(Path(outside)),
+                "PX_AGENT_LOCK_DIR": str(Path(outside)),
+                "PX_AGENT_AUTHORITY_DIR": str(Path(outside)),
+            }):
+                sanitized = self.fresh()  # invokes px hospital init internally
+            self.good("h1_canary_preserved_before_and_after_init",
+                canary.read_bytes() == marker and
+                canary.stat().st_mtime_ns == stat_before.st_mtime_ns)
+            self.good("h1_inherited_db_override_removed_pre_init",
+                sanitized.env["PX_HOSPITAL_DB"] == str(sanitized.work.resolve()/"state"/"hospital.db")
+                and str(canary) not in sanitized.env.values())
+            # A post-setup attempt to repoint the DB must fail before any
+            # subprocess can be invoked, not merely fail inside SQLite.
+            safe_db = sanitized.env["PX_HOSPITAL_DB"]
+            sanitized.env["PX_HOSPITAL_DB"] = str(canary)
+            try:
+                with mock.patch.object(subprocess, "run") as forbidden_subprocess:
+                    with self.assertRaisesRegex(RuntimeError, "STAGING_DB_OUTSIDE_ROOT"):
+                        sanitized.px("hospital", "status")
+                    forbidden_subprocess.assert_not_called()
+                self.good("h1_post_setup_outside_db_rejected_before_subprocess",
+                    canary.read_bytes() == marker)
+            finally:
+                sanitized.env["PX_HOSPITAL_DB"] = safe_db
         x=self.fx.px("agent","context","session-B")
         self.good("correct_active_assignment",x["assignment"]["status"]=="ACTIVE" and x["assignment"]["roomId"]=="R-A")
         self.good("read_test_only",x["authority"]["allowed"]==["READ","TEST"])
@@ -320,6 +414,7 @@ class RWFRepresentative(unittest.TestCase):
         rows=[r for r in c["requiredHandoffs"] if r["id"]==old["id"]]
         self.good("historical_handoff_id_in_required_lane",len(rows)==1,{"newerReports":40,"id":old["id"]})
         self.good("exact_multiline_required_body",rows[0]["body"]==body)
+        self.good("rendered_exact_multiline_body",body.replace("\n","\n  ") in c["renderedText"])
         self.good("rendered_full_tail","FINAL HANDOFF SENTINEL" in c["renderedText"])
         self.good("source_ref_delivered","ROOM_REPORT #"+old["id"] in c["renderedText"])
 
@@ -371,6 +466,10 @@ class RWFRepresentative(unittest.TestCase):
         self.good("p_excludes_q","RWF06 PATIENT Q CONFIDENTIAL" not in p["renderedText"] and "RWF06 Q ROOM SECRET" not in p["renderedText"])
         self.good("q_excludes_p","RWF06 PATIENT P CONFIDENTIAL" not in q["renderedText"] and "RWF06 P ROOM SECRET" not in q["renderedText"])
         self.good("patient_refs_distinct",p["room"]["patientId"]!=q["room"]["patientId"])
+        self.good("foreign_patient_authority_isolated",
+                  not q["assignment"] and q["authority"]["allowed"] == ["READ"]
+                  and p["authority"]["allowed"] == ["READ","TEST"]
+                  and "regression C" not in q["renderedText"])
 
     def test_rwf_07(self):
         for mode,reason in [("malformed","INVALID_LINK_ID"),("foreign","FOREIGN_ROOM"),("paused","NONACTIVE_LINK")]:
@@ -395,7 +494,7 @@ class RWFRepresentative(unittest.TestCase):
             field,value=("source_room_id","Q-X") if mode=="foreign_room" else ("source_session_id","session-Q")
             with sqlite3.connect(fx.work/"state"/"hospital.db") as conn:
                 conn.execute("INSERT INTO chart_entries(scope_type,patient_id,entry_kind,title,body_md,status,author_role,"+field+") VALUES('PATIENT','patient-one','DECISION','bad origin','refuse foreign provenance','ACTIVE','operator',?)",(value,))
-            self.refuse(fx,"FOREIGN_PATIENT_SOURCE_ROOM")
+            self.refuse(fx,"FOREIGN_PATIENT_SOURCE_ROOM",label="RWF08_"+mode+"_refusal")
 
     def test_rwf_09(self):
         for lane,count,reason in [("handoff",13,"TOO_MANY_MANDATORY_HANDOFFS"),
