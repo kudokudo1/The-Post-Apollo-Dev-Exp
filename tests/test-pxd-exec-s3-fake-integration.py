@@ -249,14 +249,18 @@ def smoke():
         try:
             supervisor.run(resume=True, proposed_task=s3.WAIT_TASK,
                            on_dispatched=supervisor.revoke)
-        except s3.S3Refusal:
-            pass
+        except s3.S3Refusal as exc:
+            if hospital.active or not hospital.paused:
+                raise s3.S3Refusal(
+                    "S3: revocation not reached; prior refusal: " + str(exc)) from exc
         else:
             raise s3.S3Refusal("S3: revocation failed open")
         if (root / "scratch" / "s3-result.txt").exists():
             raise s3.S3Refusal("S3: revoked tool wrote after kill")
         if hospital.state != "FAILED" or service.calls != 3:
-            raise s3.S3Refusal("S3: revoked session state unexpected")
+            raise s3.S3Refusal(
+                "S3: revoked session state unexpected: " +
+                hospital.state + ", fake calls=" + str(service.calls))
         if not hospital.paused or hospital.active:
             raise s3.S3Refusal("S3: authority not revoked")
         if len(hospital.outgoing) != 3:
