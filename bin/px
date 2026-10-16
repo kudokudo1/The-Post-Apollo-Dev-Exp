@@ -2389,7 +2389,11 @@ audit_repo() (
         --slurpfile workflows "$audit_tmpdir/workflows.json" \
         --slurpfile runs "$audit_tmpdir/runs.json" \
         --slurpfile rooms "$audit_tmpdir/rooms.json" \
-        '{
+        '($repo[0]) as $repo
+        | ($workflows[0]) as $workflows
+        | ($runs[0]) as $runs
+        | ($rooms[0]) as $rooms
+        | {
             requested: $requested,
             repository: $repo.nameWithOwner,
             default_branch: ($repo.defaultBranchRef.name // null),
