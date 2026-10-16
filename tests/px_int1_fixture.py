@@ -77,6 +77,11 @@ class DisposablePX:
         try:
             for name in [*DIRECTORIES.values(), *EXTRAS, "providers"]:
                 (self.root / name).mkdir(mode=0o700, parents=True, exist_ok=True)
+            # pathlib.mkdir(parents=True) uses default permissions for
+            # intermediate directories; explicitly restrict those as well.
+            for directory in self.root.rglob("*"):
+                if directory.is_dir() and not directory.is_symlink():
+                    directory.chmod(0o700)
             self.env = {
                 "PATH": "/usr/bin:/bin",
                 "LANG": "C", "LC_ALL": "C",
