@@ -40,8 +40,11 @@ registry, model credentials or CLI.
   outgoing input. **Direct `FakeHospital.revoke()`** now increments the
   generation and kills/reaps all registered brokers, even if called without
   the supervisor wrapper. The caller reads tool results outside the lock
-  and rejects results after revocation. The S1 `--die-with-parent` flag
-  prevents the isolated child outliving bwrap. Partial results cannot mark
+  and rejects results after revocation. An unavailable audit sink during
+  revocation cannot prevent broker termination; it forces a FAILED outcome
+  instead of pretending the cancellation was fully audited. The S1
+  `--die-with-parent` flag prevents the isolated child outliving bwrap.
+  Partial results cannot mark
   a completed Doctor turn; a sleeping fake tool is killed before it writes.
 
 The synthetic "Hospital" is an in-memory record with an RLock. No real
