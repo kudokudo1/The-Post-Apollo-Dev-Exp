@@ -229,7 +229,9 @@ class IsolatedBroker:
                 raise S3Refusal("S3: fake private mount exposed")
             self.ready = True
         except (OSError, TypeError, ValueError) as exc:
-            raise S3Refusal("S3: OS readiness attestation unavailable") from exc
+            raise S3Refusal(
+                "S3: OS readiness attestation unavailable: " +
+                type(exc).__name__ + " " + str(exc)) from exc
         finally:
             if not self.ready:
                 self.close()
