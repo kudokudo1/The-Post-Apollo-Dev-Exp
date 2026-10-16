@@ -24,21 +24,48 @@ registry, model credentials or CLI.
   root-owned /usr/bin/bwrap child, obtains its child PID using `--info-fd`,
   and independently compares mount/network namespace links from **host
   /proc**. It reads kernel-generated child mountinfo to require a read-only
-  Patient mount and writable scratch mount without a private mount. Only after the idle broker returns HELLO and Stage B
-  passes does Stage C re-check live fake authority and persist a synthetic
-  outgoing message, then invoke the S2 in-process fake-auth service.
-  A startup failure precludes message persistence; a later failure is an
-  accepted FAILED turn, not silently replayed.
+  Patient mount and writable scratch mount without a private mount.
+  The idle broker's HELLO is synchronization only, not self-attestation.
+  Immediately before Stage C persistence, the supervisor rechecks the
+  broker's live process and child PID, not just its stale ready flag.
+  A post-readiness broker crash therefore refuses before outgoing persistence.
+  Only after these checks does Stage C persist a synthetic outgoing message
+  and invoke the S2 in-process fake-auth service. A startup failure precludes
+  message persistence; a later failure is an accepted FAILED turn, not replayed.
 - **S3-C3**: fake authority includes a version/generation and pause flag.
   The supervisor revalidates them before each grant and after each tool
-  result. `revoke` invalidates outstanding grants and actively stops the
-  broker process group; its S1 `--die-with-parent` keeps the child from
-  surviving the launcher. Partial results cannot mark a completed Doctor
-  turn after revocation. A deliberately sleeping fake tool is killed by the
-  revocation smoke before it writes.
+  result. The check, grant and **actual broker pipe write** are serialized
+  under the synthetic Hospital's authority lock, closing their prior
+  handoff race. The Hospital registers an active broker before accepting
+  outgoing input. **Direct `FakeHospital.revoke()`** now increments the
+  generation and kills/reaps all registered brokers, even if called without
+  the supervisor wrapper. The caller reads tool results outside the lock
+  and rejects results after revocation. The S1 `--die-with-parent` flag
+  prevents the isolated child outliving bwrap. Partial results cannot mark
+  a completed Doctor turn; a sleeping fake tool is killed before it writes.
 
 The synthetic "Hospital" is an in-memory record with an RLock. No real
 Hospital sessions or Chart/Report records are read or written.
+
+- **S3-H3 / preflight audit:** invalid Room, Patient, Assignment permissions,
+  inactive authority, or foreign/mismatched resume ID now records a sanitized
+  supervisor-owned `isolation.preflight.refused` event *before any outgoing
+  message*. An unavailable audit sink still fails closed without fabricated
+  audit evidence.
+- **Popen error hygiene:** failing to start root-owned bwrap closes **both**
+  ends of the temporary info pipe, including the reader that the prior
+  prototype could leak.
+
+Targeted deterministic regressions cover a broker dying *after* HELLO with
+`ready=True`, Stage A refusal audits, a concurrent authority update during
+grant/dispatch, direct Hospital revocation of an active broker, and a failed
+Popen with checked-close file descriptors. The real sandbox smoke also
+calls `FakeHospital.revoke()` directly during a sleeping fake tool.
+
+**Scope caveat:** This synthetic lock serializes a *single in-process fake
+Hospital*. It is not a distributed revocation protocol, a production
+transaction guarantee, a general-purpose IPC authorization boundary, or
+proof that an arbitrary tool has no untracked side effects.
 
 ## How to test on disposable CI (NO live machine changes)
 
