@@ -7,7 +7,6 @@ copies the caller's environment (especially PX_HOSPITAL_DB).
 """
 import json
 import os
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -66,6 +65,44 @@ def _trusted_directory(root, path):
         if current_fd != root_fd:
             os.close(current_fd)
         os.close(root_fd)
+
+
+def _remove_tree_fd(directory_fd):
+    """Prune the directory represented by this FD, never a mutable root path.
+
+    Each descendant directory is opened relative to an already pinned parent,
+    with O_NOFOLLOW. Entries are removed relative to those handles, so
+    changing a previously verified quarantine pathname cannot redirect the
+    recursive walk into a substituted foreign tree.
+
+    A concurrently inserted entry *inside the original fixture inode*
+    is not a distinct external path and is outside this synthetic test's
+    concurrent malicious-content threat model.
+    """
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            name = entry.name
+            before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(before.st_mode):
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY |
+                             os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=directory_fd)
+                try:
+                    pinned = os.fstat(fd)
+                    if (pinned.st_dev, pinned.st_ino) != (before.st_dev, before.st_ino):
+                        raise FixtureRefusal("INT1-P1: descendant replaced before traversal")
+                    _remove_tree_fd(fd)
+                finally:
+                    os.close(fd)
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if (not stat.S_ISDIR(current.st_mode) or
+                        (current.st_dev, current.st_ino) !=
+                        (before.st_dev, before.st_ino)):
+                    raise FixtureRefusal("INT1-P1: descendant changed during cleanup")
+                os.rmdir(name, dir_fd=directory_fd)
+            else:
+                # Symlinks are unlinked as links: never followed as directories.
+                os.unlink(name, dir_fd=directory_fd)
 
 class DisposablePX:
     """Fixture-only runner; no subprocess bypasses assert_safe_environment."""
@@ -219,12 +256,12 @@ class DisposablePX:
                         *args, "--json", after_anchor=after_anchor)
 
     def close(self):
-        """Quarantine before recursive deletion and recheck the original inode.
+        """Prune only the original disposable inode by anchored descriptors.
 
-        A path swapped after the initial stat can be moved to quarantine,
-        but it must never be *deleted* unless its inode matches the fixture.
-        This limits cleanup to our created root instead of a substituted
-        outside-root directory. shutil.rmtree is fd/symlink-safe on Linux.
+        Quarantine separates this fixture from its original public pathname.
+        Opening the verified quarantined directory with O_NOFOLLOW pins the
+        identity before the recursive walk. The final rmdir is allowed only
+        after checking the name still identifies that same *empty* inode.
         """
         try:
             st = os.lstat(self.root)
@@ -235,31 +272,41 @@ class DisposablePX:
                 (st.st_dev, st.st_ino) != self._identity):
             return
         quarantine = Path(tempfile.mkdtemp(prefix="px-int1-dispose-", dir="/tmp"))
-        target = quarantine / "fixture"
-        moved = False
+        qfd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY |
+                      os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             try:
-                os.rename(self.root, target)  # rename never traverses a symlink
-                moved = True
+                os.rename(self.root, "fixture", dst_dir_fd=qfd)
             except FileNotFoundError:
                 return
-            after = os.lstat(target)
-            if (not stat.S_ISDIR(after.st_mode) or
-                    (after.st_dev, after.st_ino) != self._identity):
-                # A concurrent swap occurred; restore the unfamiliar entry
-                # if its old name is free, and leave it untouched otherwise.
-                if not os.path.lexists(self.root):
-                    os.rename(target, self.root)
-                    moved = False
-                raise FixtureRefusal("INT1-P1: substituted cleanup root")
-            shutil.rmtree(target)
-            moved = False
-        finally:
-            if not moved:
+            root_fd = os.open("fixture", os.O_RDONLY | os.O_DIRECTORY |
+                              os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=qfd)
+            try:
+                anchored = os.fstat(root_fd)
+                if (not stat.S_ISDIR(anchored.st_mode) or
+                        (anchored.st_dev, anchored.st_ino) != self._identity):
+                    raise FixtureRefusal("INT1-P1: substituted cleanup root")
+                # Critical: the recursive walk uses root_fd ONLY. Never call
+                # shutil.rmtree(target) after inode verification.
+                _remove_tree_fd(root_fd)
                 try:
-                    quarantine.rmdir()
-                except OSError:
-                    pass
+                    current = os.stat("fixture", dir_fd=qfd, follow_symlinks=False)
+                except FileNotFoundError as exc:
+                    raise FixtureRefusal("INT1-P1: cleanup root disappeared") from exc
+                if (not stat.S_ISDIR(current.st_mode) or
+                        (current.st_dev, current.st_ino) != self._identity):
+                    raise FixtureRefusal("INT1-P1: cleanup root replaced during deletion")
+                # Only the already-emptied fixture name can be removed here.
+                # A nonempty replacement cannot undergo recursive deletion.
+                os.rmdir("fixture", dir_fd=qfd)
+            finally:
+                os.close(root_fd)
+        finally:
+            os.close(qfd)
+            try:
+                quarantine.rmdir()
+            except OSError:
+                pass
 
     def __enter__(self):
         return self
