@@ -2358,9 +2358,9 @@ audit_rooms_for() {
     printf '%s\n' "$rooms"
 }
 
-audit_repo() {
+audit_repo() (
     local key="${1:-}"
-    local repo repo_json workflows_json runs_json rooms_json base
+    local repo repo_json base audit_tmpdir
 
     [[ -n "$key" ]] || die "usage: px audit <repo>"
 
@@ -2370,17 +2370,25 @@ audit_repo() {
     repo="$(repo_for "$key")"
     repo_json="$(gh repo view "$repo" --json nameWithOwner,defaultBranchRef,isPrivate,isArchived,url)"
     base="$(jq -r '.defaultBranchRef.name // ""' <<<"$repo_json")"
-    workflows_json="$(workflows_for "$repo")"
-    runs_json="$(gh run list -R "$repo" --limit "$LIMIT" \
-        --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt)"
-    rooms_json="$(audit_rooms_for "$repo" "$base")"
+    # Keep unbounded remote JSON out of Linux process arguments.
+    # Files also avoid copying the same large Room list through jq argv.
+    audit_tmpdir="$(mktemp -d)"
+    trap 'rm -rf -- "$audit_tmpdir"' EXIT
+    printf '%s\n' "$repo_json" > "$audit_tmpdir/repo.json"
+    workflows_for "$repo" > "$audit_tmpdir/workflows.json"
+    gh run list -R "$repo" --limit "$LIMIT" \
+        --json databaseId,workflowName,status,conclusion,headBranch,headSha,createdAt \
+        > "$audit_tmpdir/runs.json"
+    audit_rooms_for "$repo" "$base" > "$audit_tmpdir/rooms.json"
 
+    # slurpfile supplies a single parsed JSON value per file. Its array
+    # wrapper [0] is unwrapped before building the unchanged audit schema.
     jq -n \
         --arg requested "$key" \
-        --argjson repo "$repo_json" \
-        --argjson workflows "$workflows_json" \
-        --argjson runs "$runs_json" \
-        --argjson rooms "$rooms_json" \
+        --slurpfile repo "$audit_tmpdir/repo.json" \
+        --slurpfile workflows "$audit_tmpdir/workflows.json" \
+        --slurpfile runs "$audit_tmpdir/runs.json" \
+        --slurpfile rooms "$audit_tmpdir/rooms.json" \
         '{
             requested: $requested,
             repository: $repo.nameWithOwner,
@@ -2423,7 +2431,7 @@ audit_repo() {
                 items: $rooms
             }
         }'
-}
+)
 
 room_branch_for() {
     local repo="$1"
