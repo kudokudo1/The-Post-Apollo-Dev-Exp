@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import threading
 import tempfile
 import unittest
 from unittest import mock
@@ -51,6 +52,7 @@ class ControlledFakeBroker:
         self.root = root
         self.ready = False
         self.stopped = False
+        self.dead = False
         self.grants = []
         self.executions = 0
         self.__class__.instances.append(self)
@@ -60,18 +62,24 @@ class ControlledFakeBroker:
             raise s3.S3Refusal("FAKE: sandbox startup refused")
         self.ready = True
 
+    def assert_alive(self):
+        if not self.ready or self.dead or self.stopped:
+            raise s3.S3Refusal("FAKE: broker exited after readiness")
+
     def grant(self, grant):
-        if not self.ready:
-            raise s3.S3Refusal("FAKE: not ready")
+        self.assert_alive()
         self.grants.append(grant)
 
-    def execute(self, grant, on_dispatched=None):
+    def dispatch(self, grant):
+        self.assert_alive()
         if grant not in self.grants:
             raise s3.S3Refusal("FAKE: missing PX grant")
         self.grants.remove(grant)
         self.executions += 1
-        if on_dispatched:
-            on_dispatched()
+
+    def collect(self, grant):
+        if self.stopped or self.dead:
+            raise s3.S3Refusal("FAKE: revoked broker interrupted")
         if self.fail_stage == "execute":
             raise s3.S3Refusal("FAKE: child failure")
         (self.root / "scratch" / "s3-result.txt").write_text("S3-FAKE-COMPLETE")
@@ -166,7 +174,7 @@ class S3PolicyTests(unittest.TestCase):
         self.assertNotIn("turn.completed", [x["event"] for x in self.hospital.events])
 
     def test_revoke_running_request_discards_result(self):
-        with self.assertRaisesRegex(s3.S3Refusal, "current Room"):
+        with self.assertRaisesRegex(s3.S3Refusal, "revoked broker interrupted"):
             self.sup.run(on_dispatched=self.hospital.revoke)
         self.assertEqual(ControlledFakeBroker.instances[0].executions, 1)
         self.assertEqual(self.hospital.state, "FAILED")
@@ -202,11 +210,12 @@ class S3PolicyTests(unittest.TestCase):
         grant = s3.ToolGrant("FAKE-NONCE-EXAMPLE-123456789", "R-A",
                               "SYNTHETIC-PATIENT", 1, s3.TASK)
         with self.assertRaisesRegex(s3.S3Refusal, "missing PX grant"):
-            broker.execute(grant)
+            broker.dispatch(grant)
         broker.grant(grant)
-        broker.execute(grant)
+        broker.dispatch(grant)
+        broker.collect(grant)
         with self.assertRaisesRegex(s3.S3Refusal, "missing PX grant"):
-            broker.execute(grant)
+            broker.dispatch(grant)
         broker.close()
 
     def test_no_host_environment_leak_to_bwrap_launcher(self):
