@@ -193,6 +193,31 @@ class INT1P1ConfinementTests(unittest.TestCase):
             # Restore host-side test names for TemporaryDirectory cleanup.
             original.rename(replacement)
 
+    def test_cleanup_root_swap_after_check_refuses_deleting_foreign_directory(self):
+        with tempfile.TemporaryDirectory(prefix="int1-cleanup-race-") as outside:
+            with DisposablePX(ROOT) as fixture:
+                root = fixture.root
+                preserved = Path(outside) / "original-fixture"
+                foreign = Path(outside) / "foreign"
+                foreign.mkdir(mode=0o700)
+                (foreign / "hospital.db").write_bytes(b"FOREIGN-DO-NOT-DELETE")
+                original_rename = os.rename
+                injected = False
+                def swap_on_quarantine(src, dst):
+                    nonlocal injected
+                    if not injected and Path(src) == root and Path(dst).name == "fixture":
+                        injected = True
+                        original_rename(root, preserved)
+                        original_rename(foreign, root)
+                    return original_rename(src, dst)
+                with patch("px_int1_fixture.os.rename", side_effect=swap_on_quarantine):
+                    with self.assertRaisesRegex(FixtureRefusal, "substituted cleanup root"):
+                        fixture.close()
+                self.assertTrue(injected)
+                self.assertEqual((root / "hospital.db").read_bytes(), b"FOREIGN-DO-NOT-DELETE")
+            self.assertEqual((root / "hospital.db").read_bytes(), b"FOREIGN-DO-NOT-DELETE")
+            root.rename(foreign)
+
     def test_bad_registry_and_unsafe_directory_permissions_refused(self):
         with DisposablePX(ROOT) as fixture:
             registry = fixture.root / "providers/fake.json"
