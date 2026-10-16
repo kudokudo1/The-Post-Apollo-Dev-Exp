@@ -275,9 +275,10 @@ class DisposablePX:
         """Prune only the original disposable inode by anchored descriptors.
 
         Quarantine separates this fixture from its original public pathname.
-        Opening the verified quarantined directory with O_NOFOLLOW pins the
-        identity before the recursive walk. The final rmdir is allowed only
-        after checking the name still identifies that same *empty* inode.
+        Opening the verified quarantined directory with O_NOFOLLOW pins
+        its identity before recursively pruning files. Directory names,
+        including the emptied fixture and quarantine directories, are never
+        removed: they remain for disposal with the ephemeral CI runner.
         """
         try:
             st = os.lstat(self.root)
