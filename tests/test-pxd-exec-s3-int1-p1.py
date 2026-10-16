@@ -19,6 +19,11 @@ class INT1P1ConfinementTests(unittest.TestCase):
         with DisposablePX(ROOT) as fixture:
             self.assertTrue(fixture.assert_safe_environment())
             self.assertEqual(json.loads((fixture.root / "providers/fake.json").read_text())["providers"], {})
+            observed = fixture.run("/usr/bin/env")
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            effective = dict(line.split("=", 1) for line in observed.stdout.splitlines())
+            self.assertEqual(effective, fixture.env, "child must see exactly the allowlist")
+            self.assertNotIn("PX_INT1_FAKE_PRODUCTION", effective)
             result = fixture.hospital("init")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((fixture.root / "hospital/data/hospital.db").is_file())
