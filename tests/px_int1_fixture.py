@@ -219,6 +219,13 @@ class DisposablePX:
                 # for the disposable Hospital init are visible.
                 "--ro-bind", str(self.repository / "bin/px"), "/source/bin/px",
                 "--ro-bind", str(self.repository / "bin/px-hospital-store"), "/source/bin/px-hospital-store",
+                # INT1-A: expose only these additional audited source files.
+                # The default no-provider fixture environment is unchanged.
+                "--ro-bind", str(self.repository / "bin/px-agent"), "/source/bin/px-agent",
+                "--ro-bind", str(self.repository / "bin/hospital_target_preflight.py"),
+                "/source/bin/hospital_target_preflight.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_guard.py"),
+                "/source/bin/px_int1_fake_guard.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
@@ -257,6 +264,10 @@ class DisposablePX:
     def hospital(self, *args, after_anchor=None):
         return self.run("/bin/bash", "/source/bin/px", "hospital",
                         *args, "--json", after_anchor=after_anchor)
+
+    def agent(self, *args):
+        # Only the same OS-guarded fixture launcher may invoke px agent.
+        return self.run("/bin/bash", "/source/bin/px", "agent", *args, "--json")
 
     def close(self):
         """Prune only the original disposable inode by anchored descriptors.
