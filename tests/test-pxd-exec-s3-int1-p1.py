@@ -22,6 +22,7 @@ class INT1P1ConfinementTests(unittest.TestCase):
             observed = fixture.run("/usr/bin/env")
             self.assertEqual(observed.returncode, 0, observed.stderr)
             effective = dict(line.split("=", 1) for line in observed.stdout.splitlines())
+            self.assertEqual(effective.pop("PWD", ""), "/fixture", "namespace-chdir PWD must be sandbox-owned")
             self.assertEqual(effective, fixture.env, "child must see exactly the allowlist")
             self.assertNotIn("PX_INT1_FAKE_PRODUCTION", effective)
             result = fixture.hospital("init")
@@ -157,6 +158,7 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 self.assertEqual(sorted(p.name for p in foreign.iterdir()), ["hospital.db"])
             # Cleanup must not traverse the hostile symlink.
             self.assertEqual(canary.read_bytes(), before)
+            original.unlink()  # remove ONLY the detached fixture's substituted symlink
 
     def test_database_parent_swapped_after_preflight_cannot_open_host_canary(self):
         with tempfile.TemporaryDirectory(prefix="int1-parent-swap-") as outside:
