@@ -219,10 +219,12 @@ class DisposablePX:
                         *args, "--json", after_anchor=after_anchor)
 
     def close(self):
-        """Never clean another directory substituted at the fixture path.
+        """Quarantine before recursive deletion and recheck the original inode.
 
-        The Python rmtree implementation avoids traversing directory symlinks.
-        Refuse deletion of any root with a different inode from creation.
+        A path swapped after the initial stat can be moved to quarantine,
+        but it must never be *deleted* unless its inode matches the fixture.
+        This limits cleanup to our created root instead of a substituted
+        outside-root directory. shutil.rmtree is fd/symlink-safe on Linux.
         """
         try:
             st = os.lstat(self.root)
@@ -231,8 +233,33 @@ class DisposablePX:
         if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or
                 stat.S_IMODE(st.st_mode) != 0o700 or
                 (st.st_dev, st.st_ino) != self._identity):
-            return  # tampered: do not delete an unfamiliar replacement
-        shutil.rmtree(self.root)
+            return
+        quarantine = Path(tempfile.mkdtemp(prefix="px-int1-dispose-", dir="/tmp"))
+        target = quarantine / "fixture"
+        moved = False
+        try:
+            try:
+                os.rename(self.root, target)  # rename never traverses a symlink
+                moved = True
+            except FileNotFoundError:
+                return
+            after = os.lstat(target)
+            if (not stat.S_ISDIR(after.st_mode) or
+                    (after.st_dev, after.st_ino) != self._identity):
+                # A concurrent swap occurred; restore the unfamiliar entry
+                # if its old name is free, and leave it untouched otherwise.
+                if not os.path.lexists(self.root):
+                    os.rename(target, self.root)
+                    moved = False
+                raise FixtureRefusal("INT1-P1: substituted cleanup root")
+            shutil.rmtree(target)
+            moved = False
+        finally:
+            if not moved:
+                try:
+                    quarantine.rmdir()
+                except OSError:
+                    pass
 
     def __enter__(self):
         return self
