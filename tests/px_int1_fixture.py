@@ -73,6 +73,8 @@ class DisposablePX:
         self.repository = Path(repository).absolute()
         self.root = Path(tempfile.mkdtemp(prefix="px-int1-", dir="/tmp"))
         os.chmod(self.root, 0o700)
+        st = os.lstat(self.root)
+        self._identity = (st.st_dev, st.st_ino)
         self.env = None
         try:
             for name in [*DIRECTORIES.values(), *EXTRAS, "providers"]:
@@ -86,8 +88,8 @@ class DisposablePX:
                 "PATH": "/usr/bin:/bin",
                 "LANG": "C", "LC_ALL": "C",
                 "PYTHONDONTWRITEBYTECODE": "1",
-                **{k: str(self.root / v) for k, v in DIRECTORIES.items()},
-                **{k: str(self.root / v) for k, v in FILES.items()},
+                **{k: "/fixture/" + v for k, v in DIRECTORIES.items()},
+                **{k: "/fixture/" + v for k, v in FILES.items()},
             }
             # Create a fake-only registry; never copy real provider records.
             registry = self.root / FILES["PX_AGENT_PROVIDER_CONFIG"]
@@ -110,14 +112,14 @@ class DisposablePX:
         if self.root.resolve(strict=True) != self.root:
             raise FixtureRefusal("INT1-P1: root path alias")
         for k, relative in DIRECTORIES.items():
-            if self.env[k] != str(self.root / relative):
+            if self.env[k] != "/fixture/" + relative:
                 raise FixtureRefusal("INT1-P1: destination overridden: " + k)
             _trusted_directory(self.root, self.root / relative)
         for relative in EXTRAS:
             _trusted_directory(self.root, self.root / relative)
         for k, relative in FILES.items():
             f = self.root / relative
-            if self.env[k] != str(f):
+            if self.env[k] != "/fixture/" + relative:
                 raise FixtureRefusal("INT1-P1: file destination overridden: " + k)
             _trusted_directory(self.root, f.parent)
             try:
@@ -131,29 +133,101 @@ class DisposablePX:
             raise FixtureRefusal("INT1-P1: empty fake registry")
         return True
 
-    def run(self, *args, timeout=20, input=None):
-        # Validate on every launch, including first init. Never inherit env.
+    def _root_handle(self):
+        """Pin the validated physical root, never a mutable pathname."""
         self.assert_safe_environment()
-        def restrict_child_umask():
-            # SQLite-created DB and journals must not be world-readable.
-            os.umask(0o077)
-        return subprocess.run(list(args), env=dict(self.env), cwd=str(self.root),
-                              input=input, capture_output=True, text=True,
-                              timeout=timeout, check=False,
-                              preexec_fn=restrict_child_umask)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            fd = os.open(self.root, flags)
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) != self._identity or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o700:
+                raise FixtureRefusal("INT1-P1: root identity changed")
+            return fd
+        except (OSError, FixtureRefusal) as exc:
+            if "fd" in locals():
+                os.close(fd)
+            raise FixtureRefusal("INT1-P1: cannot pin original fixture root") from exc
 
-    def hospital(self, *args):
-        return self.run("/bin/bash", str(self.repository / "bin/px"),
-                        "hospital", *args, "--json")
+    def run(self, *args, timeout=20, input=None, after_anchor=None):
+        """Launch ONLY through an OS-isolated mount namespace.
+
+        No host pathname is writable in the child except a verified root
+        opened as an O_NOFOLLOW directory FD and bind-mounted through that FD.
+        SQLite can safely create DB, WAL, SHM and journals only on this mount.
+        If namespaces are unavailable, fail closed; there is no host fallback.
+        """
+        root_fd = self._root_handle()
+        try:
+            if after_anchor is not None:
+                # Test-only adversarial path swap AFTER verification and FD pin.
+                after_anchor()
+            command = [
+                self._trusted_bwrap(),
+                "--unshare-all", "--die-with-parent", "--new-session",
+                "--cap-drop", "ALL",
+                "--ro-bind", "/usr", "/usr",
+                "--symlink", "usr/bin", "/bin",
+                "--symlink", "usr/lib", "/lib",
+                "--symlink", "usr/lib64", "/lib64",
+                "--symlink", "usr/sbin", "/sbin",
+                "--proc", "/proc", "--dev", "/dev",
+                "--dir", "/var", "--dir", "/home", "--dir", "/run",
+                "--tmpfs", "/tmp",
+                "--ro-bind", str(self.repository), "/source",
+                # The FD refers to the original inode even if the host
+                # renames the root or substitutes a symlink after preflight.
+                "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
+                "--clearenv",
+            ]
+            for key, value in self.env.items():
+                command.extend(("--setenv", key, value))
+            command += ["--chdir", "/fixture", *args]
+            def restrict_child_umask():
+                os.umask(0o077)
+            return subprocess.run(
+                command, env={"PATH": "/usr/bin:/bin", "LANG": "C",
+                              "PYTHONDONTWRITEBYTECODE": "1"},
+                cwd="/", input=input, capture_output=True, text=True,
+                timeout=timeout, check=False, close_fds=True,
+                pass_fds=(root_fd,), preexec_fn=restrict_child_umask,
+            )
+        finally:
+            os.close(root_fd)
+
+    def _trusted_bwrap(self):
+        """Use the same fixed executable policy as EXEC-S1, no PATH fallback."""
+        for parent in (Path("/"), Path("/usr"), Path("/usr/bin")):
+            s = parent.lstat()
+            if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
+                raise FixtureRefusal("INT1-P1: untrusted bwrap parent")
+        path = Path("/usr/bin/bwrap")
+        try:
+            s = path.lstat()
+        except OSError as exc:
+            raise FixtureRefusal("INT1-P1: fixed Bubblewrap missing") from exc
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022 or not os.access(path, os.X_OK):
+            raise FixtureRefusal("INT1-P1: untrusted fixed Bubblewrap")
+        return str(path)
+
+    def hospital(self, *args, after_anchor=None):
+        return self.run("/bin/bash", "/source/bin/px", "hospital",
+                        *args, "--json", after_anchor=after_anchor)
 
     def close(self):
-        # Removal limited to a root still owned by this fixture.
-        if self.root.exists() and not self.root.is_symlink() and self.root.is_dir():
+        """Never clean another directory substituted at the fixture path.
+
+        The Python rmtree implementation avoids traversing directory symlinks.
+        Refuse deletion of any root with a different inode from creation.
+        """
+        try:
             st = os.lstat(self.root)
-            if st.st_uid == os.geteuid() and stat.S_IMODE(st.st_mode) == 0o700:
-                # Do not traverse symlinks: shutil.rmtree never recursively
-                # follows directory symlinks.
-                shutil.rmtree(self.root)
+        except FileNotFoundError:
+            return
+        if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or
+                stat.S_IMODE(st.st_mode) != 0o700 or
+                (st.st_dev, st.st_ino) != self._identity):
+            return  # tampered: do not delete an unfamiliar replacement
+        shutil.rmtree(self.root)
 
     def __enter__(self):
         return self
