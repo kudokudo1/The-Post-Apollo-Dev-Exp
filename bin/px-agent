@@ -418,7 +418,13 @@ def providers_payload() -> list[dict]:
 
 
 def create_session(args) -> dict:
-    provider_record(args.provider_id)
+    record = provider_record(args.provider_id)
+    if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
+        from px_int1_fake_guard import require_fixture, require_profile
+        require_fixture()  # Before any Hospital session mutation.
+        require_profile(args.provider_id, record, load_registry())
+        if Path(args.working_directory).resolve() != Path("/fixture/bed"):
+            raise RuntimeError("INT1-A REFUSED // synthetic Bed outside disposable fixture")
     session_id = (
         args.session_id.strip()
         if args.session_id
@@ -1680,6 +1686,9 @@ def acquire_turn_lock(session_id: str):
 
 
 def run_turn(args) -> dict:
+    if bool(getattr(args, "exec_s3_fake_preflight", False)):
+        from px_int1_fake_guard import require_fixture
+        require_fixture()  # Before even creating the session lock.
     turn_lock = acquire_turn_lock(args.session_id)
     try:
         return _run_turn_unlocked(args)
@@ -1702,7 +1711,14 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError("Hospital session has no provider")
 
     record = provider_record(provider_id)
-    executable = resolve_command(str(record.get("command") or ""))
+    fake_preflight = bool(getattr(args, "exec_s3_fake_preflight", False))
+    if fake_preflight:
+        from px_int1_fake_guard import require_profile
+        require_profile(provider_id, record, load_registry())
+    elif record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or provider_id == "int1-fake":
+        raise RuntimeError("INT1-A REFUSED // explicit fake-only preflight required")
+    # Never resolve or execute any provider binary for the opt-in fake path.
+    executable = None if fake_preflight else resolve_command(str(record.get("command") or ""))
     dialect = str(record.get("dialect") or "").strip()
     cwd_text = (
         args.working_directory
@@ -1712,6 +1728,8 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError("Hospital session has no working directory")
 
     cwd = Path(cwd_text).expanduser()
+    if fake_preflight and cwd.resolve() != Path("/fixture/bed"):
+        raise RuntimeError("INT1-A REFUSED // synthetic Bed outside disposable fixture")
     if not cwd.is_dir():
         raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
 
@@ -1759,6 +1777,8 @@ def _run_turn_unlocked(args) -> dict:
     provider_session_id = str(
         session.get("providerSessionId") or ""
     ).strip()
+    if fake_preflight and provider_session_id not in ("", "INT1-FAKE-SESSION-1"):
+        raise RuntimeError("INT1-A REFUSED // synthetic resume identity mismatch")
 
     context = live_context_payload(
         args.session_id,
@@ -1773,6 +1793,16 @@ def _run_turn_unlocked(args) -> dict:
         context,
         supplemental_context,
     )
+    if fake_preflight:
+        from px_int1_fake_guard import preflight_result
+        # INT1-A STOPS before provider_authority_environment (host env copy),
+        # prompt emission, message/event writes, broker startup or tool grants.
+        # INT1-B must first supply atomic acceptance and durable revocation.
+        return preflight_result(
+            context, provider_id=provider_id, room_id=room_id,
+            bed_path=str(cwd), resume=bool(provider_session_id),
+        )
+
     provider_input = provider_prompt
     effective_dialect = dialect
     provider_env, authority_policy = provider_authority_environment(
@@ -2905,6 +2935,9 @@ def build_parser():
     turn.add_argument("--author-id", default="operator")
     turn.add_argument("--message-type", default="chat")
     turn.add_argument("--timeout", type=int, default=1800)
+    # Opt-in dry preflight ONLY: intentionally cannot dispatch a tool or
+    # persist an accepted Doctor turn until INT1-B/C are reviewed.
+    turn.add_argument("--exec-s3-fake-preflight", action="store_true")
     turn.add_argument("--json", action="store_true")
 
     context = sub.add_parser("context")
