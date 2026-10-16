@@ -68,12 +68,13 @@ def _trusted_directory(root, path):
 
 
 def _remove_tree_fd(directory_fd):
-    """Prune the directory represented by this FD, never a mutable root path.
+    """Prune file entries only through already pinned directory FDs.
 
-    Each descendant directory is opened relative to an already pinned parent,
-    with O_NOFOLLOW. Entries are removed relative to those handles, so
-    changing a previously verified quarantine pathname cannot redirect the
-    recursive walk into a substituted foreign tree.
+    Descendant directories are opened relative to a pinned parent and with
+    O_NOFOLLOW. Directory names are never removed here, because a separate
+    identity check and pathname rmdir are not an atomic inode-conditional
+    operation. Empty directory hierarchy is deliberately left to be
+    discarded with the disposable CI runner.
 
     A concurrently inserted entry *inside the original fixture inode*
     is not a distinct external path and is outside this synthetic test's
@@ -99,7 +100,9 @@ def _remove_tree_fd(directory_fd):
                         (current.st_dev, current.st_ino) !=
                         (before.st_dev, before.st_ino)):
                     raise FixtureRefusal("INT1-P1: descendant changed during cleanup")
-                os.rmdir(name, dir_fd=directory_fd)
+                # C2: a post-check directory-name removal is not inode-
+                # conditional. Do not remove descendant directory names.
+                # Only the already-pinned inode's FILE contents are pruned.
             else:
                 # Symlinks are unlinked as links: never followed as directories.
                 os.unlink(name, dir_fd=directory_fd)
@@ -296,17 +299,17 @@ class DisposablePX:
                 if (not stat.S_ISDIR(current.st_mode) or
                         (current.st_dev, current.st_ino) != self._identity):
                     raise FixtureRefusal("INT1-P1: cleanup root replaced during deletion")
-                # Only the already-emptied fixture name can be removed here.
-                # A nonempty replacement cannot undergo recursive deletion.
-                os.rmdir("fixture", dir_fd=qfd)
+                # C2: a same-UID process could substitute an empty
+                # foreign root after this identity verification. Leave
+                # the original, now file-pruned tree in quarantine.
+                # No pathname-based final removal is attempted.
             finally:
                 os.close(root_fd)
         finally:
             os.close(qfd)
-            try:
-                quarantine.rmdir()
-            except OSError:
-                pass
+            # C2: quarantine.rmdir() would create the same check/delete
+            # race. Intentionally leave the empty hierarchy for CI runner
+            # disposal instead of deleting a potentially swapped name.
 
     def __enter__(self):
         return self
