@@ -23,8 +23,8 @@ registry, model credentials or CLI.
   without outgoing persistence. Stage B actually starts a long-lived
   root-owned /usr/bin/bwrap child, obtains its child PID using `--info-fd`,
   and independently compares mount/network namespace links from **host
-  /proc**. It checks the child root's fixture path and absence of the fake
-  private fixture. Only after the idle broker returns HELLO and Stage B
+  /proc**. It reads kernel-generated child mountinfo to require a read-only
+  Patient mount and writable scratch mount without a private mount. Only after the idle broker returns HELLO and Stage B
   passes does Stage C re-check live fake authority and persist a synthetic
   outgoing message, then invoke the S2 in-process fake-auth service.
   A startup failure precludes message persistence; a later failure is an
