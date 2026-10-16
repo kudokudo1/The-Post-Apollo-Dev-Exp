@@ -360,11 +360,12 @@ def smoke():
             raise s3.S3Refusal("S3: accepted turn persistence mismatch")
         if hospital.provider_session_id != s3.FAKE_SESSION_ID:
             raise s3.S3Refusal("S3: fake native session not preserved")
-        # New isolated broker, long-running fake tool; revoke on dispatch.
+        # The *Hospital itself* revokes a long-running brokered tool;
+        # do not route through the supervisor convenience wrapper.
         (root / "scratch" / "s3-result.txt").unlink(missing_ok=True)
         try:
             supervisor.run(resume=True, proposed_task=s3.WAIT_TASK,
-                           on_dispatched=supervisor.revoke)
+                           on_dispatched=hospital.revoke)
         except s3.S3Refusal as exc:
             if hospital.active or not hospital.paused:
                 raise s3.S3Refusal(
@@ -381,6 +382,12 @@ def smoke():
             raise s3.S3Refusal("S3: authority not revoked")
         if len(hospital.outgoing) != 3:
             raise s3.S3Refusal("S3: unexpected outgoing persistence")
+        audit_events = [e["event"] for e in hospital.events]
+        if ("isolation.authority.revoked" not in audit_events
+                or "isolation.tool.interrupted" not in audit_events
+                or audit_events.count("turn.completed") != 2
+                or hospital.active_brokers):
+            raise s3.S3Refusal("S3: direct Hospital revocation audit incomplete")
         if (root / "patient" / "illegal.txt").exists():
             raise s3.S3Refusal("S3: patient mutation observed")
         return {
