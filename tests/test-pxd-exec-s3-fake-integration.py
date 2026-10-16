@@ -151,6 +151,21 @@ class S3PolicyTests(unittest.TestCase):
         self.assertNotIn("turn.completed", ev)
         self.assertFalse((self.root / "scratch" / "s3-result.txt").exists())
 
+
+    def test_h2_direct_revoke_still_kills_tool_when_audit_sink_lost(self):
+        def revoke_after_audit_loss():
+            self.hospital.audit_enabled = False
+            self.hospital.revoke()
+        with self.assertRaisesRegex(s3.S3Refusal, "not fully auditable"):
+            self.sup.run(on_dispatched=revoke_after_audit_loss)
+        self.assertFalse(self.hospital.active)
+        self.assertTrue(self.hospital.paused)
+        self.assertEqual(self.hospital.state, "FAILED")
+        self.assertTrue(ControlledFakeBroker.instances[-1].stopped)
+        self.assertEqual(self.hospital.active_brokers, [])
+        self.assertNotIn("turn.completed", [e["event"] for e in self.hospital.events])
+        self.assertFalse((self.root / "scratch" / "s3-result.txt").exists())
+
     def test_h2_revoke_during_grant_dispatch_cannot_slip_between(self):
         # A rival thread starts revoking while dispatch still holds h.lock.
         # The update must serialize before or after dispatch, never between
