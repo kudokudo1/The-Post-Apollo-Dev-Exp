@@ -100,6 +100,113 @@ class S3PolicyTests(unittest.TestCase):
         self.sup = s3.FakePXSupervisor(
             self.hospital, self.root, self.service, ControlledFakeBroker)
 
+
+    def test_h1_broker_exits_after_ready_without_message_persistence(self):
+        # Ready remains True: the old ready-flag-only implementation fails.
+        def fake_crash():
+            ControlledFakeBroker.instances[-1].dead = True
+        with self.assertRaisesRegex(s3.S3Refusal, "broker exited after readiness"):
+            self.sup.run(on_ready=fake_crash)
+        self.assertEqual(self.hospital.outgoing, [])
+        self.assertEqual(self.service.calls, 0)
+        self.assertNotIn("turn.started", [e["event"] for e in self.hospital.events])
+        self.assertIn("isolation.preflight.refused",
+                      [e["event"] for e in self.hospital.events])
+        self.assertTrue(ControlledFakeBroker.instances[-1].stopped)
+
+    def test_h3_invalid_stage_a_authority_and_resume_are_audited(self):
+        cases = (
+            ("room", "R-FOREIGN", False),
+            ("patient", "FOREIGN-PATIENT", False),
+            ("active", False, False),
+            ("permissions", {"READ"}, False),
+            ("provider_session_id", "OTHER-SESSION", True),
+        )
+        for field, invalid, resume in cases:
+            with self.subTest(field=field):
+                prior = getattr(self.hospital, field)
+                n = len(self.hospital.events)
+                setattr(self.hospital, field, invalid)
+                with self.assertRaises(s3.S3Refusal):
+                    self.sup.run(resume=resume)
+                setattr(self.hospital, field, prior)
+                self.assertEqual(self.hospital.events[n:],
+                    [{"event": "isolation.preflight.refused",
+                      "reason": "static-preflight",
+                      "generation": self.hospital.generation}])
+                self.assertEqual(self.hospital.outgoing, [])
+                self.assertFalse(ControlledFakeBroker.instances)
+
+    def test_h2_direct_hospital_revoke_interrupts_active_broker(self):
+        # The supervisor.revoke convenience wrapper is intentionally not used.
+        with self.assertRaisesRegex(s3.S3Refusal, "revoked broker interrupted"):
+            self.sup.run(on_dispatched=self.hospital.revoke)
+        self.assertEqual(ControlledFakeBroker.instances[-1].executions, 1)
+        self.assertEqual(self.hospital.state, "FAILED")
+        self.assertTrue(self.hospital.paused)
+        self.assertEqual(self.hospital.active_brokers, [])
+        ev = [e["event"] for e in self.hospital.events]
+        self.assertIn("isolation.authority.revoked", ev)
+        self.assertIn("isolation.tool.interrupted", ev)
+        self.assertNotIn("turn.completed", ev)
+        self.assertFalse((self.root / "scratch" / "s3-result.txt").exists())
+
+    def test_h2_revoke_during_grant_dispatch_cannot_slip_between(self):
+        # A rival thread starts revoking while dispatch still holds h.lock.
+        # The update must serialize before or after dispatch, never between
+        # the generation check and sending the tool request.
+        started = threading.Event()
+        finished = threading.Event()
+        workers = []
+        original = ControlledFakeBroker.dispatch
+
+        def competing_dispatch(broker, grant):
+            def revoke_from_other_thread():
+                started.set()
+                self.hospital.revoke()
+                finished.set()
+            worker = threading.Thread(target=revoke_from_other_thread, daemon=True)
+            workers.append(worker)
+            worker.start()
+            self.assertTrue(started.wait(2), "synthetic race worker did not start")
+            self.assertTrue(self.hospital.active, "revocation overtook locked dispatch")
+            return original(broker, grant)
+
+        try:
+            with mock.patch.object(ControlledFakeBroker, "dispatch", competing_dispatch):
+                with self.assertRaisesRegex(s3.S3Refusal, "revoked broker interrupted"):
+                    self.sup.run(on_dispatched=lambda: self.assertTrue(finished.wait(3)))
+        finally:
+            for worker in workers:
+                worker.join(3)
+        self.assertTrue(finished.is_set())
+        self.assertEqual(self.hospital.generation, 2)
+        self.assertEqual(self.hospital.state, "FAILED")
+        self.assertNotIn("turn.completed", [e["event"] for e in self.hospital.events])
+
+    def test_h4_popen_failure_closes_both_info_pipe_descriptors(self):
+        # Does not rely on local bwrap availability.
+        fake_s1 = mock.Mock()
+        fake_s1.build_command.return_value = ["/usr/bin/bwrap", "--synthetic"]
+        pipe_pairs = []
+        original_pipe = os.pipe
+
+        def counted_pipe():
+            pair = original_pipe()
+            pipe_pairs.append(pair)
+            return pair
+
+        with mock.patch.object(s3, "accepted", return_value=fake_s1), \
+             mock.patch.object(s3.os, "pipe", side_effect=counted_pipe), \
+             mock.patch.object(s3.subprocess, "Popen", side_effect=OSError("synthetic failure")):
+            broker = s3.IsolatedBroker(self.root)
+            with self.assertRaisesRegex(s3.S3Refusal, "broker launch failed"):
+                broker.start()
+        self.assertEqual(len(pipe_pairs), 1)
+        for fd in pipe_pairs[0]:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
     def test_start_then_resume_preserves_identity(self):
         first = self.sup.run()
         self.assertEqual(first["state"], "PASS")
