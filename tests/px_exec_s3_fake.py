@@ -307,10 +307,13 @@ class FakePXSupervisor:
                 raise S3Refusal("S3: trusted audit sink unavailable")
             generation = h.generation
             s1 = accepted(S1_NAME)
-            s1.validated_fixture(self.root)
-            s1.trusted_bwrap_binary()
             s2 = accepted(S2_NAME)
-            s2.checked_auth_path(self.root)
+            try:
+                s1.validated_fixture(self.root)
+                s1.trusted_bwrap_binary()
+                s2.checked_auth_path(self.root)
+            except (s1.IsolationUnavailable, s2.BoundaryRefusal) as exc:
+                raise S3Refusal("S3: offline isolation prerequisite refused") from exc
             h.audit("isolation.preflight.passed")
         broker = self.broker_factory(self.root)
         try:
