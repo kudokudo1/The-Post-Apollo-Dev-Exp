@@ -197,7 +197,12 @@ class IsolatedBroker:
             self.child_pid = record.get("child-pid", 0)
             if not isinstance(self.child_pid, int) or self.child_pid <= 0:
                 raise S3Refusal("S3: invalid bwrap child process identity")
-            # Trusted host /proc, not child-authored JSON.
+            # The bwrap info PID may precede mount/setup completion. Use
+            # HELLO only as a synchronization barrier; it is NOT attestation.
+            hello = read_line_ready(self.process.stdout)
+            if hello != {"kind": "HELLO"} or self.process.poll() is not None:
+                raise S3Refusal("S3: broker not ready")
+            # Now independently inspect host-kernel facts about the child.
             for ns in ("net", "mnt"):
                 if (os.readlink("/proc/%d/ns/%s" % (self.child_pid, ns))
                         == os.readlink("/proc/self/ns/%s" % ns)):
@@ -216,9 +221,6 @@ class IsolatedBroker:
                 raise S3Refusal("S3: writable scratch mount not verified")
             if "/private" in mounts:
                 raise S3Refusal("S3: fake private mount exposed")
-            hello = read_line_ready(self.process.stdout)
-            if hello != {"kind": "HELLO"} or self.process.poll() is not None:
-                raise S3Refusal("S3: broker not ready")
             self.ready = True
         except (OSError, TypeError, ValueError) as exc:
             raise S3Refusal("S3: OS readiness attestation unavailable") from exc
