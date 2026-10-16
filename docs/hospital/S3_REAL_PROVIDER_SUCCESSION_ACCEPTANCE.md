@@ -93,3 +93,17 @@ The expected JSON reports `mode: DRY_RUN_NO_PROVIDER`, `provider: codex`, `write
 Use a fresh nonexistent workspace path, and preserve its entire private evidence folder for Nurse 2. A successful dry run or green CI does not establish that a fresh AI Doctor B understands Doctor A. Nurse 2 must examine the actual B answer with source report/chart IDs, provider identities and exact delivered stdin before acceptance.
 
 S3 real-provider execution, merge and installed runtime remain **NOT AUTHORIZED**.
+
+## SUPERSEDING CHECKPOINT // SCOPED S3 SYNTHETIC ACCEPTANCE (2026-10-12 EDT)
+
+**This dated addendum updates the preparation-era status above without altering that historical record.** The earlier statements saying the Codex demonstration had not yet occurred were accurate when written; the operator subsequently authorized and executed the isolated synthetic demonstration. This addendum **does not** authorize a new provider run.
+
+- **Source reviewed:** S3 draft PR [#64](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/64), commit `c7e375e4c46f851f03ab9653f4fb6b6911f6f1f5`.
+- **Operator-executed isolated Codex A→B fixture:** the runner reported **9/9** automated checks true, distinct fresh provider-native sessions, historical HANDOFF and operator-approved ROOM Chart recovery, no foreign Room leakage, and READ/TEST-only authority. The exercise used disposable Hospital/Git fixtures; source evidence was relayed by the operator, not downloaded from their actual host.
+- **Independent Nurse 2 decision on 2026-10-12:** **PASS — scoped synthetic real-Codex Doctor A→B semantic acceptance**, based on operator-provided, privacy-reviewed evidence and complete Doctor A/B response texts. Doctor B identified the prior handoff, unfinished checksum C-47, unresolved meaning of “indigo parity,” Room/branch and denied mutations without pretending to have verified current Git itself. [Formal Nurse 2 acceptance checkpoint](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/64#issuecomment-6118513921).
+- **Evidence limits:** Nurse 2 did not independently inspect the unredacted source SQLite DB, raw native provider identifiers or all original input bytes. The same historic HANDOFF appeared in a relevance-ranked message lane during the synthetic AI run, limiting exclusive causal attribution to S2's mandatory Room lane. Separate actual-source/CLI tests supported the guaranteed Room delivery behavior.
+- **Later Patient work:** independent RW-01/RW-02 Patient Chart corrections were verified at commit `7ce911836c9fcbe1039e675e2575c86e92a31d1e` in PR [#66](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/66), merged as source-only commit `3e0f047c3c7297c45a4cadd1367c6e906bd27dd6` on 2026-10-12. This did not constitute installed PX or production Doctor semantic verification.
+
+**Acceptance classification:** P1 Assignment integrity, S2 mandatory Room continuity, S3 **synthetic** Codex succession, and RW-01/RW-02 **source-level Patient** continuity have their respective scoped acceptances. **Not established:** production real-work Doctor succession, authenticated browser↔Hospital relay, full provider sandbox isolation, installed Fedora/Silverblue PX acceptance or live Hospital migration. These remain separately authorized gates. Final DONE belongs to the operator.
+
+**Authorization:** S3 synthetic acceptance is an evidence/status record. Additional real-provider execution, installation and production writes remain outside this addendum's authority.
