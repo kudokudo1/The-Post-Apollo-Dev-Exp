@@ -193,7 +193,7 @@ class INT1P1ConfinementTests(unittest.TestCase):
             # Restore host-side test names for TemporaryDirectory cleanup.
             original.rename(replacement)
 
-    def test_cleanup_root_swap_after_check_refuses_deleting_foreign_directory(self):
+    def test_cleanup_root_swap_before_quarantine_check_keeps_foreign_data(self):
         with tempfile.TemporaryDirectory(prefix="int1-cleanup-race-") as outside:
             with DisposablePX(ROOT) as fixture:
                 root = fixture.root
@@ -202,21 +202,60 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 foreign.mkdir(mode=0o700)
                 (foreign / "hospital.db").write_bytes(b"FOREIGN-DO-NOT-DELETE")
                 original_rename = os.rename
-                injected = False
-                def swap_on_quarantine(src, dst):
-                    nonlocal injected
-                    if not injected and Path(src) == root and Path(dst).name == "fixture":
-                        injected = True
+                swapped = []
+                def swap_on_quarantine(src, dst, **kwargs):
+                    if not swapped and Path(src) == root and dst == "fixture":
+                        qfd = kwargs["dst_dir_fd"]
+                        quarantine = Path(os.readlink("/proc/self/fd/" + str(qfd)))
                         original_rename(root, preserved)
                         original_rename(foreign, root)
-                    return original_rename(src, dst)
+                        swapped.append(quarantine / "fixture")
+                    return original_rename(src, dst, **kwargs)
                 with patch("px_int1_fixture.os.rename", side_effect=swap_on_quarantine):
                     with self.assertRaisesRegex(FixtureRefusal, "substituted cleanup root"):
                         fixture.close()
-                self.assertTrue(injected)
-                self.assertEqual((root / "hospital.db").read_bytes(), b"FOREIGN-DO-NOT-DELETE")
-            self.assertEqual((root / "hospital.db").read_bytes(), b"FOREIGN-DO-NOT-DELETE")
-            root.rename(foreign)
+                self.assertEqual(len(swapped), 1)
+                self.assertEqual((swapped[0] / "hospital.db").read_bytes(),
+                                 b"FOREIGN-DO-NOT-DELETE")
+            self.assertEqual((swapped[0] / "hospital.db").read_bytes(),
+                             b"FOREIGN-DO-NOT-DELETE")
+            swapped[0].rename(foreign)
+            swapped[0].parent.rmdir()
+
+    def test_cleanup_post_identity_swap_never_recursively_deletes_foreign(self):
+        """C1: foreign substitution AFTER fstat, BEFORE the recursive walk."""
+        import px_int1_fixture
+        with tempfile.TemporaryDirectory(prefix="int1-after-check-") as outside:
+            foreign = Path(outside) / "foreign"
+            foreign.mkdir(mode=0o700)
+            canary = foreign / "hospital.db"
+            canary.write_bytes(b"FOREIGN-CANARY-MUST-SURVIVE")
+            before = canary.read_bytes()
+            with DisposablePX(ROOT) as fixture:
+                root = fixture.root
+                detached = Path(outside) / "original-root"
+                actual_prune = px_int1_fixture._remove_tree_fd
+                substitutions = []
+                def inject_after_verified_fd(directory_fd):
+                    target = Path(os.readlink("/proc/self/fd/" + str(directory_fd)))
+                    # The verified root FD was opened from this target.
+                    # A concurrent same-UID process now replaces its name.
+                    os.rename(target, detached)
+                    os.rename(foreign, target)
+                    substitutions.append(target)
+                    return actual_prune(directory_fd)
+                with patch("px_int1_fixture._remove_tree_fd", side_effect=inject_after_verified_fd):
+                    with self.assertRaisesRegex(
+                            FixtureRefusal, "cleanup root replaced during deletion"):
+                        fixture.close()
+                self.assertEqual(len(substitutions), 1)
+                self.assertEqual((substitutions[0] / "hospital.db").read_bytes(), before)
+                self.assertFalse((detached / "hospital/data").exists(),
+                                 "pinned recursion should prune only the original fixture")
+            self.assertEqual((substitutions[0] / "hospital.db").read_bytes(), before)
+            substitutions[0].rename(foreign)
+            substitutions[0].parent.rmdir()
+            self.assertEqual(canary.read_bytes(), before)
 
     def test_bad_registry_and_unsafe_directory_permissions_refused(self):
         with DisposablePX(ROOT) as fixture:
