@@ -266,6 +266,7 @@ class INT1P1ConfinementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="int1-c2-descendant-") as outside:
             foreign = Path(outside) / "foreign-empty"
             foreign.mkdir(mode=0o700)
+            foreign_id = (foreign.stat().st_dev, foreign.stat().st_ino)
             with DisposablePX(ROOT) as fixture:
                 original_stat = os.stat
                 observed = []
@@ -279,7 +280,9 @@ class INT1P1ConfinementTests(unittest.TestCase):
                             parent_fd = kwargs["dir_fd"]
                             os.rename("data", detached, src_dir_fd=parent_fd)
                             os.rename(foreign, "data", dst_dir_fd=parent_fd)
-                            observed.append(parent_fd)
+                            parent_path = Path(os.readlink(
+                                "/proc/self/fd/" + str(parent_fd)))
+                            observed.append(parent_path / "data")
                     return value
                 with patch("px_int1_fixture.os.stat",
                            side_effect=substitute_after_verified_stat):
@@ -287,20 +290,24 @@ class INT1P1ConfinementTests(unittest.TestCase):
                                side_effect=AssertionError("unsafe descendant rmdir attempted")):
                         fixture.close()
                 self.assertEqual(len(observed), 1)
-                # The replacement is an EMPTY foreign directory: the legacy
-                # final os.rmdir(name) would have silently deleted it.
+                # This replacement is EMPTY: the legacy rmdir would have
+                # deleted it without errors. Verify the very SAME foreign
+                # inode is still present at the substituted target.
+                self.assertTrue(observed[0].is_dir())
+                survivor = observed[0].stat()
+                self.assertEqual((survivor.st_dev, survivor.st_ino), foreign_id)
+                self.assertEqual(list(observed[0].iterdir()), [])
                 self.assertEqual(list(detached.iterdir()), [])
-                # The parent was renamed to the quarantine by close();
-                # locate only within this test's disposable /tmp quarantine.
-                self.assertFalse(foreign.exists(), "foreign moved into quarantine, not removed")
+                self.assertFalse(foreign.exists(), "foreign was moved into quarantine")
                 self.assertTrue(detached.is_dir())
-                self.assertEqual(fixture.root.exists(), False)
+                self.assertFalse(fixture.root.exists())
 
     def test_c2_empty_foreign_root_substituted_after_identity_check_survives(self):
         """An empty substitute is not protected by 'rmdir only when empty'."""
         with tempfile.TemporaryDirectory(prefix="int1-c2-root-") as outside:
             foreign = Path(outside) / "foreign-empty"
             foreign.mkdir(mode=0o700)
+            foreign_id = (foreign.stat().st_dev, foreign.stat().st_ino)
             old = Path(outside) / "original-root"
             with DisposablePX(ROOT) as fixture:
                 actual_stat = os.stat
@@ -322,6 +329,8 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 self.assertEqual(len(location), 1)
                 self.assertTrue(location[0].is_dir(),
                                 "empty foreign root must survive after check")
+                survivor = location[0].stat()
+                self.assertEqual((survivor.st_dev, survivor.st_ino), foreign_id)
                 self.assertEqual(list(location[0].iterdir()), [])
                 self.assertTrue(old.is_dir(), "original pinned root remains")
                 location[0].rename(foreign)
