@@ -266,9 +266,10 @@ class DisposablePX:
                         *args, "--json", after_anchor=after_anchor, input=input)
 
     def agent(self, *args, input=None):
-        # Only the same OS-guarded fixture launcher may invoke px agent.
-        return self.run("/bin/bash", "/source/bin/px", "agent", *args, "--json",
-                        input=input)
+        # The real bin/px-agent Python executable runs directly inside the
+        # same protected mount namespace. Avoid adding Bash's _/SHLVL env.
+        return self.run("/usr/bin/python3", "-B", "/source/bin/px-agent",
+                        *args, "--json", input=input)
 
     def close(self):
         """Prune only the original disposable inode by anchored descriptors.
