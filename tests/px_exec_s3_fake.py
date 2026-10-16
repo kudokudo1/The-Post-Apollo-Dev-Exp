@@ -60,6 +60,7 @@ class FakeHospital:
     events: list = field(default_factory=list)
     state: str = "WAITING"
     lock: threading.RLock = field(default_factory=threading.RLock)
+    active_brokers: list = field(default_factory=list, repr=False)
 
     def audit(self, event: str, reason: str = ""):
         if not self.audit_enabled:
@@ -68,11 +69,25 @@ class FakeHospital:
                             "generation": self.generation})
 
     def revoke(self):
+        """Direct Hospital revocation actively interrupts every registered broker.
+
+        Dispatch writes and grant generation share this lock. A concurrent
+        revocation either wins before dispatch or kills the already-dispatched
+        synthetic tool; results cannot be committed after revocation.
+        """
         with self.lock:
             self.generation += 1
             self.active = False
             self.paused = True
             self.audit("isolation.authority.revoked")
+            for broker in tuple(self.active_brokers):
+                try:
+                    broker.close()
+                except S3Refusal:
+                    self.state = "FAILED"
+                    self.audit("isolation.tool.reap_failed", "synthetic-stop-failed")
+                    raise
+                self.audit("isolation.tool.interrupted", "authority-revoked")
 
 
 @dataclass(frozen=True)
@@ -184,6 +199,8 @@ class IsolatedBroker:
                          "OPENAI_API_KEY": "FAKE-S3-PARENT-CANARY"},
                     close_fds=True, pass_fds=(write_fd,), start_new_session=True)
             except OSError as exc:
+                # H4: Popen failure must not strand the bwrap info-pipe reader.
+                os.close(read_fd)
                 raise S3Refusal("S3: broker launch failed") from exc
         finally:
             os.close(write_fd)
@@ -236,16 +253,29 @@ class IsolatedBroker:
             if not self.ready:
                 self.close()
 
+    def assert_alive(self):
+        """A stale ready flag is never authority to persist or dispatch."""
+        if (not self.ready or self.process is None or
+                self.process.poll() is not None or self.child_pid <= 0):
+            raise S3Refusal("S3: broker exited after readiness")
+        try:
+            os.kill(self.child_pid, 0)
+        except OSError as exc:
+            raise S3Refusal("S3: broker sandbox child unavailable") from exc
+
     def grant(self, grant: ToolGrant):
-        if not self.ready or self.process.poll() is not None:
-            raise S3Refusal("S3: broker not ready")
+        self.assert_alive()
         if grant.nonce in self.pending or grant.nonce in self.used:
             raise S3Refusal("S3: duplicate grant")
         self.pending[grant.nonce] = grant
 
-    def execute(self, grant: ToolGrant, on_dispatched=None):
-        if not self.ready or self.process.poll() is not None:
-            raise S3Refusal("S3: isolated broker unavailable")
+    def dispatch(self, grant: ToolGrant):
+        """Called ONLY with FakeHospital.lock held through wire flush.
+
+        This closes the check/grant-to-execute window for the controlled
+        fixture. Broker authorization is NOT claimed for hostile IPC clients.
+        """
+        self.assert_alive()
         if self.pending.pop(grant.nonce, None) is not grant:
             raise S3Refusal("S3: missing or replayed PX grant")
         self.used.add(grant.nonce)
@@ -255,15 +285,18 @@ class IsolatedBroker:
         try:
             self.process.stdin.write(json.dumps(frame) + "\n")
             self.process.stdin.flush()
-            if on_dispatched:
-                on_dispatched()
-            result = read_line_ready(self.process.stdout, timeout=16)
         except (OSError, ValueError) as exc:
             raise S3Refusal("S3: broker dispatch aborted") from exc
+
+    def collect(self, grant: ToolGrant):
+        """Untrusted response is collected WITHOUT holding Hospital authority lock."""
+        try:
+            result = read_line_ready(self.process.stdout, timeout=16)
+        except (OSError, ValueError) as exc:
+            raise S3Refusal("S3: broker response aborted") from exc
         if result != {"kind": "RESULT", "nonce": grant.nonce,
                       "value": "UNTRUSTED-SUCCESS"}:
             raise S3Refusal("S3: untrusted tool result rejected")
-        # Only independent synthetic scratch observation counts here.
         if (self.root / "scratch" / "s3-result.txt").read_text() != "S3-FAKE-COMPLETE":
             raise S3Refusal("S3: independently observed scratch result missing")
 
@@ -313,28 +346,35 @@ class FakePXSupervisor:
             raise S3Refusal("S3: wrong Patient fixture")
 
     def revoke(self):
+        # H2: no separate supervisor-only revocation route. Direct fake
+        # Hospital revocation must interrupt active tools by itself.
         self.hospital.revoke()
-        if self.active_broker is not None:
-            self.active_broker.close()
 
     def run(self, resume=False, proposed_task=None, on_ready=None,
             before_dispatch=None, on_dispatched=None):
         h = self.hospital
         # STAGE A: no message persistence, provider launch or tools.
         with h.lock:
-            self.check(resume)
-            if not h.audit_enabled:
-                raise S3Refusal("S3: trusted audit sink unavailable")
-            generation = h.generation
-            s1 = accepted(S1_NAME)
-            s2 = accepted(S2_NAME)
             try:
-                s1.validated_fixture(self.root)
-                s1.trusted_bwrap_binary()
-                s2.checked_auth_path(self.root)
-            except (s1.IsolationUnavailable, s2.BoundaryRefusal) as exc:
-                raise S3Refusal("S3: offline isolation prerequisite refused") from exc
-            h.audit("isolation.preflight.passed")
+                self.check(resume)
+                if not h.audit_enabled:
+                    raise S3Refusal("S3: trusted audit sink unavailable")
+                generation = h.generation
+                s1 = accepted(S1_NAME)
+                s2 = accepted(S2_NAME)
+                try:
+                    s1.validated_fixture(self.root)
+                    s1.trusted_bwrap_binary()
+                    s2.checked_auth_path(self.root)
+                except (s1.IsolationUnavailable, s2.BoundaryRefusal) as exc:
+                    raise S3Refusal("S3: offline isolation prerequisite refused") from exc
+                h.audit("isolation.preflight.passed")
+            except (S3Refusal, OSError, ValueError):
+                # H3: even the FIRST authority/session check is audited.
+                # Do not persist raw exception text or synthetic credentials.
+                if h.audit_enabled:
+                    h.audit("isolation.preflight.refused", "static-preflight")
+                raise
         broker = self.broker_factory(self.root)
         try:
             # STAGE B: actual sandbox creation and OS-observed readiness.
@@ -344,8 +384,10 @@ class FakePXSupervisor:
                 on_ready()
             with h.lock:
                 self.check(resume, generation=generation)
-                if not broker.ready:
-                    raise S3Refusal("S3: broker no longer ready")
+                # H1: success before on_ready is insufficient; inspect
+                # current broker process/child just before persistence.
+                broker.assert_alive()
+                h.active_brokers.append(broker)
                 h.audit("isolation.broker.ready")
                 # STAGE C: first durable outgoing message AFTER readiness.
                 h.outgoing.append({"kind": "operator", "resume": resume})
@@ -365,8 +407,13 @@ class FakePXSupervisor:
                     grant = ToolGrant(secrets.token_urlsafe(24), h.room, h.patient,
                                       h.generation, task)
                     broker.grant(grant)
+                    # H2: last authority check, grant, and actual pipe write
+                    # are serialized with FakeHospital.revoke().
+                    broker.dispatch(grant)
                     h.audit("isolation.tool.allowed")
-                broker.execute(grant, on_dispatched=on_dispatched)
+                if on_dispatched:
+                    on_dispatched()
+                broker.collect(grant)
                 with h.lock:
                     self.check(resume, generation=generation)
                     h.provider_session_id = FAKE_SESSION_ID
@@ -387,6 +434,12 @@ class FakePXSupervisor:
                 h.audit("isolation.preflight.refused", "startup-or-authority")
             raise
         finally:
-            broker.close()
-            if self.active_broker is broker:
-                self.active_broker = None
+            with h.lock:
+                # Unregister only after the broker is killed/reaped.
+                try:
+                    broker.close()
+                finally:
+                    if broker in h.active_brokers:
+                        h.active_brokers.remove(broker)
+                    if self.active_broker is broker:
+                        self.active_broker = None
