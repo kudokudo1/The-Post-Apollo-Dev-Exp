@@ -1,0 +1,113 @@
+# EXEC-S3 // Offline PX-shaped synthetic integration proof
+
+> STATE // IMPLEMENTED AS TEST-ONLY PROTOTYPE, REVIEW PENDING
+> OWNER // PX Doctor Execution Security
+> BASE // PX main d1eed3e5b989907f5035e6e8c8e7f8dfe173a254
+> CONTRACT // PR #78 at 0912efafc4d09553de539a61c26e3eab2102012d (ACCEPTED AT DESIGN SCOPE, NOT MERGED)
+> AUTHORITY // Operator-authorized fake-only development-branch tests. NO PR MERGE.
+> REAL CODEX/HERMES, FEDORA HOST CHANGES, LIVE HOSPITAL, PRODUCTION // HOLD
+
+## What this implements
+
+`tests/px_exec_s3_fake.py` is a **test-only simulation of the PX supervisor and
+provider turn lifecycle**. It deliberately does not import or modify the live
+`bin/px-agent`, real PX Hospital database, installed dispatch path, provider
+registry, model credentials or CLI.
+
+- **S3-C1**: the fake model returns a tool request to the trusted supervisor.
+  Only PX-shaped supervisor code issues a single-use, nonce-bound, scoped grant
+  to the isolated broker. The sandbox is a fixed S1 Bubblewrap program with
+  one stdin pipe owned by the supervisor, not by the fake model. Tool requests
+  have an exact allowlist and are rejected when stale.
+- **S3-C2**: Stage A performs fake authority/Bed and S1/S2 prerequisites
+  without outgoing persistence. Stage B actually starts a long-lived
+  root-owned /usr/bin/bwrap child, obtains its child PID using `--info-fd`,
+  and independently compares mount/network namespace links from **host
+  /proc**. It reads kernel-generated child mountinfo to require a read-only
+  Patient mount and writable scratch mount without a private mount.
+  The idle broker's HELLO is synchronization only, not self-attestation.
+  Immediately before Stage C persistence, the supervisor rechecks the
+  broker's live process and child PID, not just its stale ready flag.
+  A post-readiness broker crash therefore refuses before outgoing persistence.
+  Only after these checks does Stage C persist a synthetic outgoing message
+  and invoke the S2 in-process fake-auth service. A startup failure precludes
+  message persistence; a later failure is an accepted FAILED turn, not replayed.
+- **S3-C3**: fake authority includes a version/generation and pause flag.
+  The supervisor revalidates them before each grant and after each tool
+  result. The check, grant and **actual broker pipe write** are serialized
+  under the synthetic Hospital's authority lock, closing their prior
+  handoff race. The Hospital registers an active broker before accepting
+  outgoing input. **Direct `FakeHospital.revoke()`** now increments the
+  generation and kills/reaps all registered brokers, even if called without
+  the supervisor wrapper. The caller reads tool results outside the lock
+  and rejects results after revocation. An unavailable audit sink during
+  revocation cannot prevent broker termination; it forces a FAILED outcome
+  instead of pretending the cancellation was fully audited. The S1
+  `--die-with-parent` flag prevents the isolated child outliving bwrap.
+  Partial results cannot mark
+  a completed Doctor turn; a sleeping fake tool is killed before it writes.
+
+The synthetic "Hospital" is an in-memory record with an RLock. No real
+Hospital sessions or Chart/Report records are read or written.
+
+- **S3-H3 / preflight audit:** invalid Room, Patient, Assignment permissions,
+  inactive authority, or foreign/mismatched resume ID now records a sanitized
+  supervisor-owned `isolation.preflight.refused` event *before any outgoing
+  message*. An unavailable audit sink still fails closed without fabricated
+  audit evidence.
+- **Popen error hygiene:** failing to start root-owned bwrap closes **both**
+  ends of the temporary info pipe, including the reader that the prior
+  prototype could leak.
+
+Targeted deterministic regressions cover a broker dying *after* HELLO with
+`ready=True`, Stage A refusal audits, a concurrent authority update during
+grant/dispatch, direct Hospital revocation of an active broker, and a failed
+Popen with checked-close file descriptors. The real sandbox smoke also
+calls `FakeHospital.revoke()` directly during a sleeping fake tool.
+
+**Scope caveat:** This synthetic lock serializes a *single in-process fake
+Hospital*. It is not a distributed revocation protocol, a production
+transaction guarantee, a general-purpose IPC authorization boundary, or
+proof that an arbitrary tool has no untracked side effects.
+
+## How to test on disposable CI (NO live machine changes)
+
+```sh
+python3 -B tests/test-pxd-exec-s3-fake-integration.py --unit
+python3 -B tests/test-pxd-exec-s3-fake-integration.py --smoke
+```
+
+The second command requires a trusted root-owned /usr/bin/bwrap and a
+machine permitting rootless user/network/mount namespaces. No fallback.
+The PR CI workflow installs Bubblewrap in its disposable Ubuntu runner,
+not on the user's Fedora machine.
+
+## Review caveats (not a production certification)
+
+1. The fake client is in-process and not Codex/Hermes. There is no
+   authenticated model transport, no real provider disable-tool API and no
+   protection against a full privileged provider CLI's own native actions.
+2. The isolated broker uses a fixed, source-controlled program and controlled
+   pipe. It does not implement a production-grade authenticated broker socket
+   or a general open-ended tool API.
+3. The host observes namespaces and fake mounts from /proc at readiness, but
+   this proof does not certify all namespace/FD/mount/time-of-check races or
+   runtime integrity for arbitrary hostile executables.
+4. Fake revocation prevents subsequent completion, but cannot undo writes or
+   effects that already occurred before revocation. Complex cross-process
+   authorization transactions and writable real Beds remain future work.
+5. The fake in-memory outgoing/event list does not test actual persistent
+   Hospital message transaction guarantees or original Chart continuity.
+6. This branch does NOT add an integration hook into the actual `bin/px-agent`.
+   S3 runtime adoption, full launch/resume enforcement and authenticated model
+   execution require separately reviewed implementation and operator authority.
+
+## Scope and reviewer handoff
+
+This prototype reuses exact merged S1/S2 harnesses unmodified. Only new test
+files, workflow and this note are in the proposed branch. Nurse 2 should
+verify pre-append refusal, real readiness from OS facts, exclusive mediation,
+grant replay and authority race negatives, active process termination,
+source-only fake providers, and the explicit limitations above.
+
+**No merge permission. S3 production activation HOLD.**
