@@ -41,6 +41,9 @@ jobs:
           ./bin/px --help
           ./bin/px templates
 
+      - name: Test large, offline audit JSON inputs
+        run: bash tests/test-px-audit-large-json.sh
+
       - name: Report execution identity
         run: |
           echo "PX smoke test passed"
