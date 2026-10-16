@@ -199,7 +199,13 @@ class IsolatedBroker:
                 raise S3Refusal("S3: invalid bwrap child process identity")
             # The bwrap info PID may precede mount/setup completion. Use
             # HELLO only as a synchronization barrier; it is NOT attestation.
-            hello = read_line_ready(self.process.stdout)
+            try:
+                hello = read_line_ready(self.process.stdout)
+            except S3Refusal as exc:
+                detail = ""
+                if self.process.poll() is not None:
+                    detail = self.process.stderr.read()[-1200:]
+                raise S3Refusal("S3: synthetic broker handshake refused: " + detail) from exc
             if hello != {"kind": "HELLO"} or self.process.poll() is not None:
                 raise S3Refusal("S3: broker not ready")
             # Now independently inspect host-kernel facts about the child.
