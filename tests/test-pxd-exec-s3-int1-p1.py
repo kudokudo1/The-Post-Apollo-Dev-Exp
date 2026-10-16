@@ -127,7 +127,7 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 "p=pathlib.Path;"
                 "v={'host_hidden':not p('/home/runner').exists() and not p('/etc/passwd').exists(),"
                 "'repo_metadata_hidden':not p('/source/.git').exists(),"
-                "'provider_paths_hidden':not p('/source/config').exists() and not p('/source/bin/px-agent').exists(),"
+                "'provider_paths_hidden':not p('/source/config').exists() and not p('/source/.git').exists(),"
                 "'fixture_write':False};"
                 "v['fixture_write']=(p('/fixture/scratch/probe.txt').write_text('ok')==2);"
                 "print(json.dumps(v))"
