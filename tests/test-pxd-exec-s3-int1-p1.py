@@ -118,6 +118,75 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 with self.assertRaises(FixtureRefusal):
                     fixture.hospital("init")
 
+    def test_os_namespace_hides_host_and_allows_only_fixture_writes(self):
+        with DisposablePX(ROOT) as fixture:
+            host_marker = "/tmp/INT1-OUTSIDE-MUST-NOT-BE-READABLE"
+            code = (
+                "import json,os,pathlib,socket;"
+                "p=pathlib.Path;"
+                "v={'host_hidden':not p('/home/runner').exists() and not p('/etc/passwd').exists(),"
+                "'repo_readonly':True,'fixture_write':False,'no_host_network':False};"
+                "v['fixture_write']=(p('/fixture/scratch/probe.txt').write_text('ok')==2);"
+                "print(json.dumps(v))"
+            )
+            result = fixture.run("/usr/bin/python3", "-B", "-c", code)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            assertions = json.loads(result.stdout)
+            self.assertTrue(assertions["host_hidden"])
+            self.assertTrue(assertions["fixture_write"])
+            self.assertEqual((fixture.root / "scratch/probe.txt").read_text(), "ok")
+            self.assertFalse(Path(host_marker).exists())
+
+    def test_root_replacement_after_preflight_writes_only_to_fd_anchored_root(self):
+        with tempfile.TemporaryDirectory(prefix="int1-race-canary-") as outside:
+            foreign = Path(outside) / "hostile-root"
+            foreign.mkdir(mode=0o700)
+            canary = foreign / "hospital.db"
+            canary.write_bytes(b"HOST-CANARY-NO-OPEN")
+            before = canary.read_bytes()
+            with DisposablePX(ROOT) as fixture:
+                original = fixture.root
+                detached = Path(outside) / "original-root-detached"
+                def replace_after_anchor():
+                    original.rename(detached)
+                    original.symlink_to(foreign, target_is_directory=True)
+                result = fixture.hospital("init", after_anchor=replace_after_anchor)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((detached / "hospital/data/hospital.db").is_file())
+                self.assertEqual(canary.read_bytes(), before)
+                self.assertEqual(sorted(p.name for p in foreign.iterdir()), ["hospital.db"])
+            # Cleanup must not traverse the hostile symlink.
+            self.assertEqual(canary.read_bytes(), before)
+
+    def test_database_parent_swapped_after_preflight_cannot_open_host_canary(self):
+        with tempfile.TemporaryDirectory(prefix="int1-parent-swap-") as outside:
+            canary = Path(outside) / "hospital.db"
+            canary.write_bytes(b"FOREIGN-SQLITE-CANARY")
+            with DisposablePX(ROOT) as fixture:
+                data = fixture.root / "hospital/data"
+                def swap_parent_after_anchor():
+                    data.rmdir()
+                    data.symlink_to(outside, target_is_directory=True)
+                result = fixture.hospital("init", after_anchor=swap_parent_after_anchor)
+                self.assertNotEqual(result.returncode, 0, "swapped DB parent must fail closed")
+                self.assertEqual(canary.read_bytes(), b"FOREIGN-SQLITE-CANARY")
+                self.assertEqual(sorted(p.name for p in Path(outside).iterdir()), ["hospital.db"])
+
+    def test_cleanup_refuses_different_inode_same_permission_replacement(self):
+        with tempfile.TemporaryDirectory(prefix="int1-cleanup-swap-") as outside:
+            with DisposablePX(ROOT) as fixture:
+                original = fixture.root
+                preserved = Path(outside) / "original"
+                replacement = Path(outside) / "replacement"
+                replacement.mkdir(mode=0o700)
+                sentinel = replacement / "preserve.txt"
+                sentinel.write_text("NO DELETE")
+                original.rename(preserved)
+                replacement.rename(original)
+            self.assertEqual((original / "preserve.txt").read_text(), "NO DELETE")
+            # Restore host-side test names for TemporaryDirectory cleanup.
+            original.rename(replacement)
+
     def test_bad_registry_and_unsafe_directory_permissions_refused(self):
         with DisposablePX(ROOT) as fixture:
             registry = fixture.root / "providers/fake.json"
