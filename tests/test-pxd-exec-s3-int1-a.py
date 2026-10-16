@@ -147,6 +147,34 @@ class INT1AActualAgentTests(unittest.TestCase):
         self.assertIn("unsupported synthetic-only provider", result.stderr)
         self.assert_no_turn_mutation(original)
 
+    def test_reject_wrong_synthetic_resume_identity_before_persistence(self):
+        self.ok(self.fx.hospital(
+            "session-runtime", "int1-fake-session",
+            "--provider-session-id", "UNAPPROVED-RESUME",
+            "--status", "IDLE",
+        ))
+        original = self.before()
+        attempt = self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "NO WRONG RESUME",
+        )
+        self.assertNotEqual(attempt.returncode, 0)
+        self.assertIn("synthetic resume identity mismatch", attempt.stderr)
+        self.assert_no_turn_mutation(original)
+
+    def test_forged_fixture_env_cannot_replace_os_mount_boundary(self):
+        # Pure in-process security unit test on disposable GitHub CI, not
+        # a PX/Hospital or model process launched outside the fixture.
+        import importlib.util
+        source = REPO / "bin/px_int1_fake_guard.py"
+        spec = importlib.util.spec_from_file_location("int1_fake_guard_probe", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        fake_host_env = {**module.ENV_PATHS, **module.ENV_STATIC, "PWD": "/fixture"}
+        with patch.dict(os.environ, fake_host_env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "OS fixture boundary absent"):
+                module.require_fixture()
+
     def test_wrong_bed_override_refused_before_persistence(self):
         original = self.before()
         result = self.fx.agent(
