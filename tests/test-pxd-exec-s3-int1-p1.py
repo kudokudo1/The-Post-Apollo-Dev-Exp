@@ -237,6 +237,8 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 actual_prune = px_int1_fixture._remove_tree_fd
                 substitutions = []
                 def inject_after_verified_fd(directory_fd):
+                    if substitutions:
+                        return actual_prune(directory_fd)
                     target = Path(os.readlink("/proc/self/fd/" + str(directory_fd)))
                     # The verified root FD was opened from this target.
                     # A concurrent same-UID process now replaces its name.
