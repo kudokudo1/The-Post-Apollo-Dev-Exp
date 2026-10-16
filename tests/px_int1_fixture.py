@@ -173,7 +173,12 @@ class DisposablePX:
                 "--proc", "/proc", "--dev", "/dev",
                 "--dir", "/var", "--dir", "/home", "--dir", "/run",
                 "--tmpfs", "/tmp",
-                "--ro-bind", str(self.repository), "/source",
+                "--dir", "/source", "--dir", "/source/bin",
+                # Never mount the entire checkout: Actions .git/config can
+                # contain checkout credentials. Only source files necessary
+                # for the disposable Hospital init are visible.
+                "--ro-bind", str(self.repository / "bin/px"), "/source/bin/px",
+                "--ro-bind", str(self.repository / "bin/px-hospital-store"), "/source/bin/px-hospital-store",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
