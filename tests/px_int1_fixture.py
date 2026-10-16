@@ -129,9 +129,13 @@ class DisposablePX:
     def run(self, *args, timeout=20, input=None):
         # Validate on every launch, including first init. Never inherit env.
         self.assert_safe_environment()
+        def restrict_child_umask():
+            # SQLite-created DB and journals must not be world-readable.
+            os.umask(0o077)
         return subprocess.run(list(args), env=dict(self.env), cwd=str(self.root),
                               input=input, capture_output=True, text=True,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False,
+                              preexec_fn=restrict_child_umask)
 
     def hospital(self, *args):
         return self.run("/bin/bash", str(self.repository / "bin/px"),
