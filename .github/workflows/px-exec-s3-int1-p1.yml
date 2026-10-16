@@ -4,6 +4,9 @@ on:
     paths:
       - 'tests/px_int1_fixture.py'
       - 'tests/test-pxd-exec-s3-int1-p1.py'
+      - 'tests/test-pxd-exec-s3-int1-a.py'
+      - 'bin/px-agent'
+      - 'bin/px_int1_fake_guard.py'
       - '.github/workflows/px-exec-s3-int1-p1.yml'
   workflow_dispatch:
 
@@ -25,7 +28,10 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s1-isolation.py --smoke
       - name: Compile fixture code without PX execution
         run: |
-          python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py
+          python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py tests/test-pxd-exec-s3-int1-a.py bin/px_int1_fake_guard.py bin/px-agent
       - name: INT1-P1 disposable SQLite canary, safe setup and refusal tests
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-p1.py
+      - name: INT1-A actual agent default-off synthetic preflight tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-a.py
