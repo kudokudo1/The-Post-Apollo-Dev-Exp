@@ -79,15 +79,25 @@ class FakeHospital:
             self.generation += 1
             self.active = False
             self.paused = True
-            self.audit("isolation.authority.revoked")
+            # Security-critical interruption must not depend on whether
+            # the audit sink is still writable at the moment of revocation.
+            audit_failed = not self.audit_enabled
+            if self.audit_enabled:
+                self.audit("isolation.authority.revoked")
+            stop_failed = False
             for broker in tuple(self.active_brokers):
                 try:
                     broker.close()
                 except S3Refusal:
-                    self.state = "FAILED"
-                    self.audit("isolation.tool.reap_failed", "synthetic-stop-failed")
-                    raise
-                self.audit("isolation.tool.interrupted", "authority-revoked")
+                    stop_failed = True
+                    if self.audit_enabled:
+                        self.audit("isolation.tool.reap_failed", "synthetic-stop-failed")
+                else:
+                    if self.audit_enabled:
+                        self.audit("isolation.tool.interrupted", "authority-revoked")
+            if audit_failed or stop_failed:
+                self.state = "FAILED"
+                raise S3Refusal("S3: revocation not fully auditable or reaped")
 
 
 @dataclass(frozen=True)
