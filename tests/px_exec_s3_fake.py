@@ -202,10 +202,20 @@ class IsolatedBroker:
                 if (os.readlink("/proc/%d/ns/%s" % (self.child_pid, ns))
                         == os.readlink("/proc/self/ns/%s" % ns)):
                     raise S3Refusal("S3: broker did not enter isolated " + ns)
-            if not Path("/proc/%d/root/patient/fixture.txt" % self.child_pid).is_file():
-                raise S3Refusal("S3: synthetic patient not mounted")
-            if Path("/proc/%d/root/private" % self.child_pid).exists():
-                raise S3Refusal("S3: private fixture exposed")
+            # /proc/<pid>/root may be inaccessible across user namespaces.
+            # Host /proc/<pid>/mountinfo is kernel-generated (not broker JSON).
+            mountinfo = Path("/proc/%d/mountinfo" % self.child_pid).read_text()
+            mounts = {}
+            for line in mountinfo.splitlines():
+                fields = line.split(" - ", 1)[0].split()
+                if len(fields) > 5:
+                    mounts[fields[4]] = fields[5].split(",")
+            if "/patient" not in mounts or "ro" not in mounts["/patient"]:
+                raise S3Refusal("S3: read-only patient mount not verified")
+            if "/scratch" not in mounts or "rw" not in mounts["/scratch"]:
+                raise S3Refusal("S3: writable scratch mount not verified")
+            if "/private" in mounts:
+                raise S3Refusal("S3: fake private mount exposed")
             hello = read_line_ready(self.process.stdout)
             if hello != {"kind": "HELLO"} or self.process.poll() is not None:
                 raise S3Refusal("S3: broker not ready")
