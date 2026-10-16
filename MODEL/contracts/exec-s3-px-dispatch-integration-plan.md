@@ -110,6 +110,87 @@ No default end-user CLI behavior may be changed on this first slice. If a user
 selects a real provider, its current route still has only COMMAND_GUARD safety
 and must not claim S3 certification; promotion to a secured provider is separate.
 
+
+## 2A // INT1-P1 // Disposable Hospital environment confinement
+
+> REQUIRED BEFORE INT1 PLAN ACCEPTANCE AND BEFORE ANY IMPLEMENTATION TEST
+> This is a plan requirement, not a claim that an INT1 test or runtime change has occurred.
+
+**Verified source mechanism:** `bin/px-hospital-store` chooses
+`PX_HOSPITAL_DB` first, if present; otherwise it uses
+`PX_HOSPITAL_DATA_DIR/hospital.db`, then its normal XDG/HOME location.
+`connect()` opens that selected SQLite database, creates required
+directories and permits subsequent schema migration. Therefore merely
+setting `PX_HOSPITAL_DATA_DIR` cannot isolate tests if a parent process
+passes an inherited `PX_HOSPITAL_DB` pointing outside the fixture root.
+
+**INT1-P1 implementation contract:**
+
+1. **Before ANY subprocess, including fixture setup:** Create a fresh,
+   absolute, securely owned (0700) disposable test root. Build a minimal
+   **allowlisted subprocess environment from an empty mapping**, NOT
+   `os.environ.copy()`. Provide only essential trusted runtime values
+   and generated synthetic test paths. Do not inherit model/API credentials,
+   agent sockets, `PYTHONPATH`, `PYTHONHOME`, arbitrary `PX_*` or
+   `XDG_*` overrides, or the caller's `PX_HOSPITAL_DB`. Every
+   `subprocess.Popen`/`subprocess.run`, fixture setup helper and wrapper
+   invoking PX, Hospital, SQLite, the fake provider, Git or Bubblewrap must
+   receive the verified environment explicitly. A test cannot invoke
+   `px hospital init` and only then attempt to verify confinement.
+2. **Force destinations beneath this root:** Explicitly set **both**
+   `PX_HOSPITAL_DB` to `<root>/hospital/data/hospital.db` and
+   `PX_HOSPITAL_DATA_DIR` to `<root>/hospital/data`, then set
+   `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
+   `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `TMPDIR`,
+   `PX_AGENT_LOCK_DIR`, `PX_AGENT_AUTHORITY_DIR` and
+   `PX_AGENT_PROVIDER_CONFIG` to validated files/directories inside
+   `<root>`. Isolate every scratch, cache, authority shim, socket, log,
+   artifact, token-fixture and Bed path there as well. Use a fake-only
+   provider registry; no real provider executable, login or host service.
+   There is NO fallback to normal user paths.
+3. **Verify containment before any open or migration:** All paths must
+   be absolute, canonical and under the trusted root. Reject `..`
+   traversal, symlink files/directories, redirected parents, mismatched
+   owners/permissions, outside-root resolved targets and swapped paths.
+   Independently validate the effective child environment, the DB
+   location and all output locations **before** the first PX/Hospital
+   subprocess or SQLite `connect()`. Path `resolve()` checks alone
+   do NOT prevent time-of-check/time-of-use races: use race-resistant
+   directory/descriptor-relative opens or demonstrate an equivalent
+   enforcement at the actual storage-open boundary. If containment
+   cannot be maintained, refuse before any DB opening/migration/write.
+4. **Fail closed and contain cleanup:** Missing or inconsistent
+   destinations, symlink substitution, an inherited override, or an
+   unavailable trusted audit sink must not start a Hospital/provider
+   subprocess. Only delete disposable paths whose containment has
+   been verified. Never test against installed Fedora PX or live Hospital.
+
+**Mandatory hostile-environment/canary regressions for INT1-A:**
+Prepare a distinct *outside-root* SQLite canary and give the invoking
+parent an intentionally hostile `PX_HOSPITAL_DB` pointing to it.
+Run the intended real PX test harness with that contaminated parent
+environment. The harness must either override/discard the hostile
+variable and operate exclusively inside its verified disposable root,
+or refuse before any storage open. Assert the canary's original
+byte-for-byte contents, checksum, schema/user version and modification
+timestamp remain unchanged; assert no new `-wal`, `-shm` or journal
+sidecar and no outside-root directory/file mutations. This must hold
+even when the test fails early.
+
+Repeat negative cases with a database symlink, a symlinked parent
+directory, deliberately changed/redirected destinations, and hostile
+HOME/XDG/TMPDIR/lock/authority/provider-registry paths; assert
+explicit verified containment or pre-open refusal, never silent use
+of caller paths. Include a positive test demonstrating valid
+disposable paths with **both** DB overrides set correctly.
+Any attempted outside-root SQLite migration/open is a test FAIL,
+not an acceptable probe.
+
+**Gate:** INT1-P1 confinement regression must pass **before**
+executing INT1-A/B/C live-call-path fixtures. This requirement does
+not authorize real PX integration, a schema migration against live
+data, Fedora changes, real Codex/Hermes authentication or any merge.
+
 ## 3 // Atomicity / revocation risks that must be resolved by source review
 
 | Risk | Current evidence | Required demonstration |
@@ -125,6 +206,16 @@ and must not claim S3 certification; promotion to a secured provider is separate
 | OS compatibility | Ubuntu 24.04 namespace failure | Preserve no-fallback refusal; no claim of Fedora compatibility without later separately authorized observation |
 
 ## 4 // Required acceptance matrix for a proposed INT1 implementation PR
+
+- **INT1-P1 FIRST:** Fail closed if a minimal allowlisted environment
+  cannot pin `PX_HOSPITAL_DB`, `PX_HOSPITAL_DATA_DIR`, HOME, XDG,
+  TMPDIR, lock, authority, registry and all output paths under a
+  verified disposable root before the **first** PX/Hospital subprocess.
+  Exercise hostile inherited `PX_HOSPITAL_DB` with an outside-root
+  SQLite canary; compare pre/post DB bytes/checksum/schema/mtime,
+  assert no WAL/SHM/journal sidecars or outside-root writes; inject
+  symlink/path-swap and hostile HOME/XDG/TMP/registry values.
+
 
 - **Baseline regressions:** existing PX agent/runtime, P1 provider boundary,
   S2 continuity, S1 and S2 fake credential isolation, S3 fake broker tests;
@@ -157,7 +248,10 @@ and must not claim S3 certification; promotion to a secured provider is separate
 
 ## 5 // Suggested delivery sequence and checkpoints
 
-**INT1-A // Contract-to-runtime seam:** a draft implementation PR with a
+**INT1-A // Contract-to-runtime seam:** BEGIN with the INT1-P1
+fixture-confinement prerequisite and its hostile inherited-DB canary
+regressions; do not run the actual PX fixture before they pass. Then
+prepare a draft implementation PR with a
 default-off fake-profile switch, reusable fake broker adapter, and source tests
 proving no default behavior change. Nurse 2 review checkpoint.
 
@@ -180,7 +274,8 @@ mediation is impossible, mark provider UNSUPPORTED and fail closed.
 ## 6 // Operator decision requested
 
 Authorize **only** INT1-A/B/C fake-only PX runtime integration source
-changes and tests in a new GitHub development branch and draft PR, with
+changes and tests in a new GitHub development branch and draft PR,
+with INT1-P1 containment proven BEFORE any PX/Hospital subprocess, and
 strictly disposable Hospital fixtures and no real provider or local host
 changes. Require Nurse 2 exact-commit review and Head Nurse reconciliation.
 This permission would not authorize merge, real provider login, live Hospital
