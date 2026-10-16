@@ -16,6 +16,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Install fixed root-owned Bubblewrap (disposable runner only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Control accepted S1 OS sandbox smoke
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s1-isolation.py --smoke
       - name: Compile fixture code without PX execution
         run: |
           python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py
