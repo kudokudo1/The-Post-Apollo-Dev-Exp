@@ -252,12 +252,92 @@ class INT1P1ConfinementTests(unittest.TestCase):
                         fixture.close()
                 self.assertEqual(len(substitutions), 1)
                 self.assertEqual((substitutions[0] / "hospital.db").read_bytes(), before)
-                self.assertFalse((detached / "hospital/data").exists(),
-                                 "pinned recursion should prune only the original fixture")
+                self.assertTrue((detached / "hospital/data").is_dir(),
+                                "C2 deliberately retains original empty directory")
+                self.assertFalse((detached / "hospital/data/hospital.db").exists(),
+                                 "pinned pruning still removes files from original inode")
             self.assertEqual((substitutions[0] / "hospital.db").read_bytes(), before)
             substitutions[0].rename(foreign)
             substitutions[0].parent.rmdir()
             self.assertEqual(canary.read_bytes(), before)
+
+    def test_c2_descendant_empty_foreign_replaced_after_identity_check_survives(self):
+        """Inject exactly AFTER the second descendant stat, where rmdir used to run."""
+        with tempfile.TemporaryDirectory(prefix="int1-c2-descendant-") as outside:
+            foreign = Path(outside) / "foreign-empty"
+            foreign.mkdir(mode=0o700)
+            with DisposablePX(ROOT) as fixture:
+                original_stat = os.stat
+                observed = []
+                counts = []
+                detached = Path(outside) / "original-data"
+                def substitute_after_verified_stat(path, *args, **kwargs):
+                    value = original_stat(path, *args, **kwargs)
+                    if path == "data" and "dir_fd" in kwargs:
+                        counts.append(1)
+                        if len(counts) == 2:
+                            parent_fd = kwargs["dir_fd"]
+                            os.rename("data", detached, src_dir_fd=parent_fd)
+                            os.rename(foreign, "data", dst_dir_fd=parent_fd)
+                            observed.append(parent_fd)
+                    return value
+                with patch("px_int1_fixture.os.stat",
+                           side_effect=substitute_after_verified_stat):
+                    with patch("px_int1_fixture.os.rmdir",
+                               side_effect=AssertionError("unsafe descendant rmdir attempted")):
+                        fixture.close()
+                self.assertEqual(len(observed), 1)
+                # The replacement is an EMPTY foreign directory: the legacy
+                # final os.rmdir(name) would have silently deleted it.
+                self.assertEqual(list(detached.iterdir()), [])
+                # The parent was renamed to the quarantine by close();
+                # locate only within this test's disposable /tmp quarantine.
+                self.assertFalse(foreign.exists(), "foreign moved into quarantine, not removed")
+                self.assertTrue(detached.is_dir())
+                self.assertEqual(fixture.root.exists(), False)
+
+    def test_c2_empty_foreign_root_substituted_after_identity_check_survives(self):
+        """An empty substitute is not protected by 'rmdir only when empty'."""
+        with tempfile.TemporaryDirectory(prefix="int1-c2-root-") as outside:
+            foreign = Path(outside) / "foreign-empty"
+            foreign.mkdir(mode=0o700)
+            old = Path(outside) / "original-root"
+            with DisposablePX(ROOT) as fixture:
+                actual_stat = os.stat
+                location = []
+                def substitute_after_root_stat(name, *args, **kwargs):
+                    value = actual_stat(name, *args, **kwargs)
+                    if name == "fixture" and "dir_fd" in kwargs and not location:
+                        qfd = kwargs["dir_fd"]
+                        qpath = Path(os.readlink("/proc/self/fd/" + str(qfd)))
+                        os.rename("fixture", old, src_dir_fd=qfd)
+                        os.rename(foreign, "fixture", dst_dir_fd=qfd)
+                        location.append(qpath / "fixture")
+                    return value
+                with patch("px_int1_fixture.os.stat",
+                           side_effect=substitute_after_root_stat):
+                    with patch("px_int1_fixture.os.rmdir",
+                               side_effect=AssertionError("unsafe final rmdir attempted")):
+                        fixture.close()
+                self.assertEqual(len(location), 1)
+                self.assertTrue(location[0].is_dir(),
+                                "empty foreign root must survive after check")
+                self.assertEqual(list(location[0].iterdir()), [])
+                self.assertTrue(old.is_dir(), "original pinned root remains")
+                location[0].rename(foreign)
+                self.assertTrue(foreign.is_dir())
+                # Quarantine parent is also deliberately retained, not rmdir'ed.
+
+    def test_c2_normal_cleanup_never_removes_unverified_directory_names(self):
+        """Destructive directory-name operations are absent, not just prechecked."""
+        with DisposablePX(ROOT) as fixture:
+            test_root = fixture.root
+            with patch("px_int1_fixture.os.rmdir",
+                       side_effect=AssertionError("unsafe directory rmdir")):
+                fixture.close()
+            self.assertFalse(test_root.exists())
+            # This is a documented fail-closed tradeoff: the empty
+            # quarantine tree remains for disposal with the CI runner.
 
     def test_bad_registry_and_unsafe_directory_permissions_refused(self):
         with DisposablePX(ROOT) as fixture:
