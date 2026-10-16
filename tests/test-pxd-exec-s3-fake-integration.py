@@ -191,7 +191,7 @@ class S3PolicyTests(unittest.TestCase):
                     return s1
                 return original(name)
             with mock.patch.object(s3, "accepted", side_effect=replaced):
-                with self.assertRaisesRegex(s1.IsolationUnavailable, "inaccessible"):
+                with self.assertRaisesRegex(s3.S3Refusal, "prerequisite refused"):
                     self.sup.run()
         self.assertFalse(self.hospital.outgoing)
         self.assertFalse(ControlledFakeBroker.instances)
@@ -219,7 +219,7 @@ class S3PolicyTests(unittest.TestCase):
 
     def test_fake_auth_bad_permissions_refused_before_message(self):
         (self.root / "private" / s2.FAKE_AUTH_FILENAME).chmod(0o644)
-        with self.assertRaises(s2.BoundaryRefusal):
+        with self.assertRaisesRegex(s3.S3Refusal, "prerequisite refused"):
             self.sup.run()
         self.assertEqual(self.service.calls, 0)
         self.assertEqual(self.hospital.outgoing, [])
