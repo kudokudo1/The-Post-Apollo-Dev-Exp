@@ -1,0 +1,34 @@
+name: PX / EXEC-S3 FAKE-ONLY INTEGRATION
+on:
+  pull_request:
+    paths:
+      - 'tests/px_exec_s3_fake.py'
+      - 'tests/test-pxd-exec-s3-fake-integration.py'
+      - 'tests/test-pxd-exec-s1-isolation.py'
+      - 'tests/test-pxd-exec-s2-credential-boundary.py'
+      - 'docs/hospital/EXEC_S3_FAKE_ONLY_INTEGRATION.md'
+      - '.github/workflows/px-exec-s3-fake-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fixed system Bubblewrap in disposable CI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Static Python compile
+        run: |
+          python3 -B -m py_compile tests/px_exec_s3_fake.py tests/test-pxd-exec-s3-fake-integration.py
+      - name: S3 fake-only policy negatives
+        run: |
+          python3 -B tests/test-pxd-exec-s3-fake-integration.py --unit
+      - name: S3 real OS sandbox fake-only start / resume / revoke smoke
+        run: |
+          python3 -B tests/test-pxd-exec-s3-fake-integration.py --smoke
