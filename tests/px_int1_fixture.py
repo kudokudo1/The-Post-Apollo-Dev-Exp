@@ -261,13 +261,14 @@ class DisposablePX:
             raise FixtureRefusal("INT1-P1: untrusted fixed Bubblewrap")
         return str(path)
 
-    def hospital(self, *args, after_anchor=None):
+    def hospital(self, *args, after_anchor=None, input=None):
         return self.run("/bin/bash", "/source/bin/px", "hospital",
-                        *args, "--json", after_anchor=after_anchor)
+                        *args, "--json", after_anchor=after_anchor, input=input)
 
-    def agent(self, *args):
+    def agent(self, *args, input=None):
         # Only the same OS-guarded fixture launcher may invoke px agent.
-        return self.run("/bin/bash", "/source/bin/px", "agent", *args, "--json")
+        return self.run("/bin/bash", "/source/bin/px", "agent", *args, "--json",
+                        input=input)
 
     def close(self):
         """Prune only the original disposable inode by anchored descriptors.
