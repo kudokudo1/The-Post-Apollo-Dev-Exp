@@ -126,7 +126,9 @@ class INT1P1ConfinementTests(unittest.TestCase):
                 "import json,os,pathlib,socket;"
                 "p=pathlib.Path;"
                 "v={'host_hidden':not p('/home/runner').exists() and not p('/etc/passwd').exists(),"
-                "'repo_readonly':True,'fixture_write':False,'no_host_network':False};"
+                "'repo_metadata_hidden':not p('/source/.git').exists(),"
+                "'provider_paths_hidden':not p('/source/config').exists() and not p('/source/bin/px-agent').exists(),"
+                "'fixture_write':False};"
                 "v['fixture_write']=(p('/fixture/scratch/probe.txt').write_text('ok')==2);"
                 "print(json.dumps(v))"
             )
@@ -134,6 +136,8 @@ class INT1P1ConfinementTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             assertions = json.loads(result.stdout)
             self.assertTrue(assertions["host_hidden"])
+            self.assertTrue(assertions["repo_metadata_hidden"])
+            self.assertTrue(assertions["provider_paths_hidden"])
             self.assertTrue(assertions["fixture_write"])
             self.assertEqual((fixture.root / "scratch/probe.txt").read_text(), "ok")
             self.assertFalse(Path(host_marker).exists())
