@@ -178,7 +178,7 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
 
     def test_b1_i1_matching_whitespace_doctors_refuse_without_any_acceptance(self):
         """Invalid Doctor IDs from genuine synthetic Hospital store must refuse."""
-        for invalid in ("   ", " \\t "):
+        for invalid in ("   ", " \t "):
             with self.subTest(invalid=repr(invalid)):
                 room = self.ok(self.fx.hospital(
                     "room-put", ROOM,
