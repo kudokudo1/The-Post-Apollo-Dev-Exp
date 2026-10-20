@@ -107,6 +107,44 @@ class INT1AActualAgentTests(unittest.TestCase):
             self.assertEqual(len(result[field]), 1, field)
         self.assert_no_turn_mutation(original)
 
+    def test_i1_mismatched_session_doctor_refused_without_turn_mutation(self):
+        """The unmodified Hospital store permits a foreign session Doctor."""
+        self.ok(self.fx.hospital(
+            "session-put", "int1-fake-session",
+            "--room-id", "S3-INT1",
+            "--doctor-id", "S3-FOREIGN-DOCTOR",
+            "--provider-id", "int1-fake", "--status", "IDLE",
+        ))
+        room = self.ok(self.fx.hospital("room", "S3-INT1"))
+        original = self.before()
+        self.assertEqual(room["doctorId"], "S3-FAKE-DOCTOR")
+        self.assertEqual(original[2]["doctorId"], "S3-FOREIGN-DOCTOR")
+        attempt = self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "REFUSE FOREIGN DOCTOR",
+        )
+        self.assertNotEqual(attempt.returncode, 0)
+        self.assertIn("INT1-A REFUSED // DOCTOR_ROOM_MISMATCH", attempt.stderr)
+        self.assertNotIn("PREFLIGHT_ONLY", attempt.stdout)
+        self.assert_no_turn_mutation(original)
+
+    def test_i1_missing_session_doctor_refused_without_turn_mutation(self):
+        """Empty identities cannot impersonate an unassigned Room."""
+        self.ok(self.fx.hospital(
+            "session-put", "int1-fake-session",
+            "--room-id", "S3-INT1", "--doctor-id", "",
+            "--provider-id", "int1-fake", "--status", "IDLE",
+        ))
+        original = self.before()
+        self.assertEqual(original[2]["doctorId"], "")
+        attempt = self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "REFUSE UNKNOWN DOCTOR",
+        )
+        self.assertNotEqual(attempt.returncode, 0)
+        self.assertIn("INT1-A REFUSED // DOCTOR_ROOM_IDENTITY_UNRESOLVED", attempt.stderr)
+        self.assert_no_turn_mutation(original)
+
     def test_fake_provider_requires_explicit_preflight_flag(self):
         original = self.before()
         result = self.fx.agent("turn", "int1-fake-session", "--prompt", "NO LAUNCH")
