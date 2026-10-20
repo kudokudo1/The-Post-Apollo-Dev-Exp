@@ -55,6 +55,17 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         self.assignment_id=assignment["id"]
         self.ok(self.fx.hospital("assignment-activate",str(self.assignment_id)))
         self.bootstrap()
+        # INT1-B3: a detached B1 accept is now conditional on the complete
+        # B2 manifest. The baseline B1 transaction tests use the accepted
+        # global, disposable B2 installation with generation 2.
+        hooks=self.ok(self.fx.run(
+            "/usr/bin/python3", "-B", "/source/bin/px_int1_fake_epoch.py",
+            "install", "--room-id", ROOM, "--session-id", SESSION,
+            timeout=30,
+        ))
+        self.assertEqual(hooks["hookCount"],12)
+        self.assertEqual(hooks["generation"],2)
+        self.generation=hooks["generation"]
 
     def ok(self,result):
         self.assertEqual(result.returncode,0,result.stderr)
@@ -76,8 +87,10 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
             "snapshot","--room-id",ROOM,"--session-id",SESSION
         ))
 
-    def accept(self,turn="turn-1",generation=1,body="synthetic only",
+    def accept(self,turn="turn-1",generation=None,body="synthetic only",
                context_hash=CONTEXT_HASH,fail_after=""):
+        if generation is None:
+            generation=self.generation
         args=[
             "accept","--room-id",ROOM,"--session-id",SESSION,
             "--turn-id",turn,"--generation",str(generation),
@@ -94,7 +107,7 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         )
 
     def test_atomic_three_rows_and_cross_process_idempotent_retry(self):
-        self.assertEqual(self.snapshot()["generation"],1)
+        self.assertEqual(self.snapshot()["generation"],2)
         before=self.state()
         result=self.ok(self.accept())
         self.assertFalse(result["replayed"])
@@ -245,6 +258,99 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         self.assertNotEqual(refused.returncode,0)
         self.assertIn("unsupported synthetic-only provider",refused.stderr)
         self.assertEqual(self.state(),before)
+
+    def tamper_hooks(self, sql):
+        # Independent OS process, confined to the same disposable fixture DB.
+        script = (
+            "import json,sqlite3; "
+            "db=sqlite3.connect("
+            "'file:/fixture/hospital/data/hospital.db?mode=rw',uri=True);"
+            "db.executescript(" + repr(sql) + ");"
+            "print(json.dumps(True))"
+        )
+        self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", script))
+
+    def test_b3_missing_entire_trigger_manifest_refuses_without_any_writes(self):
+        before=self.state()
+        self.assertEqual(self.accepted_turn_count(),0)
+        self.tamper_hooks("""
+        DROP TRIGGER int1_b2_rooms_insert_v1;
+        DROP TRIGGER int1_b2_rooms_update_v1;
+        DROP TRIGGER int1_b2_rooms_delete_v1;
+        DROP TRIGGER int1_b2_sessions_insert_v1;
+        DROP TRIGGER int1_b2_sessions_update_v1;
+        DROP TRIGGER int1_b2_sessions_delete_v1;
+        DROP TRIGGER int1_b2_assignments_insert_v1;
+        DROP TRIGGER int1_b2_assignments_update_v1;
+        DROP TRIGGER int1_b2_assignments_delete_v1;
+        DROP TRIGGER int1_b2_doctors_insert_v1;
+        DROP TRIGGER int1_b2_doctors_update_v1;
+        DROP TRIGGER int1_b2_doctors_delete_v1;
+        """)
+        refused=self.accept(turn="no-hooks")
+        self.assertNotEqual(refused.returncode,0)
+        self.assertIn("incomplete or unexpected hook set",refused.stderr)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.accepted_turn_count(),0)
+
+    def test_b3_missing_one_hook_refuses_new_and_idempotent_replay(self):
+        accepted=self.ok(self.accept(turn="already-accepted"))
+        self.assertFalse(accepted["replayed"])
+        before=self.state()
+        count=self.accepted_turn_count()
+        self.tamper_hooks("DROP TRIGGER int1_b2_rooms_update_v1;")
+        for turn in ("another-turn","already-accepted"):
+            with self.subTest(turn=turn):
+                refused=self.accept(turn=turn)
+                self.assertNotEqual(refused.returncode,0)
+                self.assertIn("incomplete or unexpected hook set",refused.stderr)
+                self.assertEqual(self.state(),before)
+                self.assertEqual(self.accepted_turn_count(),count)
+
+    def test_b3_modified_same_name_trigger_refuses_without_mutation(self):
+        before=self.state()
+        self.tamper_hooks("""
+        DROP TRIGGER int1_b2_rooms_update_v1;
+        CREATE TRIGGER int1_b2_rooms_update_v1
+        AFTER UPDATE ON rooms BEGIN SELECT 1; END;
+        """)
+        refused=self.accept(turn="tampered-definition")
+        self.assertNotEqual(refused.returncode,0)
+        self.assertIn("changed authority trigger definition",refused.stderr)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.accepted_turn_count(),0)
+
+    def test_b3_unexpected_extra_hook_refuses_without_mutation(self):
+        before=self.state()
+        self.tamper_hooks("""
+        CREATE TRIGGER int1_b2_surprise_extra
+        AFTER UPDATE ON rooms BEGIN SELECT 1; END;
+        """)
+        refused=self.accept(turn="extra-hook")
+        self.assertNotEqual(refused.returncode,0)
+        self.assertIn("incomplete or unexpected hook set",refused.stderr)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.accepted_turn_count(),0)
+
+    def test_b3_independent_hospital_change_and_restore_revokes_old_grant(self):
+        before=self.state()
+        original=self.snapshot()["generation"]
+        self.assertEqual(original,2)
+        for doctor in ("B1-OTHER-DOCTOR","B1-DOCTOR"):
+            self.ok(self.fx.hospital(
+                "room-put",ROOM,"--patient-id","B1-PATIENT",
+                "--team","B1-TEAM","--branch","b1-branch",
+                "--bed-path","/fixture/bed","--doctor-id",doctor,
+                "--provider-id","int1-fake",
+            ))
+        # B2 must invalidate the B1 grant, even though the Doctor returns.
+        self.assertEqual(self.ok(self.fx.hospital("room",ROOM))["doctorId"],
+                         "B1-DOCTOR")
+        refused=self.accept(turn="stale-after-restore",generation=original)
+        self.assertNotEqual(refused.returncode,0)
+        self.assertIn("stale or revoked authority",refused.stderr)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.accepted_turn_count(),0)
 
     def test_host_forged_env_cannot_open_sqlite_via_atomic_cli(self):
         # The source-owned guard executes before sqlite3.connect. This
