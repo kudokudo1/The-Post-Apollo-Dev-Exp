@@ -6,10 +6,12 @@ path. It must execute inside the accepted, disposable INT1-P1 mount namespace.
 Only the inert int1-fake provider is supported. An existing schema-v10
 synthetic Hospital DB is required; there is NO live DB migration.
 
-IMPORTANT: durable generation here covers ONLY operations through this CLI.
-Legacy Hospital Room/Assignment/session writes do not yet bump this generation.
-There is NO broker launch, dispatch barrier, cancellation or active-tool revoke.
-This is a preliminary storage checkpoint and MUST NOT be promoted as INT1-B.
+IMPORTANT: B1 accept requires all 12 exact source-owned B2 authority
+triggers to be present in the *same* BEGIN IMMEDIATE transaction as turn
+acceptance. Covered legacy Hospital mutations bump persistent synthetic epochs.
+This is still detached fake-only storage: it does not protect arbitrary
+same-UID SQLite tampering, HANDOFF/Chart changes, broker dispatch, active-tool
+revocation or the live Hospital. It MUST NOT be promoted as full INT1-B.
 """
 import argparse
 import hashlib
@@ -171,7 +173,14 @@ def accept(conn, *, room_id, session_id, turn_id, generation,
     digest = hashlib.sha256(request).hexdigest()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        # BEGIN IMMEDIATE serializes competing *independent* processes.
+        # B3: verify the EXACT 12 source-owned B2 triggers INSIDE the SAME
+        # SQLite write transaction that accepts or replays a turn. A missing,
+        # unexpected or modified authority hook fails closed before any
+        # message/event/turn mutation. Another writer cannot drop the hooks
+        # between this check and this transaction's commit.
+        # Local import avoids module import cycles: the epoch CLI reuses B1.
+        from px_int1_fake_epoch import verify_hooks
+        verify_hooks(conn)
         live = validate_live(conn, room_id, session_id)
         auth = authority_row(conn, room_id)
         if auth["revoked"] or auth["generation"] != generation:
