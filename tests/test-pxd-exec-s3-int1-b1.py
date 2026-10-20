@@ -176,6 +176,52 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         self.assertIn("active Room Assignment required",bad.stderr)
         self.assertEqual(self.state(),before)
 
+    def test_b1_i1_matching_whitespace_doctors_refuse_without_any_acceptance(self):
+        """Invalid Doctor IDs from genuine synthetic Hospital store must refuse."""
+        for invalid in ("   ", " \\t "):
+            with self.subTest(invalid=repr(invalid)):
+                room = self.ok(self.fx.hospital(
+                    "room-put", ROOM,
+                    "--patient-id", "B1-PATIENT", "--team", "B1-TEAM",
+                    "--branch", "b1-branch", "--bed-path", "/fixture/bed",
+                    "--doctor-id", invalid, "--provider-id", "int1-fake",
+                ))
+                session = self.ok(self.fx.hospital(
+                    "session-put", SESSION, "--room-id", ROOM,
+                    "--doctor-id", invalid, "--provider-id", "int1-fake",
+                    "--status", "IDLE",
+                ))
+                self.assertEqual(room["doctorId"], invalid)
+                self.assertEqual(session["doctorId"], invalid)
+                self.assertEqual(session["doctorId"], room["doctorId"],
+                                 "matching whitespace was permitted in persisted store")
+                before = self.state()
+                session_before = self.ok(self.fx.hospital("session", SESSION))
+                accepted_before = self.accepted_turn_count()
+                refused = self.accept(turn="whitespace-" + str(len(invalid)))
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("Doctor-to-Room mismatch", refused.stderr)
+                self.assertEqual(self.state(), before,
+                                 "whitespace Doctor must not persist message/events")
+                self.assertEqual(self.ok(self.fx.hospital("session", SESSION)),
+                                 session_before, "session runtime must stay unchanged")
+                self.assertEqual(self.accepted_turn_count(), accepted_before,
+                                 "invalid Doctor must not create accepted-turn row")
+                self.assertEqual(accepted_before, 0)
+
+    def accepted_turn_count(self):
+        # Probe the synthetic acceptance record in an independently spawned,
+        # read-only SQLite connection INSIDE the same confined mount namespace.
+        probe = self.fx.run(
+            "/usr/bin/python3", "-B", "-c",
+            "import json,sqlite3; "
+            "db=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',"
+            "uri=True); "
+            "print(json.dumps(db.execute("
+            "'SELECT COUNT(*) FROM int1_fake_accepted_turns').fetchone()[0]))"
+        )
+        return self.ok(probe)
+
     def test_two_distinct_subprocesses_same_turn_are_single_commit(self):
         def competing(_):
             return self.ok(self.accept(turn="contended"))
