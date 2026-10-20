@@ -92,11 +92,13 @@ def install(conn,room_id,session_id):
         for sql in EXPECTED.values():
             conn.execute(sql)
         verify_hooks(conn)
-        # Invalidate ALL prior detached B1 generation snapshots at install.
-        # This does not rearm a previously revoked Room.
+        # Hooks are DATABASE-WIDE. In the SAME installation transaction,
+        # invalidate pre-install B1 snapshots for EVERY bootstrapped,
+        # nonrevoked Room, not only the Room used to request installation.
+        # Revoked Rooms retain both their revoked bit and generation.
         conn.execute(
             "UPDATE int1_fake_authority SET generation=generation+1 "
-            "WHERE room_id=? AND revoked=0",(room_id,)
+            "WHERE revoked=0"
         )
         auth=authority_row(conn,room_id)
         conn.commit()
