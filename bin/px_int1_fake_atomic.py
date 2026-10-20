@@ -98,8 +98,13 @@ def validate_live(conn, room_id, session_id):
     ).fetchone()
     if row is None:
         raise RuntimeError("INT1-B1 REFUSED // session-to-Room link absent")
-    if (not row["session_doctor"] or not row["room_doctor"] or
-            row["session_doctor"] != row["room_doctor"]):
+    # Stage A I1 invariant: whitespace-only identity is unresolved, even
+    # when both stored Doctor identifiers contain identical whitespace.
+    # Nonblank identities must match EXACTLY; do not silently normalize.
+    session_doctor = str(row["session_doctor"] or "")
+    room_doctor = str(row["room_doctor"] or "")
+    if (not session_doctor.strip() or not room_doctor.strip() or
+            session_doctor != room_doctor):
         raise RuntimeError("INT1-B1 REFUSED // Doctor-to-Room mismatch")
     if (row["session_provider"] != FAKE_ID or row["room_provider"] != FAKE_ID):
         raise RuntimeError("INT1-B1 REFUSED // native or changed provider")
