@@ -187,6 +187,58 @@ class B4ContinuityMutationTests(unittest.TestCase):
         self.assertTrue(self.inspect(ROOMS[0])["revoked"])
         self.assert_stale(ROOMS[0],3,"stale-resolved")
 
+    def sql(self, statement, args=()):
+        # Independent disposable process: all SQL arguments live in the
+        # isolated test file; never a real Hospital DB or host path.
+        script=("import json,sqlite3;"
+                "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=rw',"
+                "uri=True);c.execute(" + repr(statement) + ","
+                + repr(tuple(args)) + ");c.commit();print(json.dumps(True))")
+        self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
+
+    def test_handoff_reclassification_update_revokes_prior_room_grant(self):
+        report=self.report(ROOMS[0],"DOCTOR_NOTE")
+        self.install()
+        self.sql("UPDATE room_reports SET report_kind='  handoff  ' "
+                 "WHERE report_id=?",(int(report["id"]),))
+        self.assertTrue(self.inspect(ROOMS[0])["revoked"])
+        self.assertFalse(self.inspect(ROOMS[1])["revoked"])
+        self.assert_stale(ROOMS[0],3,"handoff-reclassified")
+
+    def test_handoff_delete_revokes_prior_room_grant(self):
+        report=self.report(ROOMS[0],"HANDOFF")
+        self.install()
+        self.sql("DELETE FROM room_reports WHERE report_id=?",
+                 (int(report["id"]),))
+        self.assertTrue(self.inspect(ROOMS[0])["revoked"])
+        self.assert_stale(ROOMS[0],3,"handoff-deleted")
+
+    def test_room_chart_retarget_revokes_both_old_and_new_room(self):
+        chart=self.chart("ROOM",ROOMS[0])
+        self.install()
+        self.sql("UPDATE chart_entries SET room_id=? WHERE entry_id=?",
+                 (ROOMS[1],int(chart["id"])))
+        for room in ROOMS:
+            self.assertTrue(self.inspect(room)["revoked"])
+            self.assert_stale(room,3,"retarget-"+room)
+
+    def test_patient_chart_deletion_revokes_all_current_patient_rooms(self):
+        chart=self.chart("PATIENT",PATIENT)
+        self.install()
+        self.sql("DELETE FROM chart_entries WHERE entry_id=?",
+                 (int(chart["id"]),))
+        for room in ROOMS:
+            self.assertTrue(self.inspect(room)["revoked"])
+            self.assert_stale(room,3,"delete-patient-"+room)
+
+    def test_chart_timestamp_only_update_does_not_revoke(self):
+        chart=self.chart("ROOM",ROOMS[0])
+        self.install()
+        self.sql("UPDATE chart_entries SET updated_at='2099-01-01' "
+                 "WHERE entry_id=?",(int(chart["id"]),))
+        self.assertFalse(self.inspect(ROOMS[0])["revoked"])
+        self.assertEqual(self.inspect(ROOMS[0])["generation"],3)
+
     def test_rolled_back_handoff_insert_does_not_revoke(self):
         self.install()
         script=(
