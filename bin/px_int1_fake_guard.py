@@ -82,6 +82,27 @@ def require_profile(provider_id, record, registry):
         raise RuntimeError("INT1-A REFUSED // unsupported synthetic-only provider")
     return True
 
+def require_doctor_room_binding(session, room):
+    """I1: require the persisted session Doctor to own the persisted Room.
+
+    Session creation in the Hospital store currently allows a different
+    Doctor ID. Until a durable, separately verified succession grant exists,
+    an opt-in synthetic preflight must fail closed on every mismatch.
+    Check before retrieving the Room's HANDOFF and Chart context.
+    """
+    session_room = str(session.get("roomId") or "")
+    room_id = str(room.get("id") or "")
+    session_doctor = str(session.get("doctorId") or "")
+    room_doctor = str(room.get("doctorId") or "")
+    if not session_room or not room_id or session_room != room_id:
+        raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_LINK_MISMATCH")
+    if not session_doctor or not room_doctor:
+        raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_IDENTITY_UNRESOLVED")
+    if session_doctor != room_doctor:
+        raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_MISMATCH")
+    return True
+
+
 def preflight_result(context, *, provider_id, room_id, bed_path, resume):
     """No prompt/context body emitted: proofs are summaries, not model traffic."""
     if (str(context["session"]["providerId"]) != provider_id or
