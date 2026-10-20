@@ -232,6 +232,9 @@ class DisposablePX:
                 # Detached B2 authority-epoch trigger proof, also fixture only.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_epoch.py"),
                 "/source/bin/px_int1_fake_epoch.py",
+                # Detached B4 continuity epoch hooks, fixture-only.
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_continuity.py"),
+                "/source/bin/px_int1_fake_continuity.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
