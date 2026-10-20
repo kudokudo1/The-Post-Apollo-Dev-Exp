@@ -17,8 +17,9 @@ import json
 import re
 import sqlite3
 import sys
+from pathlib import Path
 
-from px_int1_fake_guard import require_fixture, FAKE_ID, PROFILE
+from px_int1_fake_guard import require_fixture, require_profile, FAKE_ID, PROFILE
 
 DATABASE_URI = "file:/fixture/hospital/data/hospital.db?mode=rw"
 TABLES = """
@@ -42,6 +43,14 @@ CREATE TABLE IF NOT EXISTS int1_fake_accepted_turns (
 def connect():
     # MUST run before sqlite3.connect, which otherwise can open the host DB.
     require_fixture()
+    # Do not accept a fake database identity with a command-bearing or
+    # unexpected provider registry. Exact inert profile only, as in Stage A.
+    try:
+        registry = json.loads(Path("/fixture/providers/fake.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("INT1-B1 REFUSED // unreadable synthetic provider registry") from exc
+    record = registry.get("providers", {}).get(FAKE_ID) if isinstance(registry, dict) and isinstance(registry.get("providers"), dict) else None
+    require_profile(FAKE_ID, record, registry)
     conn = sqlite3.connect(DATABASE_URI, uri=True, isolation_level=None, timeout=8)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
