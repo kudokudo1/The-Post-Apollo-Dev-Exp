@@ -226,6 +226,9 @@ class DisposablePX:
                 "/source/bin/hospital_target_preflight.py",
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_guard.py"),
                 "/source/bin/px_int1_fake_guard.py",
+                # INT1-B1 detached storage proof: never exposes host paths.
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_atomic.py"),
+                "/source/bin/px_int1_fake_atomic.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
