@@ -23,6 +23,14 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
     def setUp(self):
         self.fx=DisposablePX(REPO)
         self.addCleanup(self.fx.close)
+        self.registry=self.fx.root/"providers/fake.json"
+        self.registry.write_text(json.dumps({"version":1,"providers":{
+            "int1-fake":{"name":"INT1 FAKE",
+                         "executionProfile":"EXEC_S3_FAKE_ONLY",
+                         "dialect":"exec-s3-fake-only"}
+        }}))
+        self.registry.chmod(0o600)
+        self.assertTrue(self.fx.assert_safe_environment())
         self.ok(self.fx.hospital("init"))
         self.ok(self.fx.hospital(
             "room-bind",ROOM,"--repository","kudokudo1/taskbars-post-apollo",
@@ -178,6 +186,19 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         messages,events=self.state()
         self.assertEqual(len(messages),1)
         self.assertEqual(len(events),2)
+
+    def test_command_bearing_registry_fails_before_storage_open(self):
+        malicious=json.loads(self.registry.read_text())
+        malicious["providers"]["int1-fake"]["command"]="/usr/bin/true"
+        self.registry.write_text(json.dumps(malicious))
+        self.registry.chmod(0o600)
+        before=self.state()
+        refused=self.command(
+            "snapshot","--room-id",ROOM,"--session-id",SESSION
+        )
+        self.assertNotEqual(refused.returncode,0)
+        self.assertIn("unsupported synthetic-only provider",refused.stderr)
+        self.assertEqual(self.state(),before)
 
     def test_host_forged_env_cannot_open_sqlite_via_atomic_cli(self):
         # The source-owned guard executes before sqlite3.connect. This
