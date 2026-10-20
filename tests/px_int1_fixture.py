@@ -229,6 +229,9 @@ class DisposablePX:
                 # INT1-B1 detached storage proof: never exposes host paths.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_atomic.py"),
                 "/source/bin/px_int1_fake_atomic.py",
+                # Detached B2 authority-epoch trigger proof, also fixture only.
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_epoch.py"),
+                "/source/bin/px_int1_fake_epoch.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
