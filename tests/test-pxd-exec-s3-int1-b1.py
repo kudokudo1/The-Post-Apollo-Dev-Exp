@@ -94,7 +94,7 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         after=self.state()
         self.assertEqual(len(after[0])-len(before[0]),1)
         self.assertEqual(len(after[1])-len(before[1]),2)
-        self.assertEqual({x["eventType"] for x in after[1]},{"turn.started","turn.context"})
+        self.assertEqual({x["type"] for x in after[1]},{"turn.started","turn.context"})
         repeat=self.ok(self.accept())
         self.assertTrue(repeat["replayed"])
         self.assertEqual(repeat["messageId"],result["messageId"])
