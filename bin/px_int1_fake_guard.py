@@ -94,9 +94,9 @@ def require_doctor_room_binding(session, room):
     room_id = str(room.get("id") or "")
     session_doctor = str(session.get("doctorId") or "")
     room_doctor = str(room.get("doctorId") or "")
-    if not session_room or not room_id or session_room != room_id:
+    if not session_room.strip() or not room_id.strip() or session_room != room_id:
         raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_LINK_MISMATCH")
-    if not session_doctor or not room_doctor:
+    if not session_doctor.strip() or not room_doctor.strip():
         raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_IDENTITY_UNRESOLVED")
     if session_doctor != room_doctor:
         raise RuntimeError("INT1-A REFUSED // DOCTOR_ROOM_MISMATCH")
