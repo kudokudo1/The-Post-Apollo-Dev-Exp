@@ -6,12 +6,12 @@ path. It must execute inside the accepted, disposable INT1-P1 mount namespace.
 Only the inert int1-fake provider is supported. An existing schema-v10
 synthetic Hospital DB is required; there is NO live DB migration.
 
-IMPORTANT: B1 accept requires all 12 exact source-owned B2 authority
-triggers to be present in the *same* BEGIN IMMEDIATE transaction as turn
-acceptance. Covered legacy Hospital mutations bump persistent synthetic epochs.
-This is still detached fake-only storage: it does not protect arbitrary
-same-UID SQLite tampering, HANDOFF/Chart changes, broker dispatch, active-tool
-revocation or the live Hospital. It MUST NOT be promoted as full INT1-B.
+IMPORTANT: B1 accept requires the exact B2 (12) and B4 (6) source-owned
+triggers, and a matching SHA-256 digest recomputed from synthetic Room HANDOFF
+and ACTIVE operator Chart rows INSIDE the same BEGIN IMMEDIATE transaction.
+This is still detached fake-only storage. The underlying author-role fields
+and SQLite files are not authenticated against same-UID tampering; this is
+not a production context protocol, executable broker grant or full INT1-B.
 """
 import argparse
 import hashlib
@@ -158,6 +158,71 @@ def bootstrap(conn, room_id, session_id):
         raise
     return snapshot(conn, room_id, session_id)
 
+# B5/B6 // Source-derived, deterministic synthetic continuity snapshot.
+# Only substantive continuity fields captured by the source-owned B4 hooks
+# are included. No LIMIT/ranking truncation, cross-Room joins or caller text.
+# Scope classifications match B4 trigger semantics exactly.
+def continuity_document(conn, room_id, session_id):
+    from px_int1_fake_continuity import REPORT_COLUMNS, CHART_COLUMNS
+    parent = conn.execute(
+        "SELECT patient_id FROM rooms WHERE room_id=?", (room_id,)
+    ).fetchone()
+    if parent is None:
+        raise RuntimeError("INT1-B6 REFUSED // missing Room for continuity")
+    patient_id = parent["patient_id"]
+    reports = conn.execute(
+        "SELECT report_id, " + ", ".join(REPORT_COLUMNS)
+        + " FROM room_reports WHERE room_id=? "
+          "AND UPPER(TRIM(report_kind))='HANDOFF' ORDER BY report_id ASC",
+        (room_id,)
+    ).fetchall()
+    charts = conn.execute(
+        "SELECT entry_id, " + ", ".join(CHART_COLUMNS)
+        + " FROM chart_entries WHERE "
+          "UPPER(TRIM(status))='ACTIVE' "
+          "AND LOWER(TRIM(author_role))='operator' AND "
+          "((scope_type='ROOM' AND room_id=?) OR "
+          "(scope_type='PATIENT' AND patient_id=?)) "
+          "ORDER BY entry_id ASC",
+        (room_id, patient_id)
+    ).fetchall()
+    return {
+        "protocol": "INT1-B6-SYNTHETIC-CONTEXT-v1",
+        "roomId": room_id, "sessionId": session_id,
+        "patientId": patient_id,
+        "handoffs": [dict(row) for row in reports],
+        "approvedCharts": [dict(row) for row in charts],
+    }
+
+def continuity_hash(conn, room_id, session_id):
+    document = continuity_document(conn, room_id, session_id)
+    canonical = json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest(), document
+
+def context_digest(conn, room_id, session_id):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        from px_int1_fake_epoch import verify_hooks
+        from px_int1_fake_continuity import verify_b4
+        verify_hooks(conn)
+        verify_b4(conn)
+        validate_live(conn, room_id, session_id)
+        auth = authority_row(conn, room_id)
+        if auth["revoked"]:
+            raise RuntimeError("INT1-B6 REFUSED // authority revoked")
+        digest, document = continuity_hash(conn, room_id, session_id)
+        conn.commit()
+        return {"roomId": room_id, "sessionId": session_id,
+                "generation": auth["generation"],
+                "contextHash": digest,
+                "handoffIds": [str(r["report_id"]) for r in document["handoffs"]],
+                "chartIds": [str(r["entry_id"]) for r in document["approvedCharts"]]}
+    except BaseException:
+        conn.rollback()
+        raise
+
 def accept(conn, *, room_id, session_id, turn_id, generation,
            context_hash, body, fail_after=""):
     require_id(turn_id, "turn ID")
@@ -180,11 +245,16 @@ def accept(conn, *, room_id, session_id, turn_id, generation,
         # between this check and this transaction's commit.
         # Local import avoids module import cycles: the epoch CLI reuses B1.
         from px_int1_fake_epoch import verify_hooks
+        from px_int1_fake_continuity import verify_b4
         verify_hooks(conn)
+        verify_b4(conn)
         live = validate_live(conn, room_id, session_id)
         auth = authority_row(conn, room_id)
         if auth["revoked"] or auth["generation"] != generation:
             raise RuntimeError("INT1-B1 REFUSED // stale or revoked authority")
+        actual_hash, _ = continuity_hash(conn, room_id, session_id)
+        if context_hash != actual_hash:
+            raise RuntimeError("INT1-B6 REFUSED // stale or mismatched continuity digest")
         old = conn.execute(
             "SELECT * FROM int1_fake_accepted_turns WHERE turn_id=?", (turn_id,)
         ).fetchone()
@@ -267,10 +337,10 @@ def revoke(conn, room_id, reason):
 def main():
     parser=argparse.ArgumentParser(description="INT1-B1 disposable atomic store proof")
     sub=parser.add_subparsers(dest="command",required=True)
-    for name in ("bootstrap","snapshot","revoke","accept"):
+    for name in ("bootstrap","snapshot","revoke","accept","context-digest"):
         p=sub.add_parser(name)
         p.add_argument("--room-id",required=True)
-        if name in ("bootstrap","snapshot","accept"):
+        if name in ("bootstrap","snapshot","accept","context-digest"):
             p.add_argument("--session-id",required=True)
         if name=="revoke":
             p.add_argument("--reason",required=True)
@@ -291,6 +361,8 @@ def main():
                 result=snapshot(conn,room_id,session_id)
             elif args.command=="revoke":
                 result=revoke(conn,room_id,args.reason)
+            elif args.command=="context-digest":
+                result=context_digest(conn,room_id,session_id)
             else:
                 result=accept(conn,room_id=room_id,session_id=session_id,
                               turn_id=args.turn_id,generation=args.generation,
