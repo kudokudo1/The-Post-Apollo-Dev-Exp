@@ -240,6 +240,8 @@ class DisposablePX:
                 "/source/bin/px_int1_fake_broker.py",
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_dispatch.py"),
                 "/source/bin/px_int1_fake_dispatch.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_recovery.py"),
+                "/source/bin/px_int1_fake_recovery.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
