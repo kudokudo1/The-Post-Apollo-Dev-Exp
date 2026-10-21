@@ -205,6 +205,7 @@ def probe(room_id, session_id, *, scenario="ready", timeout=1.5,
 # DB, its provider registry, or writable /fixture to the isolated idle child.
 # The trusted supervisor (this parent) remains in the disposable P1 fixture.
 INNER_BWRAP = "/usr/bin/bwrap"
+INNER_ENV = {**CHILD_ENV, "PWD": "/tmp"}
 INNER_ISOLATION_NAMESPACES = ("mnt", "net", "ipc", "uts", "user", "pid")
 
 
@@ -254,7 +255,7 @@ def _nested_launch(scenario, nonce):
                      "/source/bin/px_int1_fake_guard.py",
         "--clearenv",
     ]
-    for key, value in CHILD_ENV.items():
+    for key, value in INNER_ENV.items():
         args += ["--setenv", key, value]
     args += [
         "--chdir", "/tmp",
@@ -379,7 +380,7 @@ def _observe_nested(pid):
         env = dict(x.decode("utf-8").split("=", 1) for x in env_fields)
     except (ValueError, UnicodeDecodeError) as exc:
         raise RuntimeError("INT1-B10 REFUSED // unparseable environment") from exc
-    if env != CHILD_ENV or len(env_fields) != len(CHILD_ENV):
+    if env != INNER_ENV or len(env_fields) != len(INNER_ENV):
         # Diagnostics disclose variable NAMES only, never credential values.
         raise RuntimeError("INT1-B10 REFUSED // environment not allowlisted: "
                            + ",".join(sorted(env)))
@@ -395,7 +396,7 @@ def _observe_nested(pid):
         "innerNamespaces": list(INNER_ISOLATION_NAMESPACES),
         "hospitalDbVisible": False, "fixtureRootVisible": False,
         "childFds": [0, 1, 2],
-        "childEnvironmentKeys": sorted(CHILD_ENV),
+        "childEnvironmentKeys": sorted(INNER_ENV),
         "effectiveCapabilities": 0,
     }
 
