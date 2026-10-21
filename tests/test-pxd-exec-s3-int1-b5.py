@@ -131,6 +131,129 @@ class B5B6ContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(self.state(room),before)
         self.assertEqual(self.accepted_count(),count)
 
+    def b7_source_edit(self, hook, statement, values, multiple=False):
+        # Test-only independent SQLite actor can bypass one continuity hook,
+        # edit data and restore EXACT source SQL before commit. B7 must still
+        # reject invalid underlying record/provenance even with clean manifests.
+        script = """
+import json,sqlite3,sys
+sys.path.insert(0,'/source/bin')
+from px_int1_fake_continuity import EXPECTED
+c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=rw',uri=True)
+c.execute('BEGIN IMMEDIATE')
+c.execute('DROP TRIGGER ' + """ + repr(hook) + """)
+statement=""" + repr(statement) + """
+values=""" + repr(values) + """
+if """ + ("True" if multiple else "False") + """:
+    c.executemany(statement, values)
+else:
+    c.execute(statement, values)
+c.execute(EXPECTED[""" + repr(hook) + """])
+c.commit()
+print(json.dumps(True))
+"""
+        self.modify(script)
+        state=self.ok(self.b4("inspect","--room-id",ROOM_A))
+        self.assertEqual(state["generation"],3)
+        self.assertFalse(state["revoked"])
+
+    def assert_b7_reject(self, error, turn):
+        before=self.state(ROOM_A)
+        count=self.accepted_count()
+        request=self.accept(ROOM_A,turn)
+        self.assertNotEqual(request.returncode,0)
+        self.assertIn(error,request.stderr)
+        self.assertEqual(self.state(ROOM_A),before)
+        self.assertEqual(self.accepted_count(),count)
+        digest=self.b1("context-digest","--room-id",ROOM_A,
+                       "--session-id",self.sessions[ROOM_A])
+        self.assertNotEqual(digest.returncode,0)
+        self.assertIn(error,digest.stderr)
+
+    def test_b7_rejects_13_mandatory_room_handoffs_without_truncation(self):
+        self.b7_source_edit("int1_b4_handoff_insert_v1",
+            "INSERT INTO room_reports(room_id,report_kind,title,body_md) "
+            "VALUES(?,?,?,?)",
+            [(ROOM_A,"HANDOFF","extra", "source") for _ in range(12)],
+            multiple=True)
+        self.assert_b7_reject("TOO_MANY_MANDATORY_HANDOFFS","over-handoff")
+
+    def test_b7_rejects_25_operator_room_charts_without_truncation(self):
+        self.b7_source_edit("int1_b4_chart_insert_v1",
+            "INSERT INTO chart_entries(scope_type,room_id,author_role,body_md) "
+            "VALUES(?,?,?,?)",
+            [("ROOM",ROOM_A,"operator","required") for _ in range(24)],
+            multiple=True)
+        self.assert_b7_reject("TOO_MANY_APPROVED_ROOM_CHARTS","over-room-chart")
+
+    def test_b7_rejects_25_operator_patient_charts_without_truncation(self):
+        self.b7_source_edit("int1_b4_chart_insert_v1",
+            "INSERT INTO chart_entries(scope_type,patient_id,author_role,body_md) "
+            "VALUES(?,?,?,?)",
+            [("PATIENT",PATIENT,"operator","required") for _ in range(24)],
+            multiple=True)
+        self.assert_b7_reject("TOO_MANY_APPROVED_PATIENT_CHARTS","over-patient-chart")
+
+    def test_b7_empty_handoff_body_refuses(self):
+        rid=int(self.info(ROOM_A)["handoffIds"][0])
+        self.b7_source_edit("int1_b4_handoff_update_v1",
+            "UPDATE room_reports SET body_md='  ' WHERE report_id=?", (rid,))
+        self.assert_b7_reject("EMPTY_REQUIRED_RECORD","empty-handoff")
+
+    def test_b7_oversized_room_chart_body_refuses(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET body_md=? "
+            "WHERE scope_type='ROOM' AND room_id=?",
+            ("z"*1801,ROOM_A))
+        self.assert_b7_reject("OVERSIZED_REQUIRED_RECORD","oversized-chart")
+
+    def test_b7_combined_required_context_budget_refuses(self):
+        self.b7_source_edit("int1_b4_handoff_insert_v1",
+            "INSERT INTO room_reports(room_id,report_kind,title,body_md) "
+            "VALUES(?,?,?,?)",
+            [(ROOM_A,"HANDOFF","budget","x"*1700) for _ in range(11)],
+            multiple=True)
+        self.assert_b7_reject("REQUIRED_CONTEXT_OVER_BUDGET","budget-overflow")
+
+    def test_b7_room_chart_foreign_source_room_refuses(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET source_room_id=? "
+            "WHERE scope_type='ROOM' AND room_id=?",
+            (ROOM_B,ROOM_A))
+        self.assert_b7_reject("WRONG_REQUIRED_ROOM_CHART","foreign-room-source")
+
+    def test_b7_patient_chart_foreign_patient_source_room_refuses(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET source_room_id=? "
+            "WHERE scope_type='PATIENT' AND patient_id=?",
+            (OTHER,PATIENT))
+        self.assert_b7_reject("FOREIGN_PATIENT_SOURCE_ROOM","foreign-patient")
+
+    def test_b7_patient_chart_source_session_mismatch_refuses(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET source_room_id=?, source_session_id=? "
+            "WHERE scope_type='PATIENT' AND patient_id=?",
+            (ROOM_A,self.sessions[ROOM_B],PATIENT))
+        self.assert_b7_reject("PATIENT_SOURCE_MISMATCH","mismatched-session")
+
+    def test_b7_patient_chart_source_session_from_foreign_patient_refuses(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET source_room_id=NULL, source_session_id=? "
+            "WHERE scope_type='PATIENT' AND patient_id=?",
+            (self.sessions[OTHER],PATIENT))
+        self.assert_b7_reject("FOREIGN_PATIENT_SOURCE_ROOM","foreign-session")
+
+    def test_b7_valid_patient_cross_room_source_session_remains_permitted(self):
+        self.b7_source_edit("int1_b4_chart_update_v1",
+            "UPDATE chart_entries SET source_room_id=?, source_session_id=? "
+            "WHERE scope_type='PATIENT' AND patient_id=?",
+            (ROOM_B,self.sessions[ROOM_B],PATIENT))
+        fresh=self.info(ROOM_A)["contextHash"]
+        self.assertNotEqual(fresh,self.digests[ROOM_A])
+        self.assert_no_commit(ROOM_A,"stale-source","stale or mismatched continuity digest")
+        accepted=self.ok(self.accept(ROOM_A,"valid-same-patient-source",digest=fresh))
+        self.assertEqual(accepted["state"],"ACCEPTED_UNDISPATCHED")
+
     def test_source_derived_context_digest_separates_rooms_and_patient(self):
         a,b,c=self.info(ROOM_A),self.info(ROOM_B),self.info(OTHER)
         self.assertEqual(len(a["handoffIds"]),1)
