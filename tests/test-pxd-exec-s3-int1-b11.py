@@ -272,6 +272,79 @@ class B11DispatchTests(unittest.TestCase):
         self.assertEqual(before, (self.database(), self.messages()))
 
 
+    def test_b13_fixed_eight_step_task_has_expected_persisted_result(self):
+        before = self.messages()
+        result = self.ok(self.dispatch("b13-task", "--task", "SUM_1_TO_8",
+                                       "--scenario", "gated-task"))
+        self.assertEqual(result["state"], "SYNTHETIC_TASK_ACKED")
+        self.assertEqual(result["taskResult"], "SYNTHETIC_SUM_36")
+        self.assertEqual(result["syntheticFrames"], 1)
+        self.assertEqual(result["modelCalls"], 0)
+        self.assertEqual(result["toolCalls"], 0)
+        self.assertEqual(self.database(), {
+            "turns": [["b13-task", "ACCEPTED_UNDISPATCHED"]],
+            "receipts": [["b13-task", "ACKED", "SYNTHETIC_SUM_36"]],
+        })
+        self.assertNotEqual(self.messages(), before)
+        snapshot = (self.database(), self.messages())
+        self.assertNotEqual(self.dispatch("b13-task", "--task", "SUM_1_TO_8",
+                                          "--scenario", "gated-task").returncode, 0)
+        self.assertEqual(snapshot, (self.database(), self.messages()))
+
+    def test_b13_forked_synthetic_descendant_terminated_after_success(self):
+        result = self.ok(self.dispatch("b13-tree-ok", "--task", "SUM_1_TO_8",
+                                       "--scenario", "gated-tree"))
+        self.assertEqual(result["taskResult"], "SYNTHETIC_SUM_36")
+        self.assertTrue(result["descendantTerminationVerified"])
+        self.assertTrue(result["brokerReaped"])
+        self.assertEqual(self.database()["receipts"], [
+            ["b13-tree-ok", "ACKED", "SYNTHETIC_SUM_36"]
+        ])
+
+    def test_b13_timeout_kills_forked_process_tree_and_marks_failed(self):
+        result = self.dispatch("b13-tree-timeout", "--task", "SUM_1_TO_8",
+                               "--scenario", "gated-tree-timeout")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        # If a descendant survived the cleanup, the verifier overrides this
+        # timeout with a distinct process-tree-survival refusal.
+        self.assertIn("broker ACK deadline exceeded", result.stderr)
+        self.assertNotIn("descendant survived", result.stderr)
+        self.assertEqual(self.database()["receipts"], [
+            ["b13-tree-timeout", "FAILED", ""]
+        ])
+        self.assertEqual(self.database()["turns"], [
+            ["b13-tree-timeout", "FAILED"]
+        ])
+        self.assertNotEqual(self.dispatch("b13-tree-timeout", "--task", "SUM_1_TO_8",
+                                          "--scenario", "gated-task").returncode, 0)
+
+    def test_b13_task_scenario_mismatch_refuses_before_storage_or_child(self):
+        before = (self.messages(), self.database())
+        denied = self.dispatch("b13-wrong", "--task", "SUM_1_TO_8",
+                               "--scenario", "gated")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("task/scenario mismatch", denied.stderr)
+        self.assertEqual(before, (self.messages(), self.database()))
+
+    def test_b13_arbitrary_task_name_is_not_supported(self):
+        before = (self.messages(), self.database())
+        denied = self.dispatch("b13-shell", "--task", "SHELL",
+                               "--scenario", "gated-task")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertEqual(before, (self.messages(), self.database()))
+
+    def test_b13_two_distinct_forked_turns_leave_no_descendant(self):
+        for i in range(2):
+            result = self.ok(self.dispatch("b13-repeat-" + str(i),
+                                           "--task", "SUM_1_TO_8",
+                                           "--scenario", "gated-tree"))
+            self.assertTrue(result["descendantTerminationVerified"])
+        self.assertEqual(self.database()["receipts"], [
+            ["b13-repeat-0", "ACKED", "SYNTHETIC_SUM_36"],
+            ["b13-repeat-1", "ACKED", "SYNTHETIC_SUM_36"],
+        ])
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
