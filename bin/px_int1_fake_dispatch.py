@@ -180,7 +180,7 @@ def mark_failed(conn, turn_id):
 
 
 def run(room_id, session_id, turn_id, body, *, scenario="gated",
-        revoke_before_dispatch=False):
+        revoke_before_dispatch=False, test_crash_after_reserve=False):
     for value, field in ((room_id, "Room ID"), (session_id, "session ID"),
                          (turn_id, "turn ID")):
         require_id(value, field)
@@ -221,6 +221,12 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     turn_id=turn_id, generation=generation, digest=digest,
                     body=body, nonce=nonce,
                 )
+                if test_crash_after_reserve:
+                    # B12 disposable crash test: terminate the supervisor
+                    # without finally or Python cleanup, before ANY frame is
+                    # written. Nested bwrap uses --die-with-parent.
+                    # The durable RESERVED receipt must survive this process.
+                    os._exit(77)
                 if revoke_before_dispatch:
                     revoke(conn, room_id, "B11 synthetic before dispatch")
                 dispatch_barrier(
@@ -252,12 +258,14 @@ def main():
     parser.add_argument("--body-stdin", required=True, action="store_true")
     parser.add_argument("--scenario", default="gated")
     parser.add_argument("--test-revoke-before-dispatch", action="store_true")
+    parser.add_argument("--test-crash-after-reserve", action="store_true")
     args = parser.parse_args()
     try:
         result = run(
             args.room_id, args.session_id, args.turn_id, sys.stdin.read(),
             scenario=args.scenario,
             revoke_before_dispatch=args.test_revoke_before_dispatch,
+            test_crash_after_reserve=args.test_crash_after_reserve,
         )
         print(json.dumps(result, sort_keys=True))
         return 0
