@@ -48,8 +48,10 @@ class DescendantTracker:
     def __init__(self, worker_pid):
         self.worker_pid = worker_pid
         self.pidfd = None
+        self.readiness_wait_started = False
 
     def capture(self):
+        self.readiness_wait_started = True
         if self.pidfd is not None:
             return
         try:
@@ -74,6 +76,10 @@ class DescendantTracker:
         self.pidfd = os.pidfd_open(pid, 0)
 
     def verify_and_close(self):
+        if not self.readiness_wait_started:
+            # The dispatch was denied BEFORE any frame/ACK wait. No spawned
+            # descendant is expected; the wrapper is still terminated.
+            return
         if self.pidfd is None:
             raise RuntimeError("INT1-B13 REFUSED // descendant not observed")
         try:
@@ -270,8 +276,6 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
             _receive_ready(child, nonce, 2.5)
             worker = _resolve_isolated_worker(pid, scenario, nonce)
             proof = _observe_nested(worker, controlled_stdin=True)
-            if scenario in ("gated-tree", "gated-tree-timeout"):
-                tree_tracker = DescendantTracker(worker)
             now = context_digest(conn, room_id, session_id)
             if (now["generation"], now["contextHash"]) != (generation, digest):
                 raise RuntimeError("INT1-B11 REFUSED // eligibility changed before acceptance")
@@ -296,6 +300,8 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     os._exit(77)
                 if revoke_before_dispatch:
                     revoke(conn, room_id, "B11 synthetic before dispatch")
+                if scenario in ("gated-tree", "gated-tree-timeout"):
+                    tree_tracker = DescendantTracker(worker)
                 ack = dispatch_barrier(
                     conn, child, room_id=room_id, session_id=session_id,
                     turn_id=turn_id, generation=generation, digest=digest,
