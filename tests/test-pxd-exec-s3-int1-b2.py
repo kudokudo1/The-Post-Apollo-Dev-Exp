@@ -46,6 +46,8 @@ class B2EpochMutationTests(unittest.TestCase):
         self.ok(self.fx.hospital("assignment-activate",self.assignment_id))
         self.ok(self.b1("bootstrap","--room-id",ROOM,"--session-id",SESSION))
         self.old_generation=1
+        self.sessions={ROOM:SESSION}
+        self.contexts={}
 
     def ok(self,proc):
         self.assertEqual(proc.returncode,0,proc.stderr)
@@ -60,11 +62,25 @@ class B2EpochMutationTests(unittest.TestCase):
         return self.fx.run("/usr/bin/python3","-B",
                            "/source/bin/px_int1_fake_epoch.py",*argv,timeout=30)
 
+    def b4(self,*args):
+        return self.fx.run("/usr/bin/python3","-B",
+                           "/source/bin/px_int1_fake_continuity.py",
+                           *args,timeout=30)
+
     def install(self):
         result=self.ok(self.b2("install","--room-id",ROOM,"--session-id",SESSION))
         self.assertEqual(result["hookCount"],12)
         self.assertEqual(result["generation"],2)
         self.assertFalse(result["revoked"])
+        b4=self.ok(self.b4("install","--room-id",ROOM,"--session-id",SESSION))
+        self.assertEqual(b4["hookCount"],6)
+        self.assertEqual(b4["generation"],3)
+        for room,session in self.sessions.items():
+            state=self.ok(self.b4("inspect","--room-id",room))
+            if not state["revoked"]:
+                self.contexts[room]=self.ok(self.b1(
+                    "context-digest","--room-id",room,"--session-id",session
+                ))["contextHash"]
         return result
 
     def current(self):
@@ -73,7 +89,8 @@ class B2EpochMutationTests(unittest.TestCase):
     def accept(self,turn,generation):
         return self.b1("accept","--room-id",ROOM,"--session-id",SESSION,
                        "--turn-id",turn,"--generation",str(generation),
-                       "--context-hash",CTX,"--body-stdin",input="fake-only")
+                       "--context-hash",self.contexts[ROOM],
+                       "--body-stdin",input="fake-only")
 
     def state(self):
         return (self.ok(self.fx.hospital("messages",ROOM,"--limit","100")),
@@ -118,13 +135,15 @@ class B2EpochMutationTests(unittest.TestCase):
             "bootstrap", "--room-id", room_id, "--session-id", session_id,
         ))
         self.assertEqual(bootstrap["generation"], 1)
+        self.sessions[room_id]=session_id
         return session_id
 
     def accept_for(self, room_id, session_id, turn_id, generation):
         return self.b1(
             "accept", "--room-id", room_id, "--session-id", session_id,
             "--turn-id", turn_id, "--generation", str(generation),
-            "--context-hash", CTX, "--body-stdin", input="fake-only",
+            "--context-hash", self.contexts[room_id],
+            "--body-stdin", input="fake-only",
         )
 
     def test_b2_r1_global_install_invalidates_all_prior_rooms_but_not_revoked(self):
@@ -154,10 +173,10 @@ class B2EpochMutationTests(unittest.TestCase):
 
         # One global trigger install through A must invalidate the old B grant.
         self.install()
-        self.assertEqual(self.current()["generation"], 2)
+        self.assertEqual(self.current()["generation"], 3)
         current_b = self.ok(self.b2("inspect", "--room-id", room_b))
         current_c = self.ok(self.b2("inspect", "--room-id", room_c))
-        self.assertEqual(current_b["generation"], 2)
+        self.assertEqual(current_b["generation"], 3)
         self.assertFalse(current_b["revoked"])
         self.assertEqual(current_c["generation"], revoked_c["generation"])
         self.assertTrue(current_c["revoked"])
@@ -187,16 +206,16 @@ class B2EpochMutationTests(unittest.TestCase):
         # Both valid Rooms can take a NEW snapshot; revoked C cannot.
         self.assertEqual(self.ok(self.b1(
             "snapshot", "--room-id", ROOM, "--session-id", SESSION,
-        ))["generation"], 2)
+        ))["generation"], 3)
         self.assertEqual(self.ok(self.b1(
             "snapshot", "--room-id", room_b, "--session-id", session_b,
-        ))["generation"], 2)
+        ))["generation"], 3)
         self.assertEqual(
-            self.ok(self.accept_for(ROOM, SESSION, "r1-fresh-a", 2))["state"],
+            self.ok(self.accept_for(ROOM, SESSION, "r1-fresh-a", 3))["state"],
             "ACCEPTED_UNDISPATCHED",
         )
         self.assertEqual(
-            self.ok(self.accept_for(room_b, session_b, "r1-fresh-b", 2))["state"],
+            self.ok(self.accept_for(room_b, session_b, "r1-fresh-b", 3))["state"],
             "ACCEPTED_UNDISPATCHED",
         )
         refused_c = self.b1(
@@ -223,10 +242,10 @@ class B2EpochMutationTests(unittest.TestCase):
             ))
         self.assertTrue(self.current()["revoked"])
         remaining_b = self.ok(self.b2("inspect", "--room-id", room_b))
-        self.assertEqual(remaining_b["generation"], 2)
+        self.assertEqual(remaining_b["generation"], 3)
         self.assertFalse(remaining_b["revoked"])
         self.assertEqual(self.ok(
-            self.accept_for(room_b, session_b, "b-remains-valid", 2)
+            self.accept_for(room_b, session_b, "b-remains-valid", 3)
         )["state"], "ACCEPTED_UNDISPATCHED")
 
     def test_b2_r1_failed_install_rolls_back_global_epoch_and_all_triggers(self):
@@ -291,16 +310,16 @@ finally:
 
     def test_install_invalidates_prior_snapshot_and_allows_fresh_storage_proof(self):
         self.install()
-        self.assertEqual(self.current()["generation"],2)
+        self.assertEqual(self.current()["generation"],3)
         before=self.state()
         refused=self.accept("stale-pre-install",self.old_generation)
         self.assertNotEqual(refused.returncode,0)
         self.assertIn("stale or revoked authority",refused.stderr)
         self.assertEqual(self.state(),before)
-        accepted=self.ok(self.accept("still-undispatched",2))
+        accepted=self.ok(self.accept("still-undispatched",3))
         self.assertEqual(accepted["state"],"ACCEPTED_UNDISPATCHED")
         self.assertFalse(accepted["replayed"])
-        self.assertEqual(self.current()["generation"],2)
+        self.assertEqual(self.current()["generation"],3)
         self.assertFalse(self.current()["revoked"],
                          "bookkeeping room updated_at must not revoke")
 
@@ -317,7 +336,7 @@ finally:
         self.assertEqual(
             self.ok(self.fx.hospital("room",ROOM))["doctorId"],DOCTOR
         )
-        self.assert_revoked_and_refuses(2,before)
+        self.assert_revoked_and_refuses(3,before)
 
     def test_ordinary_session_identity_change_restore_revokes(self):
         self.install()
@@ -327,14 +346,14 @@ finally:
                 "session-put",SESSION,"--room-id",ROOM,"--doctor-id",doctor,
                 "--provider-id","int1-fake","--status","IDLE",
             ))
-        self.assert_revoked_and_refuses(2,before)
+        self.assert_revoked_and_refuses(3,before)
 
     def test_ordinary_assignment_pause_reactivate_revokes(self):
         self.install()
         before=self.state()
         self.ok(self.fx.hospital("assignment-status",self.assignment_id,"PAUSED"))
         self.ok(self.fx.hospital("assignment-activate",self.assignment_id))
-        self.assert_revoked_and_refuses(2,before)
+        self.assert_revoked_and_refuses(3,before)
 
     def test_assignment_permission_downgrade_upgrade_is_not_grant_recovery(self):
         self.install()
@@ -344,7 +363,7 @@ finally:
                 "assignment-update",self.assignment_id,
                 "--permissions-json",permission,
             ))
-        self.assert_revoked_and_refuses(2,before)
+        self.assert_revoked_and_refuses(3,before)
 
     def test_registered_doctor_status_change_revokes(self):
         self.install()
@@ -352,7 +371,7 @@ finally:
         self.ok(self.fx.hospital(
             "doctor-put",DOCTOR,"--name",DOCTOR,"--status","INACTIVE"
         ))
-        self.assert_revoked_and_refuses(2,before)
+        self.assert_revoked_and_refuses(3,before)
 
     def test_unrelated_room_mutation_does_not_revoke_other_room(self):
         self.install()
@@ -368,9 +387,9 @@ finally:
             "--team","CHANGED","--branch","other",
             "--bed-path","/fixture/bed","--doctor-id","OTHER-DOCTOR"
         ))
-        self.assertEqual(self.current()["generation"],2)
+        self.assertEqual(self.current()["generation"],3)
         self.assertFalse(self.current()["revoked"])
-        self.ok(self.accept("untouched-room",2))
+        self.ok(self.accept("untouched-room",3))
 
     def test_rolled_back_legacy_mutation_does_not_revoke_epoch(self):
         self.install()
@@ -380,10 +399,10 @@ finally:
                 "d.execute(\"UPDATE rooms SET doctor_id='TEMP' "
                 "WHERE room_id='B2-ROOM'\");d.rollback();print(json.dumps(True))")
         self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
-        self.assertEqual(self.current()["generation"],2)
+        self.assertEqual(self.current()["generation"],3)
         self.assertFalse(self.current()["revoked"])
         self.assertEqual(self.ok(self.fx.hospital("room",ROOM))["doctorId"],DOCTOR)
-        self.ok(self.accept("not-mutated",2))
+        self.ok(self.accept("not-mutated",3))
 
     def test_changed_trigger_definition_is_detected_by_inspector(self):
         self.install()
@@ -395,8 +414,8 @@ finally:
         bad=self.b2("inspect","--room-id",ROOM)
         self.assertNotEqual(bad.returncode,0)
         self.assertIn("incomplete or unexpected hook set",bad.stderr)
-        # A detached B1 accept does NOT require hook presence; this is an
-        # explicit security limitation requiring resolution before dispatch.
+        # The full acceptance path now rejects a missing B2 hook before
+        # any new acceptance or replay; B2 inspector remains independent.
 
     def test_install_refuses_rearm_of_previously_revoked_authority(self):
         self.ok(self.b1("revoke","--room-id",ROOM,"--reason","fake-stop"))
