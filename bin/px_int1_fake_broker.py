@@ -16,6 +16,10 @@ import subprocess
 import sys
 import time
 
+# -I discards script-directory imports; only reinsert the audited ro-mounted
+# source directory, never cwd, PYTHONPATH, or a writable fixture path.
+sys.path.insert(0, "/source/bin")
+
 from px_int1_fake_guard import FAKE_ID, PROFILE
 
 CHILD_ENV = {
