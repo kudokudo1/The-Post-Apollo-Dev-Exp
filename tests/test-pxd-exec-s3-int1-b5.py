@@ -243,6 +243,34 @@ print(json.dumps(True))
             (self.sessions[OTHER],PATIENT))
         self.assert_b7_reject("FOREIGN_PATIENT_SOURCE_ROOM","foreign-session")
 
+    def test_b7_already_accepted_turn_replay_refuses_malformed_continuity(self):
+        first=self.ok(self.accept(ROOM_A,"before-invalid-record"))
+        self.assertEqual(first["state"],"ACCEPTED_UNDISPATCHED")
+        original_count=self.accepted_count()
+        rid=int(self.info(ROOM_A)["handoffIds"][0])
+        self.b7_source_edit("int1_b4_handoff_update_v1",
+            "UPDATE room_reports SET body_md=' ' WHERE report_id=?", (rid,))
+        before=self.state(ROOM_A)
+        rejected=self.accept(ROOM_A,"before-invalid-record")
+        self.assertNotEqual(rejected.returncode,0)
+        self.assertIn("EMPTY_REQUIRED_RECORD",rejected.stderr)
+        self.assertEqual(self.state(ROOM_A),before)
+        self.assertEqual(self.accepted_count(),original_count)
+
+    def test_b7_twelve_handoffs_below_budgets_can_still_accept(self):
+        # Twelve is the maximum mandatory lane size, not an overflow.
+        self.b7_source_edit("int1_b4_handoff_insert_v1",
+            "INSERT INTO room_reports(room_id,report_kind,title,body_md) "
+            "VALUES(?,?,?,?)",
+            [(ROOM_A,"HANDOFF","within limit","valid") for _ in range(11)],
+            multiple=True)
+        fresh=self.info(ROOM_A)
+        self.assertEqual(len(fresh["handoffIds"]),12)
+        accepted=self.ok(self.accept(
+            ROOM_A,"bounded-complete-continuity",
+            digest=fresh["contextHash"]))
+        self.assertEqual(accepted["state"],"ACCEPTED_UNDISPATCHED")
+
     def test_b7_valid_patient_cross_room_source_session_remains_permitted(self):
         self.b7_source_edit("int1_b4_chart_update_v1",
             "UPDATE chart_entries SET source_room_id=?, source_session_id=? "
