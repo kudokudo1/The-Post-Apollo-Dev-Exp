@@ -65,7 +65,16 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         ))
         self.assertEqual(hooks["hookCount"],12)
         self.assertEqual(hooks["generation"],2)
-        self.generation=hooks["generation"]
+        continuity=self.ok(self.fx.run(
+            "/usr/bin/python3","-B","/source/bin/px_int1_fake_continuity.py",
+            "install","--room-id",ROOM,"--session-id",SESSION,timeout=30,
+        ))
+        self.assertEqual(continuity["hookCount"],6)
+        self.assertEqual(continuity["generation"],3)
+        self.generation=3
+        self.context_hash=self.ok(self.command(
+            "context-digest","--room-id",ROOM,"--session-id",SESSION
+        ))["contextHash"]
 
     def ok(self,result):
         self.assertEqual(result.returncode,0,result.stderr)
@@ -88,9 +97,11 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         ))
 
     def accept(self,turn="turn-1",generation=None,body="synthetic only",
-               context_hash=CONTEXT_HASH,fail_after=""):
+               context_hash=None,fail_after=""):
         if generation is None:
             generation=self.generation
+        if context_hash is None:
+            context_hash=self.context_hash
         args=[
             "accept","--room-id",ROOM,"--session-id",SESSION,
             "--turn-id",turn,"--generation",str(generation),
@@ -107,7 +118,7 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
         )
 
     def test_atomic_three_rows_and_cross_process_idempotent_retry(self):
-        self.assertEqual(self.snapshot()["generation"],2)
+        self.assertEqual(self.snapshot()["generation"],3)
         before=self.state()
         result=self.ok(self.accept())
         self.assertFalse(result["replayed"])
@@ -335,7 +346,7 @@ class INT1B1AtomicStorageTests(unittest.TestCase):
     def test_b3_independent_hospital_change_and_restore_revokes_old_grant(self):
         before=self.state()
         original=self.snapshot()["generation"]
-        self.assertEqual(original,2)
+        self.assertEqual(original,3)
         for doctor in ("B1-OTHER-DOCTOR","B1-DOCTOR"):
             self.ok(self.fx.hospital(
                 "room-put",ROOM,"--patient-id","B1-PATIENT",
