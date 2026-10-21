@@ -43,6 +43,31 @@ def _idle_child(scenario, nonce):
     if scenario != "timeout":
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
         sys.stdout.flush()
+    if scenario.startswith("gated"):
+        # Inert single-frame protocol. No command dispatch, shell, DB or tool.
+        raw = sys.stdin.buffer.readline(257)
+        if len(raw) > 256 or not raw.endswith(b"\n"):
+            return 18
+        try:
+            frame = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return 19
+        if (not isinstance(frame, dict) or set(frame) != {"op", "nonce", "turnId"}
+                or frame["op"] != "SYNTHETIC_NOOP"
+                or frame["nonce"] != nonce
+                or not isinstance(frame["turnId"], str)
+                or len(frame["turnId"]) > 96):
+            return 20
+        if scenario == "gated-timeout-ack":
+            time.sleep(8)
+            return 21
+        ack = {"phase": "ACK", "nonce": nonce, "turnId": frame["turnId"],
+               "result": "SYNTHETIC_NOOP"}
+        if scenario == "gated-malformed-ack":
+            ack["result"] = "UNEXPECTED"
+        sys.stdout.write(json.dumps(ack, sort_keys=True) + "\n")
+        sys.stdout.flush()
+        return 0
     time.sleep(8)  # Parent always terminates/reaps before this expires.
     return 0
 
@@ -140,6 +165,8 @@ def _terminate_and_reap(child):
     finally:
         if child.stdout is not None:
             child.stdout.close()
+        if child.stdin is not None:
+            child.stdin.close()
     if child.poll() is None:
         raise RuntimeError("INT1-B9 REFUSED // broker was not reaped")
 
@@ -235,7 +262,7 @@ def _trusted_nested_bwrap():
         raise RuntimeError("INT1-B10 REFUSED // Bubblewrap not executable")
 
 
-def _nested_launch(scenario, nonce):
+def _nested_launch(scenario, nonce, controlled_stdin=False):
     _trusted_nested_bwrap()
     information_r, information_w = os.pipe()
     args = [
@@ -265,9 +292,9 @@ def _nested_launch(scenario, nonce):
     try:
         wrapper = subprocess.Popen(
             args, cwd="/", env={"PATH": "/usr/bin:/bin", "LANG": "C"},
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-            pass_fds=(information_w,),
+            stdin=subprocess.PIPE if controlled_stdin else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            close_fds=True, start_new_session=True, pass_fds=(information_w,),
         )
     except BaseException:
         os.close(information_r)
@@ -349,7 +376,7 @@ def _resolve_isolated_worker(launch_pid, scenario, nonce):
     return worker
 
 
-def _observe_nested(pid):
+def _observe_nested(pid, *, controlled_stdin=False):
     """Use the kernel's process/root view, never the child READY JSON, as proof."""
     if (os.getsid(pid) == os.getsid(0) or
             os.getpgid(pid) == os.getpgid(0)):
@@ -388,8 +415,10 @@ def _observe_nested(pid):
     fds = {int(x.name) for x in fd_root.iterdir()}
     if fds != {0, 1, 2}:
         raise RuntimeError("INT1-B10 REFUSED // unexpected child descriptors")
-    if os.readlink(fd_root / "0") != "/dev/null" or (
-            not os.readlink(fd_root / "1").startswith("pipe:[")) or (
+    stdin_target = os.readlink(fd_root / "0")
+    if (not (stdin_target.startswith("pipe:[") if controlled_stdin
+             else stdin_target == "/dev/null") or
+            not os.readlink(fd_root / "1").startswith("pipe:[") or
             os.readlink(fd_root / "2") != "/dev/null"):
         raise RuntimeError("INT1-B10 REFUSED // child standard streams not sealed")
     return {
