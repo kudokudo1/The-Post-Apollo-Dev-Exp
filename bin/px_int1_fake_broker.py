@@ -309,10 +309,50 @@ def _child_pid_from_bwrap(info_fd, wrapper_pid, timeout):
         os.close(info_fd)
 
 
+
+def _resolve_isolated_worker(launch_pid, scenario, nonce):
+    # Bubblewrap's trusted --info-fd may identify a namespace PID-1 reaper,
+    # rather than the actual command. Follow exactly one direct kernel child
+    # and match the immutable command identity; never accept a reported PID
+    # from the worker's own stdout frame.
+    expected = [
+        CHILD_EXEC, "-I", "-B", CHILD_SOURCE,
+        "child", "--scenario", scenario, "--nonce", nonce,
+    ]
+    def command(pid):
+        raw = Path("/proc/%s/cmdline" % pid).read_bytes()
+        return [x.decode("utf-8") for x in raw.split(b"\\0") if x]
+    if command(launch_pid) == expected:
+        return launch_pid
+    descendants = Path(
+        "/proc/%s/task/%s/children" % (launch_pid, launch_pid)
+    ).read_text().split()
+    matches = []
+    for item in descendants:
+        pid = int(item)
+        try:
+            if command(pid) == expected:
+                matches.append(pid)
+        except (OSError, UnicodeDecodeError):
+            continue
+    if len(matches) != 1:
+        raise RuntimeError(
+            "INT1-B10 REFUSED // trusted isolated worker identity absent"
+        )
+    worker = matches[0]
+    for kind in INNER_ISOLATION_NAMESPACES:
+        initial = os.stat("/proc/%s/ns/%s" % (launch_pid, kind))
+        final = os.stat("/proc/%s/ns/%s" % (worker, kind))
+        if (initial.st_dev, initial.st_ino) != (final.st_dev, final.st_ino):
+            raise RuntimeError("INT1-B10 REFUSED // worker namespace escaped")
+    return worker
+
+
 def _observe_nested(pid):
     """Use the kernel's process/root view, never the child READY JSON, as proof."""
-    if os.getsid(pid) != pid or os.getpgid(pid) != pid:
-        raise RuntimeError("INT1-B10 REFUSED // child lacks dedicated session")
+    if (os.getsid(pid) == os.getsid(0) or
+            os.getpgid(pid) == os.getpgid(0)):
+        raise RuntimeError("INT1-B10 REFUSED // worker shares supervisor process group")
     for kind in INNER_ISOLATION_NAMESPACES:
         child = os.stat("/proc/%s/ns/%s" % (pid, kind))
         parent = os.stat("/proc/self/ns/%s" % kind)
@@ -375,7 +415,8 @@ def probe_isolated(room_id, session_id, *, scenario="ready", timeout=1.5):
     try:
         inner_pid = _child_pid_from_bwrap(info_fd, child.pid, timeout)
         _receive_ready(child, nonce, timeout)
-        proof = _observe_nested(inner_pid)
+        worker_pid = _resolve_isolated_worker(inner_pid, scenario, nonce)
+        proof = _observe_nested(worker_pid)
         after = _eligible_snapshot(room_id, session_id)
         if (before["generation"], before["contextHash"]) != (
                 after["generation"], after["contextHash"]):
