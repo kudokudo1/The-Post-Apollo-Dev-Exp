@@ -52,17 +52,33 @@ def _idle_child(scenario, nonce):
             frame = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return 19
+        task_scenarios = ("gated-task", "gated-tree", "gated-tree-timeout")
+        expected_op = ("SYNTHETIC_SUM_1_TO_8" if scenario in task_scenarios
+                       else "SYNTHETIC_NOOP")
         if (not isinstance(frame, dict) or set(frame) != {"op", "nonce", "turnId"}
-                or frame["op"] != "SYNTHETIC_NOOP"
+                or frame["op"] != expected_op
                 or frame["nonce"] != nonce
                 or not isinstance(frame["turnId"], str)
                 or len(frame["turnId"]) > 96):
             return 20
-        if scenario == "gated-timeout-ack":
+        if scenario in ("gated-tree", "gated-tree-timeout"):
+            # B13 deliberately creates exactly ONE known synthetic descendant.
+            # It has no tool command, Hospital mount, or credential access.
+            descendant = os.fork()
+            if descendant == 0:
+                time.sleep(8)
+                os._exit(0)
+            time.sleep(0.12)  # Give the trusted observer time to pin its pidfd.
+        if scenario in ("gated-timeout-ack", "gated-tree-timeout"):
             time.sleep(8)
             return 21
+        if expected_op == "SYNTHETIC_SUM_1_TO_8":
+            total = sum(n for n in range(1, 9))  # Fixed 8-step calculation.
+            result = "SYNTHETIC_SUM_" + str(total)
+        else:
+            result = "SYNTHETIC_NOOP"
         ack = {"phase": "ACK", "nonce": nonce, "turnId": frame["turnId"],
-               "result": "SYNTHETIC_NOOP"}
+               "result": result}
         if scenario == "gated-malformed-ack":
             ack["result"] = "UNEXPECTED"
         sys.stdout.write(json.dumps(ack, sort_keys=True) + "\n")
