@@ -170,7 +170,9 @@ def probe(room_id, session_id, *, scenario="ready", timeout=1.5,
         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
     )
     try:
-        os_evidence = _observe_child(child.pid)
+        # The child can have transient loader/import FDs between Popen and
+        # readiness. Inspect the complete FD contract only AFTER its fixed
+        # protocol reaches an idle state; still before any success result.
         _receive_ready(child, nonce, timeout)
         os_evidence = _observe_child(child.pid)
         if test_revoke_at_readiness:
