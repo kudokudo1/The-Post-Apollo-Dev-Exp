@@ -76,6 +76,16 @@ class B4ContinuityMutationTests(unittest.TestCase):
                           "--session-id",self.sessions[ROOMS[0]]))
         self.assertEqual(r["hookCount"],6)
         self.assertEqual(r["generation"],3)
+        # Cache separately reconstructed source-derived context before any
+        # deliberate continuity mutations revoke the old generations.
+        self.digests={}
+        for room, session in self.sessions.items():
+            status=self.ok(self.b4("inspect","--room-id",room))
+            if not status["revoked"]:
+                ctx=self.ok(self.b1(
+                    "context-digest","--room-id",room,"--session-id",session
+                ))
+                self.digests[room]=ctx["contextHash"]
         return r
 
     def inspect(self,room):
@@ -88,7 +98,8 @@ class B4ContinuityMutationTests(unittest.TestCase):
     def accept(self,room,turn,generation):
         return self.b1("accept","--room-id",room,
                        "--session-id",self.sessions[room],"--turn-id",turn,
-                       "--generation",str(generation),"--context-hash",CTX,
+                       "--generation",str(generation),
+                       "--context-hash",self.digests[room],
                        "--body-stdin",input="fake-only")
 
     def report(self,room,kind):
