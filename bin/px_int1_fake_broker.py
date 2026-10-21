@@ -210,13 +210,26 @@ INNER_ISOLATION_NAMESPACES = ("mnt", "net", "ipc", "uts", "user", "pid")
 
 def _trusted_nested_bwrap():
     import stat
+    # P1 checks the root-owned /usr/bin/bwrap on the real CI runner before
+    # the outer fixture starts. User-namespace UID remapping can show those
+    # host-root files as overflow UID 65534 inside the outer sandbox; checking
+    # st_uid == 0 here would incorrectly fail the already-vetted fixture.
+    # Instead require the immutable /usr ro-bind and fixed nonwritable path.
+    mounts = Path("/proc/self/mountinfo").read_text().splitlines()
+    usr_ro = False
+    for entry in mounts:
+        fields = entry.split(" - ", 1)[0].split()
+        if len(fields) > 5 and fields[4] == "/usr" and "ro" in fields[5].split(","):
+            usr_ro = True
+    if not usr_ro:
+        raise RuntimeError("INT1-B10 REFUSED // trusted readonly /usr mount absent")
     for name in ("/", "/usr", "/usr/bin"):
         info = os.lstat(name)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
             raise RuntimeError("INT1-B10 REFUSED // untrusted Bubblewrap directory")
     info = os.lstat(INNER_BWRAP)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise RuntimeError("INT1-B10 REFUSED // fixed root-owned Bubblewrap unavailable")
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022:
+        raise RuntimeError("INT1-B10 REFUSED // fixed Bubblewrap source unsafe")
     if not os.access(INNER_BWRAP, os.X_OK):
         raise RuntimeError("INT1-B10 REFUSED // Bubblewrap not executable")
 
