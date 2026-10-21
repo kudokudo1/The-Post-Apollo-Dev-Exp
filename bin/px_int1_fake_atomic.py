@@ -9,6 +9,8 @@ synthetic Hospital DB is required; there is NO live DB migration.
 IMPORTANT: B1 accept requires the exact B2 (12) and B4 (6) source-owned
 triggers, and a matching SHA-256 digest recomputed from synthetic Room HANDOFF
 and ACTIVE operator Chart rows INSIDE the same BEGIN IMMEDIATE transaction.
+B7 also checks the mandatory record counts, nonempty bodies, text budgets
+and Room/Patient provenance against source-defined px-agent limits.
 This is still detached fake-only storage. The underlying author-role fields
 and SQLite files are not authenticated against same-UID tampering; this is
 not a production context protocol, executable broker grant or full INT1-B.
@@ -194,6 +196,85 @@ def continuity_document(conn, room_id, session_id):
         "approvedCharts": [dict(row) for row in charts],
     }
 
+# B7 // Required-context eligibility parity with px-agent's mandatory lanes.
+# Preserve the B6 *source-byte digest* unmodified. These checks are an
+# additional fail-closed predicate, not a new digest schema or an assertion
+# that the final model-rendered context is authenticated/identical.
+REQUIRED_HANDOFF_LIMIT = 12
+REQUIRED_ROOM_CHART_LIMIT = 24
+REQUIRED_PATIENT_CHART_LIMIT = 24
+REQUIRED_ITEM_TEXT_LIMIT = 1800
+REQUIRED_CHAR_BUDGET = 18000
+
+def validate_required_context(conn, document):
+    room_id = document["roomId"]
+    patient_id = document["patientId"]
+    reports = document["handoffs"]
+    charts = document["approvedCharts"]
+    room_charts = [r for r in charts if r["scope_type"] == "ROOM"]
+    patient_charts = [r for r in charts if r["scope_type"] == "PATIENT"]
+    if len(reports) > REQUIRED_HANDOFF_LIMIT:
+        raise RuntimeError("INT1-B7 REFUSED // TOO_MANY_MANDATORY_HANDOFFS")
+    if len(room_charts) > REQUIRED_ROOM_CHART_LIMIT:
+        raise RuntimeError("INT1-B7 REFUSED // TOO_MANY_APPROVED_ROOM_CHARTS")
+    if len(patient_charts) > REQUIRED_PATIENT_CHART_LIMIT:
+        raise RuntimeError("INT1-B7 REFUSED // TOO_MANY_APPROVED_PATIENT_CHARTS")
+    total_chars = 0
+    for r in reports:
+        if r["room_id"] != room_id or str(r["report_kind"] or "").strip().upper() != "HANDOFF":
+            raise RuntimeError("INT1-B7 REFUSED // FOREIGN_OR_INVALID_HANDOFF")
+        text = str(r["title"] or "") + "\n" + str(r["body_md"] or "")
+        if not str(r["body_md"] or "").strip():
+            raise RuntimeError("INT1-B7 REFUSED // EMPTY_REQUIRED_RECORD")
+        if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+            raise RuntimeError("INT1-B7 REFUSED // OVERSIZED_REQUIRED_RECORD")
+        total_chars += len(text)
+    for r in room_charts:
+        if (r["room_id"] != room_id or
+                str(r["status"] or "").upper() != "ACTIVE" or
+                str(r["author_role"] or "").lower() != "operator" or
+                (r["source_room_id"] and r["source_room_id"] != room_id)):
+            raise RuntimeError("INT1-B7 REFUSED // WRONG_REQUIRED_ROOM_CHART")
+    for r in patient_charts:
+        if (r["scope_type"] != "PATIENT" or r["patient_id"] != patient_id
+                or r["room_id"] is not None
+                or str(r["status"] or "").upper() != "ACTIVE"
+                or str(r["author_role"] or "").lower() != "operator"):
+            raise RuntimeError("INT1-B7 REFUSED // FOREIGN_PATIENT_RECORD")
+        source_room = str(r["source_room_id"] or "")
+        source_session = str(r["source_session_id"] or "")
+        if source_session:
+            linked = conn.execute(
+                "SELECT room_id FROM sessions WHERE session_id=?",
+                (source_session,)
+            ).fetchone()
+            if linked is None:
+                raise RuntimeError("INT1-B7 REFUSED // INVALID_PATIENT_SOURCE_SESSION")
+            linked_room = str(linked["room_id"] or "")
+            if not linked_room or (source_room and source_room != linked_room):
+                raise RuntimeError("INT1-B7 REFUSED // PATIENT_SOURCE_MISMATCH")
+            source_room = linked_room
+        if source_room:
+            linked = conn.execute(
+                "SELECT patient_id FROM rooms WHERE room_id=?",
+                (source_room,)
+            ).fetchone()
+            if linked is None:
+                raise RuntimeError("INT1-B7 REFUSED // INVALID_PATIENT_SOURCE_ROOM")
+            if linked["patient_id"] != patient_id:
+                raise RuntimeError("INT1-B7 REFUSED // FOREIGN_PATIENT_SOURCE_ROOM")
+    for r in charts:
+        if r["scope_type"] not in ("ROOM", "PATIENT"):
+            raise RuntimeError("INT1-B7 REFUSED // INVALID_REQUIRED_CHART_SCOPE")
+        text = str(r["title"] or "") + "\n" + str(r["body_md"] or "")
+        if not str(r["body_md"] or "").strip():
+            raise RuntimeError("INT1-B7 REFUSED // EMPTY_REQUIRED_RECORD")
+        if len(text) > REQUIRED_ITEM_TEXT_LIMIT:
+            raise RuntimeError("INT1-B7 REFUSED // OVERSIZED_REQUIRED_RECORD")
+        total_chars += len(text)
+    if total_chars > REQUIRED_CHAR_BUDGET:
+        raise RuntimeError("INT1-B7 REFUSED // REQUIRED_CONTEXT_OVER_BUDGET")
+
 def continuity_hash(conn, room_id, session_id):
     document = continuity_document(conn, room_id, session_id)
     canonical = json.dumps(
@@ -213,6 +294,7 @@ def context_digest(conn, room_id, session_id):
         if auth["revoked"]:
             raise RuntimeError("INT1-B6 REFUSED // authority revoked")
         digest, document = continuity_hash(conn, room_id, session_id)
+        validate_required_context(conn, document)
         conn.commit()
         return {"roomId": room_id, "sessionId": session_id,
                 "generation": auth["generation"],
@@ -252,7 +334,8 @@ def accept(conn, *, room_id, session_id, turn_id, generation,
         auth = authority_row(conn, room_id)
         if auth["revoked"] or auth["generation"] != generation:
             raise RuntimeError("INT1-B1 REFUSED // stale or revoked authority")
-        actual_hash, _ = continuity_hash(conn, room_id, session_id)
+        actual_hash, document = continuity_hash(conn, room_id, session_id)
+        validate_required_context(conn, document)
         if context_hash != actual_hash:
             raise RuntimeError("INT1-B6 REFUSED // stale or mismatched continuity digest")
         old = conn.execute(
