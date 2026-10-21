@@ -205,7 +205,7 @@ def probe(room_id, session_id, *, scenario="ready", timeout=1.5,
 # DB, its provider registry, or writable /fixture to the isolated idle child.
 # The trusted supervisor (this parent) remains in the disposable P1 fixture.
 INNER_BWRAP = "/usr/bin/bwrap"
-INNER_ISOLATION_NAMESPACES = ("mnt", "net", "ipc", "uts", "user")
+INNER_ISOLATION_NAMESPACES = ("mnt", "net", "ipc", "uts", "user", "pid")
 
 
 def _trusted_nested_bwrap():
@@ -223,9 +223,11 @@ def _trusted_nested_bwrap():
 
 def _nested_launch(scenario, nonce):
     _trusted_nested_bwrap()
+    information_r, information_w = os.pipe()
     args = [
         INNER_BWRAP,
         "--unshare-user", "--unshare-net", "--unshare-ipc", "--unshare-uts",
+        "--unshare-pid", "--info-fd", str(information_w),
         "--die-with-parent", "--new-session", "--cap-drop", "ALL",
         "--ro-bind", "/usr", "/usr",
         "--symlink", "usr/bin", "/bin",
@@ -246,11 +248,52 @@ def _nested_launch(scenario, nonce):
         CHILD_EXEC, "-I", "-B", CHILD_SOURCE, "child",
         "--scenario", scenario, "--nonce", nonce,
     ]
-    return subprocess.Popen(
-        args, cwd="/", env={"PATH": "/usr/bin:/bin", "LANG": "C"},
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-    )
+    try:
+        wrapper = subprocess.Popen(
+            args, cwd="/", env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+            pass_fds=(information_w,),
+        )
+    except BaseException:
+        os.close(information_r)
+        raise
+    finally:
+        os.close(information_w)
+    return wrapper, information_r
+
+
+def _child_pid_from_bwrap(info_fd, wrapper_pid, timeout):
+    # Bubblewrap's --info-fd is a trusted launcher interface.
+    # The returned PID is in the supervisor's namespace, not a child claim.
+    import select
+    end = time.monotonic() + timeout
+    chunks = bytearray()
+    try:
+        os.set_blocking(info_fd, False)
+        while time.monotonic() < end:
+            readable, _, _ = select.select(
+                [info_fd], [], [], min(0.05, max(0, end - time.monotonic()))
+            )
+            if not readable:
+                continue
+            piece = os.read(info_fd, 2049 - len(chunks))
+            if not piece:
+                break
+            chunks.extend(piece)
+            if len(chunks) > 2048:
+                raise RuntimeError("INT1-B10 REFUSED // launcher info overflow")
+        try:
+            proof = json.loads(chunks.decode("utf-8"))
+            inner_pid = proof["child-pid"]
+        except (ValueError, UnicodeDecodeError, KeyError, TypeError) as exc:
+            raise RuntimeError("INT1-B10 REFUSED // missing trusted child PID") from exc
+        if (not isinstance(inner_pid, int) or isinstance(inner_pid, bool)
+                or inner_pid < 2 or inner_pid == wrapper_pid):
+            raise RuntimeError("INT1-B10 REFUSED // invalid trusted child PID")
+        return inner_pid
+    finally:
+        os.close(info_fd)
 
 
 def _observe_nested(pid):
@@ -313,10 +356,11 @@ def probe_isolated(room_id, session_id, *, scenario="ready", timeout=1.5):
         raise RuntimeError("INT1-B10 REFUSED // invalid readiness timeout")
     before = _eligible_snapshot(room_id, session_id)
     nonce = os.urandom(16).hex()
-    child = _nested_launch(scenario, nonce)
+    child, info_fd = _nested_launch(scenario, nonce)
     try:
+        inner_pid = _child_pid_from_bwrap(info_fd, child.pid, timeout)
         _receive_ready(child, nonce, timeout)
-        proof = _observe_nested(child.pid)
+        proof = _observe_nested(inner_pid)
         after = _eligible_snapshot(room_id, session_id)
         if (before["generation"], before["contextHash"]) != (
                 after["generation"], after["contextHash"]):
