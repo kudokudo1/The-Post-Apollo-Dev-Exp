@@ -321,7 +321,7 @@ def _resolve_isolated_worker(launch_pid, scenario, nonce):
     ]
     def command(pid):
         raw = Path("/proc/%s/cmdline" % pid).read_bytes()
-        return [x.decode("utf-8") for x in raw.split(b"\\0") if x]
+        return [x.decode("utf-8") for x in raw.split(b"\0") if x]
     if command(launch_pid) == expected:
         return launch_pid
     descendants = Path(
