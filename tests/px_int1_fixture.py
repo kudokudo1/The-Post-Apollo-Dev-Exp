@@ -235,6 +235,9 @@ class DisposablePX:
                 # Detached B4 continuity epoch hooks, fixture-only.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_continuity.py"),
                 "/source/bin/px_int1_fake_continuity.py",
+                # B9 idle child source: ro-only, no executable broker grants.
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_broker.py"),
+                "/source/bin/px_int1_fake_broker.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
