@@ -78,6 +78,13 @@ class B9IdleBrokerTests(unittest.TestCase):
             "probe", "--room-id", ROOM, "--session-id", SESSION, *options,
         )
 
+    def probe_isolated(self, *options):
+        return self.run_module(
+            "/source/bin/px_int1_fake_broker.py",
+            "probe-isolated", "--room-id", ROOM, "--session-id", SESSION,
+            *options,
+        )
+
     def count(self):
         script = ("import sqlite3,json;"
                   "db=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',"
@@ -161,6 +168,54 @@ class B9IdleBrokerTests(unittest.TestCase):
         registry.write_text(json.dumps(hostile))
         registry.chmod(0o600)
         self.assert_denied_unchanged(expected="unsupported synthetic-only provider")
+
+    def test_b10_nested_idle_child_excludes_hospital_and_has_distinct_namespaces(self):
+        before = self.state()
+        result = self.ok(self.probe_isolated())
+        self.assertEqual(result["state"], "ISOLATED_IDLE_BROKER_PROBED_AND_REAPED")
+        self.assertTrue(result["brokerReaped"])
+        self.assertFalse(result["productionReady"])
+        self.assertEqual(result["dispatches"], 0)
+        evidence = result["osEvidence"]
+        self.assertEqual(set(evidence["innerNamespaces"]),
+                         {"mnt", "net", "ipc", "uts", "user", "pid"})
+        self.assertFalse(evidence["hospitalDbVisible"])
+        self.assertFalse(evidence["fixtureRootVisible"])
+        self.assertEqual(evidence["effectiveCapabilities"], 0)
+        self.assertEqual(evidence["childFds"], [0, 1, 2])
+        self.assertEqual(before, self.state())
+
+    def test_b10_nested_early_exit_is_not_success(self):
+        before = self.state()
+        failed = self.probe_isolated("--scenario", "early-exit")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(before, self.state())
+
+    def test_b10_nested_malformed_readiness_refuses(self):
+        before = self.state()
+        failed = self.probe_isolated("--scenario", "malformed")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("readiness mismatch", failed.stderr)
+        self.assertEqual(before, self.state())
+
+    def test_b10_nested_timeout_refuses_without_turn_persistence(self):
+        before = self.state()
+        failed = self.probe_isolated("--scenario", "timeout", "--timeout", "0.3")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("readiness deadline exceeded", failed.stderr)
+        self.assertEqual(before, self.state())
+
+    def test_b10_missing_hooks_refuses_before_nested_launch(self):
+        script = ("import sqlite3,json;"
+                  "db=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=rw',"
+                  "uri=True);db.execute('DROP TRIGGER int1_b4_handoff_update_v1');"
+                  "db.commit();print(json.dumps(True))")
+        self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", script))
+        before = self.state()
+        failed = self.probe_isolated()
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("missing or unexpected continuity hooks", failed.stderr)
+        self.assertEqual(before, self.state())
 
 
 if __name__ == "__main__":
