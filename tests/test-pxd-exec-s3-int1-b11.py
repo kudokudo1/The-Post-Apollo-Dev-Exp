@@ -104,6 +104,16 @@ class B11DispatchTests(unittest.TestCase):
         )
         return self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", code))
 
+    def recovery_events(self):
+        script = (
+            "import sqlite3,json;"
+            "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',"
+            "uri=True);print(json.dumps(c.execute("
+            "'SELECT COUNT(*) FROM session_events WHERE event_type=?',"
+            "('turn.dispatch.manual-uncertain-failure',)).fetchone()[0]))"
+        )
+        return self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", script))
+
     def messages(self):
         return (self.ok(self.fx.hospital("messages", ROOM, "--limit", "100")),
                 self.ok(self.fx.hospital("events", SESSION, "--limit", "100")))
@@ -212,12 +222,7 @@ class B11DispatchTests(unittest.TestCase):
         self.assertNotEqual(repeated.returncode, 0)
         self.assertIn("only unresolved RESERVED", repeated.stderr)
         self.assertEqual(old, (self.database(), self.messages()))
-        events = self.messages()[1]
-        audit_rows = [row for row in events if row.get("eventType") ==
-                      "turn.dispatch.manual-uncertain-failure"]
-        # Hospital event serializers differ by command; verify audit via SQL
-        # separately below, not via the display format alone.
-        self.assertLessEqual(len(audit_rows), 1)
+        self.assertEqual(self.recovery_events(), 1)
 
     def test_b12_missing_acknowledgment_or_reason_does_not_mutate_reservation(self):
         crashed = self.dispatch("b12-unconfirmed", "--test-crash-after-reserve")
