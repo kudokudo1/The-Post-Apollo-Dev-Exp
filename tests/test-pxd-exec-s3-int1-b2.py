@@ -231,7 +231,7 @@ class B2EpochMutationTests(unittest.TestCase):
         self.install()
         self.assertEqual(self.ok(
             self.b2("inspect", "--room-id", room_b)
-        )["generation"], 2)
+        )["generation"], 3)
         # Trigger is installed globally, but the subsequent mutation is A-only.
         for doctor in ("B2-DIFFERENT-DOCTOR", DOCTOR):
             self.ok(self.fx.hospital(
@@ -306,7 +306,7 @@ finally:
         self.install()
         self.assertEqual(self.ok(
             self.b2("inspect", "--room-id", room_b)
-        )["generation"], 2)
+        )["generation"], 3)
 
     def test_install_invalidates_prior_snapshot_and_allows_fresh_storage_proof(self):
         self.install()
