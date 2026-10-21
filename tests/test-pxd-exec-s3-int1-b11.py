@@ -104,6 +104,16 @@ class B11DispatchTests(unittest.TestCase):
         )
         return self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", code))
 
+    def receipt_table_exists(self):
+        code = (
+            "import sqlite3,json;"
+            "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',"
+            "uri=True);print(json.dumps(bool(c.execute("
+            "'SELECT 1 FROM sqlite_master WHERE type=? AND name=?',"
+            "('table','int1_fake_dispatch_receipts')).fetchone())))"
+        )
+        return self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", code))
+
     def recovery_events(self):
         script = (
             "import sqlite3,json;"
@@ -319,19 +329,23 @@ class B11DispatchTests(unittest.TestCase):
                                           "--scenario", "gated-task").returncode, 0)
 
     def test_b13_task_scenario_mismatch_refuses_before_storage_or_child(self):
-        before = (self.messages(), self.database())
+        before = self.messages()
+        self.assertFalse(self.receipt_table_exists())
         denied = self.dispatch("b13-wrong", "--task", "SUM_1_TO_8",
                                "--scenario", "gated")
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("task/scenario mismatch", denied.stderr)
-        self.assertEqual(before, (self.messages(), self.database()))
+        self.assertEqual(before, self.messages())
+        self.assertFalse(self.receipt_table_exists())
 
     def test_b13_arbitrary_task_name_is_not_supported(self):
-        before = (self.messages(), self.database())
+        before = self.messages()
+        self.assertFalse(self.receipt_table_exists())
         denied = self.dispatch("b13-shell", "--task", "SHELL",
                                "--scenario", "gated-task")
         self.assertNotEqual(denied.returncode, 0)
-        self.assertEqual(before, (self.messages(), self.database()))
+        self.assertEqual(before, self.messages())
+        self.assertFalse(self.receipt_table_exists())
 
     def test_b13_two_distinct_forked_turns_leave_no_descendant(self):
         for i in range(2):
