@@ -340,7 +340,9 @@ def _observe_nested(pid):
     except (ValueError, UnicodeDecodeError) as exc:
         raise RuntimeError("INT1-B10 REFUSED // unparseable environment") from exc
     if env != CHILD_ENV or len(env_fields) != len(CHILD_ENV):
-        raise RuntimeError("INT1-B10 REFUSED // environment not allowlisted")
+        # Diagnostics disclose variable NAMES only, never credential values.
+        raise RuntimeError("INT1-B10 REFUSED // environment not allowlisted: "
+                           + ",".join(sorted(env)))
     fd_root = Path("/proc/%s/fd" % pid)
     fds = {int(x.name) for x in fd_root.iterdir()}
     if fds != {0, 1, 2}:
