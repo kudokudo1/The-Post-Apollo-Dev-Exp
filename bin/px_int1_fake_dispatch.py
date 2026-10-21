@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import re
+import select
 import selectors
+from pathlib import Path
 import sqlite3
 import sys
 import time
@@ -34,6 +36,54 @@ RECEIPTS = """CREATE TABLE IF NOT EXISTS int1_fake_dispatch_receipts (
     nonce_hash TEXT NOT NULL,
     result TEXT NOT NULL DEFAULT ''
 )"""
+
+
+
+class DescendantTracker:
+    """Pin the one B13 test descendant using a kernel pidfd, then verify death.
+
+    A PID number by itself is insufficient because it can be reused. Pidfds
+    remain tied to the original task. This observer never trusts worker JSON.
+    """
+    def __init__(self, worker_pid):
+        self.worker_pid = worker_pid
+        self.pidfd = None
+
+    def capture(self):
+        if self.pidfd is not None:
+            return
+        try:
+            children = Path(
+                "/proc/%s/task/%s/children" %
+                (self.worker_pid, self.worker_pid)
+            ).read_text().split()
+        except FileNotFoundError:
+            return
+        if len(children) > 1:
+            raise RuntimeError("INT1-B13 REFUSED // unexpected synthetic process tree")
+        if not children:
+            return
+        pid = int(children[0])
+        # Reject a descendant that escaped the worker's isolated namespaces.
+        for kind in ("pid", "mnt", "user", "net"):
+            worker = os.stat("/proc/%s/ns/%s" % (self.worker_pid, kind))
+            descendant = os.stat("/proc/%s/ns/%s" % (pid, kind))
+            if (worker.st_dev, worker.st_ino) != (
+                    descendant.st_dev, descendant.st_ino):
+                raise RuntimeError("INT1-B13 REFUSED // descendant namespace mismatch")
+        self.pidfd = os.pidfd_open(pid, 0)
+
+    def verify_and_close(self):
+        if self.pidfd is None:
+            raise RuntimeError("INT1-B13 REFUSED // descendant not observed")
+        try:
+            poller = select.poll()
+            poller.register(self.pidfd, select.POLLIN)
+            if not poller.poll(1500):
+                raise RuntimeError("INT1-B13 REFUSED // descendant survived teardown")
+        finally:
+            os.close(self.pidfd)
+            self.pidfd = None
 
 
 def request_hash(room_id, session_id, turn_id, generation, digest, body):
@@ -90,13 +140,16 @@ def reserve(conn, *, room_id, session_id, turn_id, generation, digest,
         raise
 
 
-def receive_ack(child, *, nonce, turn_id, timeout=1.0):
+def receive_ack(child, *, nonce, turn_id, expected_result="SYNTHETIC_NOOP",
+                on_tick=None, timeout=1.0):
     selector = selectors.DefaultSelector()
     try:
         selector.register(child.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + timeout
         data = bytearray()
         while time.monotonic() < deadline:
+            if on_tick is not None:
+                on_tick()
             if child.poll() is not None and not data:
                 raise RuntimeError("INT1-B11 REFUSED // broker exited without ACK")
             ready = selector.select(min(0.05, max(0, deadline - time.monotonic())))
@@ -118,7 +171,7 @@ def receive_ack(child, *, nonce, turn_id, timeout=1.0):
             raise RuntimeError("INT1-B11 REFUSED // malformed broker ACK") from exc
         if (not data.endswith(b"\n") or data.count(b"\n") != 1 or
                 payload != {"phase": "ACK", "nonce": nonce, "turnId": turn_id,
-                            "result": "SYNTHETIC_NOOP"}):
+                            "result": expected_result}):
             raise RuntimeError("INT1-B11 REFUSED // broker ACK mismatch")
         return payload
     finally:
@@ -126,7 +179,8 @@ def receive_ack(child, *, nonce, turn_id, timeout=1.0):
 
 
 def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
-                     generation, digest, nonce, ack_timeout):
+                     generation, digest, nonce, ack_timeout,
+                     task="NOOP", on_tick=None):
     conn.execute("BEGIN IMMEDIATE")
     try:
         current_authority(conn, room_id=room_id, session_id=session_id,
@@ -138,7 +192,11 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
         if (receipt is None or receipt["state"] != "RESERVED" or
                 receipt["nonce_hash"] != hashlib.sha256(nonce.encode()).hexdigest()):
             raise RuntimeError("INT1-B11 REFUSED // dispatch reservation missing")
-        frame = json.dumps({"op": "SYNTHETIC_NOOP",
+        operation = ("SYNTHETIC_SUM_1_TO_8" if task == "SUM_1_TO_8"
+                     else "SYNTHETIC_NOOP")
+        expected = ("SYNTHETIC_SUM_36" if task == "SUM_1_TO_8"
+                    else "SYNTHETIC_NOOP")
+        frame = json.dumps({"op": operation,
                             "nonce": nonce, "turnId": turn_id},
                            sort_keys=True).encode() + b"\n"
         if len(frame) > 256:
@@ -148,13 +206,16 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
         child.stdin.write(frame)
         child.stdin.flush()
         child.stdin.close()
-        ack = receive_ack(child, nonce=nonce, turn_id=turn_id, timeout=ack_timeout)
+        ack = receive_ack(child, nonce=nonce, turn_id=turn_id,
+                          expected_result=expected, on_tick=on_tick,
+                          timeout=ack_timeout)
         conn.execute(
             "UPDATE int1_fake_dispatch_receipts SET state='ACKED', result=? "
             "WHERE turn_id=? AND state='RESERVED'",
             (ack["result"], turn_id),
         )
         conn.commit()
+        return ack
     except BaseException:
         conn.rollback()
         raise
@@ -180,13 +241,16 @@ def mark_failed(conn, turn_id):
 
 
 def run(room_id, session_id, turn_id, body, *, scenario="gated",
-        revoke_before_dispatch=False, test_crash_after_reserve=False):
+        task="NOOP", revoke_before_dispatch=False, test_crash_after_reserve=False):
     for value, field in ((room_id, "Room ID"), (session_id, "session ID"),
                          (turn_id, "turn ID")):
         require_id(value, field)
-    if scenario not in ("gated", "gated-malformed-ack", "gated-timeout-ack",
-                        "early-exit", "malformed", "timeout"):
-        raise RuntimeError("INT1-B11 REFUSED // unrecognized fake broker scenario")
+    noop_scenarios = ("gated", "gated-malformed-ack", "gated-timeout-ack",
+                      "early-exit", "malformed", "timeout")
+    task_scenarios = ("gated-task", "gated-tree", "gated-tree-timeout")
+    if not ((task == "NOOP" and scenario in noop_scenarios)
+            or (task == "SUM_1_TO_8" and scenario in task_scenarios)):
+        raise RuntimeError("INT1-B13 REFUSED // task/scenario mismatch")
     if not body.strip() or len(body) > 4096:
         raise RuntimeError("INT1-B11 REFUSED // invalid synthetic prompt")
     with connect() as conn:
@@ -200,11 +264,14 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
         nonce = os.urandom(16).hex()
         child, info_fd = _nested_launch(scenario, nonce, controlled_stdin=True)
         accepted = False
+        tree_tracker = None
         try:
             pid = _child_pid_from_bwrap(info_fd, child.pid, 2.5)
             _receive_ready(child, nonce, 2.5)
             worker = _resolve_isolated_worker(pid, scenario, nonce)
             proof = _observe_nested(worker, controlled_stdin=True)
+            if scenario in ("gated-tree", "gated-tree-timeout"):
+                tree_tracker = DescendantTracker(worker)
             now = context_digest(conn, room_id, session_id)
             if (now["generation"], now["contextHash"]) != (generation, digest):
                 raise RuntimeError("INT1-B11 REFUSED // eligibility changed before acceptance")
@@ -229,25 +296,37 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     os._exit(77)
                 if revoke_before_dispatch:
                     revoke(conn, room_id, "B11 synthetic before dispatch")
-                dispatch_barrier(
+                ack = dispatch_barrier(
                     conn, child, room_id=room_id, session_id=session_id,
                     turn_id=turn_id, generation=generation, digest=digest,
-                    nonce=nonce, ack_timeout=0.3 if scenario == "gated-timeout-ack" else 1.5,
+                    nonce=nonce,
+                    task=task,
+                    on_tick=tree_tracker.capture if tree_tracker else None,
+                    ack_timeout=0.3 if scenario in (
+                        "gated-timeout-ack", "gated-tree-timeout") else 1.5,
                 )
             except BaseException:
                 mark_failed(conn, turn_id)
                 raise
             return {
-                "state": "SYNTHETIC_NOOP_ACKED", "turnId": turn_id,
+                "state": ("SYNTHETIC_TASK_ACKED" if task == "SUM_1_TO_8"
+                          else "SYNTHETIC_NOOP_ACKED"),
+                "turnId": turn_id,
                 "messageId": accepted_result["messageId"],
                 "generation": generation,
                 "profile": PROFILE, "brokerReaped": True,
                 "brokerOsObserved": bool(proof),
                 "syntheticFrames": 1, "modelCalls": 0, "toolCalls": 0,
+                "taskResult": ack["result"],
+                "descendantTerminationVerified": bool(tree_tracker),
                 "productionReady": False,
             }
         finally:
-            _terminate_and_reap(child)
+            try:
+                _terminate_and_reap(child)
+            finally:
+                if tree_tracker is not None:
+                    tree_tracker.verify_and_close()
 
 
 def main():
@@ -257,13 +336,14 @@ def main():
     parser.add_argument("--turn-id", required=True)
     parser.add_argument("--body-stdin", required=True, action="store_true")
     parser.add_argument("--scenario", default="gated")
+    parser.add_argument("--task", choices=("NOOP", "SUM_1_TO_8"), default="NOOP")
     parser.add_argument("--test-revoke-before-dispatch", action="store_true")
     parser.add_argument("--test-crash-after-reserve", action="store_true")
     args = parser.parse_args()
     try:
         result = run(
             args.room_id, args.session_id, args.turn_id, sys.stdin.read(),
-            scenario=args.scenario,
+            scenario=args.scenario, task=args.task,
             revoke_before_dispatch=args.test_revoke_before_dispatch,
             test_crash_after_reserve=args.test_crash_after_reserve,
         )
