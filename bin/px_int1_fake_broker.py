@@ -199,16 +199,153 @@ def probe(room_id, session_id, *, scenario="ready", timeout=1.5,
         _terminate_and_reap(child)
 
 
+
+# B10 // Additional nested mount namespace. B9 is deliberately retained as a
+# separate lifecycle-only regression. B10 does NOT expose the source Hospital
+# DB, its provider registry, or writable /fixture to the isolated idle child.
+# The trusted supervisor (this parent) remains in the disposable P1 fixture.
+INNER_BWRAP = "/usr/bin/bwrap"
+INNER_ISOLATION_NAMESPACES = ("mnt", "net", "ipc", "uts", "user")
+
+
+def _trusted_nested_bwrap():
+    import stat
+    for name in ("/", "/usr", "/usr/bin"):
+        info = os.lstat(name)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError("INT1-B10 REFUSED // untrusted Bubblewrap directory")
+    info = os.lstat(INNER_BWRAP)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError("INT1-B10 REFUSED // fixed root-owned Bubblewrap unavailable")
+    if not os.access(INNER_BWRAP, os.X_OK):
+        raise RuntimeError("INT1-B10 REFUSED // Bubblewrap not executable")
+
+
+def _nested_launch(scenario, nonce):
+    _trusted_nested_bwrap()
+    args = [
+        INNER_BWRAP,
+        "--unshare-user", "--unshare-net", "--unshare-ipc", "--unshare-uts",
+        "--die-with-parent", "--new-session", "--cap-drop", "ALL",
+        "--ro-bind", "/usr", "/usr",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib64", "/lib64",
+        "--proc", "/proc", "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--dir", "/source", "--dir", "/source/bin",
+        "--ro-bind", CHILD_SOURCE, CHILD_SOURCE,
+        "--ro-bind", "/source/bin/px_int1_fake_guard.py",
+                     "/source/bin/px_int1_fake_guard.py",
+        "--clearenv",
+    ]
+    for key, value in CHILD_ENV.items():
+        args += ["--setenv", key, value]
+    args += [
+        "--chdir", "/tmp",
+        CHILD_EXEC, "-I", "-B", CHILD_SOURCE, "child",
+        "--scenario", scenario, "--nonce", nonce,
+    ]
+    return subprocess.Popen(
+        args, cwd="/", env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+    )
+
+
+def _observe_nested(pid):
+    """Use the kernel's process/root view, never the child READY JSON, as proof."""
+    if os.getsid(pid) != pid or os.getpgid(pid) != pid:
+        raise RuntimeError("INT1-B10 REFUSED // child lacks dedicated session")
+    for kind in INNER_ISOLATION_NAMESPACES:
+        child = os.stat("/proc/%s/ns/%s" % (pid, kind))
+        parent = os.stat("/proc/self/ns/%s" % kind)
+        if (child.st_dev, child.st_ino) == (parent.st_dev, parent.st_ino):
+            raise RuntimeError("INT1-B10 REFUSED // inner namespace absent: " + kind)
+    root = Path("/proc/%s/root" % pid)
+    if (root / "fixture").exists() or (root / "fixture/hospital/data/hospital.db").exists():
+        raise RuntimeError("INT1-B10 REFUSED // Hospital fixture visible to broker")
+    if (root / "source/bin/px-hospital-store").exists():
+        raise RuntimeError("INT1-B10 REFUSED // Hospital writer exposed to broker")
+    if not (root / "source/bin/px_int1_fake_broker.py").is_file():
+        raise RuntimeError("INT1-B10 REFUSED // source mount absent")
+    mounts = Path("/proc/%s/mountinfo" % pid).read_text()
+    if " /fixture " in mounts or " /fixture/" in mounts:
+        raise RuntimeError("INT1-B10 REFUSED // fixture mount leaked")
+    status = Path("/proc/%s/status" % pid).read_text().splitlines()
+    caps = next((x.split(":", 1)[1].strip() for x in status
+                 if x.startswith("CapEff:")), None)
+    if caps is None or int(caps, 16) != 0:
+        raise RuntimeError("INT1-B10 REFUSED // ambient capabilities retained")
+    env_bytes = Path("/proc/%s/environ" % pid).read_bytes()
+    env_fields = [x for x in env_bytes.split(b"\0") if x]
+    try:
+        env = dict(x.decode("utf-8").split("=", 1) for x in env_fields)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("INT1-B10 REFUSED // unparseable environment") from exc
+    if env != CHILD_ENV or len(env_fields) != len(CHILD_ENV):
+        raise RuntimeError("INT1-B10 REFUSED // environment not allowlisted")
+    fd_root = Path("/proc/%s/fd" % pid)
+    fds = {int(x.name) for x in fd_root.iterdir()}
+    if fds != {0, 1, 2}:
+        raise RuntimeError("INT1-B10 REFUSED // unexpected child descriptors")
+    if os.readlink(fd_root / "0") != "/dev/null" or (
+            not os.readlink(fd_root / "1").startswith("pipe:[")) or (
+            os.readlink(fd_root / "2") != "/dev/null"):
+        raise RuntimeError("INT1-B10 REFUSED // child standard streams not sealed")
+    return {
+        "innerNamespaces": list(INNER_ISOLATION_NAMESPACES),
+        "hospitalDbVisible": False, "fixtureRootVisible": False,
+        "childFds": [0, 1, 2],
+        "childEnvironmentKeys": sorted(CHILD_ENV),
+        "effectiveCapabilities": 0,
+    }
+
+
+def probe_isolated(room_id, session_id, *, scenario="ready", timeout=1.5):
+    """B10 refuses when nested OS confinement is unsupported. Never fall back."""
+    from px_int1_fake_atomic import require_id
+    require_id(room_id, "Room ID")
+    require_id(session_id, "session ID")
+    if scenario not in ("ready", "early-exit", "malformed", "timeout"):
+        raise RuntimeError("INT1-B10 REFUSED // unknown test scenario")
+    if not (0.1 <= timeout <= 4):
+        raise RuntimeError("INT1-B10 REFUSED // invalid readiness timeout")
+    before = _eligible_snapshot(room_id, session_id)
+    nonce = os.urandom(16).hex()
+    child = _nested_launch(scenario, nonce)
+    try:
+        _receive_ready(child, nonce, timeout)
+        proof = _observe_nested(child.pid)
+        after = _eligible_snapshot(room_id, session_id)
+        if (before["generation"], before["contextHash"]) != (
+                after["generation"], after["contextHash"]):
+            raise RuntimeError("INT1-B10 REFUSED // eligibility changed during startup")
+        return {
+            "state": "ISOLATED_IDLE_BROKER_PROBED_AND_REAPED",
+            "profile": PROFILE, "providerId": FAKE_ID,
+            "roomId": room_id, "sessionId": session_id,
+            "brokerStarted": True, "brokerReaped": True,
+            "ready": True, "osEvidence": proof,
+            "messagesAccepted": 0, "eventsAccepted": 0,
+            "modelCalls": 0, "toolCalls": 0, "dispatches": 0,
+            "productionReady": False,
+        }
+    finally:
+        _terminate_and_reap(child)
+
 def main():
     parser = argparse.ArgumentParser(description="Disposable idle broker readiness proof")
     sub = parser.add_subparsers(dest="command", required=True)
-    parent = sub.add_parser("probe")
-    parent.add_argument("--room-id", required=True)
-    parent.add_argument("--session-id", required=True)
-    parent.add_argument("--scenario", default="ready",
-                        choices=("ready", "early-exit", "malformed", "timeout"))
-    parent.add_argument("--timeout", type=float, default=1.5)
-    parent.add_argument("--test-revoke-at-readiness", action="store_true")
+    for name in ("probe", "probe-isolated"):
+        parent = sub.add_parser(name)
+        parent.add_argument("--room-id", required=True)
+        parent.add_argument("--session-id", required=True)
+        parent.add_argument("--scenario", default="ready",
+                            choices=("ready", "early-exit", "malformed", "timeout"))
+        parent.add_argument("--timeout", type=float, default=1.5)
+        if name == "probe":
+            parent.add_argument("--test-revoke-at-readiness", action="store_true")
     child = sub.add_parser("child")
     child.add_argument("--scenario", required=True)
     child.add_argument("--nonce", required=True)
@@ -216,11 +353,17 @@ def main():
     if args.command == "child":
         return _idle_child(args.scenario, args.nonce)
     try:
-        result = probe(
-            args.room_id, args.session_id, scenario=args.scenario,
-            timeout=args.timeout,
-            test_revoke_at_readiness=args.test_revoke_at_readiness,
-        )
+        if args.command == "probe-isolated":
+            result = probe_isolated(
+                args.room_id, args.session_id,
+                scenario=args.scenario, timeout=args.timeout,
+            )
+        else:
+            result = probe(
+                args.room_id, args.session_id, scenario=args.scenario,
+                timeout=args.timeout,
+                test_revoke_at_readiness=args.test_revoke_at_readiness,
+            )
         print(json.dumps(result, sort_keys=True))
         return 0
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
