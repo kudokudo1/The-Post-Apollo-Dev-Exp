@@ -37,6 +37,39 @@ RECEIPTS = """CREATE TABLE IF NOT EXISTS int1_fake_dispatch_receipts (
     result TEXT NOT NULL DEFAULT ''
 )"""
 
+# B17: a synthetic turn-specific cancellation intent. The nonce hash binds
+# this record to one durable dispatch reservation; Room grants are untouched.
+CANCELLATIONS = """CREATE TABLE IF NOT EXISTS int1_fake_turn_cancellations (
+    turn_id TEXT PRIMARY KEY REFERENCES int1_fake_dispatch_receipts(turn_id),
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    generation INTEGER NOT NULL CHECK(generation > 0),
+    nonce_hash TEXT NOT NULL CHECK(length(nonce_hash) = 64)
+)"""
+
+
+def ensure_turn_not_cancelled(conn, *, room_id, session_id, turn_id,
+                              generation, nonce):
+    # The table may not exist until the first explicit cancellation. Do NOT
+    # create it in a polling/read transaction or write to the canonical Room.
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='int1_fake_turn_cancellations'"
+    ).fetchone()
+    if exists is None:
+        return
+    row = conn.execute(
+        "SELECT room_id,session_id,generation,nonce_hash "
+        "FROM int1_fake_turn_cancellations WHERE turn_id=?", (turn_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if (row["room_id"] != room_id or row["session_id"] != session_id or
+            row["generation"] != generation or
+            row["nonce_hash"] != hashlib.sha256(nonce.encode()).hexdigest()):
+        raise RuntimeError("INT1-B17 REFUSED // cancellation identity mismatch")
+    raise RuntimeError("INT1-B17 REFUSED // synthetic turn cancellation requested")
+
 
 
 class DescendantTracker:
@@ -208,9 +241,12 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
         if len(frame) > 256:
             raise RuntimeError("INT1-B11 REFUSED // oversized dispatch frame")
         # Stage C single fixed frame: serialize authorization and actual
-        # pipe dispatch under the SQLite write lock. The B14 mode releases
-        # that lock AFTER transmission, allowing an external cancellation
-        # to advance the authority generation while the task is running.
+        # pipe dispatch under the SQLite write lock. The B14/B17 mode releases
+        # that lock AFTER transmission, allowing an independent per-turn
+        # cancellation or Room revocation to commit during execution.
+        ensure_turn_not_cancelled(conn, room_id=room_id, session_id=session_id,
+                                  turn_id=turn_id, generation=generation,
+                                  nonce=nonce)
         child.stdin.write(frame)
         child.stdin.flush()
         child.stdin.close()
@@ -225,6 +261,10 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
                 current_authority(conn, room_id=room_id,
                                   session_id=session_id,
                                   generation=generation, digest=digest)
+                ensure_turn_not_cancelled(
+                    conn, room_id=room_id, session_id=session_id,
+                    turn_id=turn_id, generation=generation, nonce=nonce,
+                )
         ack = receive_ack(child, nonce=nonce, turn_id=turn_id,
                           expected_result=expected, on_tick=callback,
                           timeout=ack_timeout)
@@ -234,6 +274,10 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
             conn.execute("BEGIN IMMEDIATE")
             current_authority(conn, room_id=room_id, session_id=session_id,
                               generation=generation, digest=digest)
+            ensure_turn_not_cancelled(
+                conn, room_id=room_id, session_id=session_id,
+                turn_id=turn_id, generation=generation, nonce=nonce,
+            )
             after = conn.execute(
                 "SELECT state,nonce_hash FROM int1_fake_dispatch_receipts "
                 "WHERE turn_id=?", (turn_id,),

@@ -58,12 +58,20 @@ def inspect(conn, room, session, turn):
     try:
         row = _turn(conn, room, session, turn)
         reply = _reply(conn, turn) if row else None
+        cancellation = bool(row and _table(conn, "int1_fake_turn_cancellations") and
+            conn.execute(
+                "SELECT 1 FROM int1_fake_turn_cancellations "
+                "WHERE turn_id=? AND room_id=? AND session_id=?",
+                (turn, room, session),
+            ).fetchone())
         if row is None:
             state = "NOT_FOUND"
         elif row["state"] == "FAILED" or row["receipt_state"] == "FAILED":
             state = "FAILED"
         elif reply and row["receipt_state"] == "ACKED":
             state = "COMPLETED"
+        elif cancellation and row["receipt_state"] == "RESERVED":
+            state = "CANCELLATION_REQUESTED"
         elif row["receipt_state"] == "RESERVED":
             state = "DELIVERY_UNCERTAIN"
         elif row["receipt_state"] == "ACKED":
@@ -77,8 +85,9 @@ def inspect(conn, room, session, turn):
             "state": state, "receiptState": row["receipt_state"] if row else None,
             "doctorMessageId": str(reply["message_id"]) if reply else "",
             "needsExplicitRecovery": state in (
-                "DELIVERY_UNCERTAIN", "ACKED_UNFINALIZED",
-                "ACCEPTED_UNRESERVED", "INCONSISTENT"),
+                "DELIVERY_UNCERTAIN", "CANCELLATION_REQUESTED",
+                "ACKED_UNFINALIZED", "ACCEPTED_UNRESERVED", "INCONSISTENT"),
+            "cancellationRequested": cancellation,
             "syntheticSessionStatus": (
                 "WAITING" if state == "COMPLETED" else
                 "FAILED" if state == "FAILED" else

@@ -18,6 +18,7 @@ from px_int1_fake_atomic import (
 from px_int1_fake_epoch import verify_hooks
 from px_int1_fake_continuity import verify_b4
 from px_int1_fake_lifecycle import run, finalize_verified, inspect
+from px_int1_fake_dispatch import CANCELLATIONS
 
 
 def _required_context_parity(conn, context, room_id, session_id):
@@ -119,13 +120,12 @@ def inspect_fake_turn(session_id, turn_id):
 
 
 def cancel_fake_turn(session_id, turn_id, reason):
-    """B16: request revocation via the normal PX cancel command surface.
+    """B17: persist an exact-turn request through normal PX cancel.
 
-    This is not a kill syscall. The live synthetic supervisor detects the
-    increased Room generation, tears down its isolated wrapper and then
-    refuses the result. Until that observer finishes, death is UNVERIFIED.
-    Cancellation intentionally revokes the whole Room grant; rebootstrap
-    cannot silently rearm it. No pid is ever trusted from caller or fixture.
+    Does not alter the Room grant, signal an unverified PID or claim death.
+    The live trusted supervisor checks this source-owned record and reaps
+    the known nested child. If the supervisor crashed, B12 still requires
+    explicit no-retry closure and termination is NOT inferred.
     """
     require_fixture()  # Before any Hospital or SQLite access.
     require_id(session_id, "session ID")
@@ -154,7 +154,8 @@ def cancel_fake_turn(session_id, turn_id, reason):
             validate_live(conn, room_id, session_id)
             row = conn.execute(
                 """SELECT t.generation,t.state AS turn_state,
-                          d.state AS receipt_state,d.result AS receipt_result
+                          d.state AS receipt_state,d.result AS receipt_result,
+                          d.nonce_hash AS nonce_hash
                    FROM int1_fake_accepted_turns t
                    JOIN int1_fake_dispatch_receipts d
                      ON d.turn_id=t.turn_id
@@ -171,27 +172,30 @@ def cancel_fake_turn(session_id, turn_id, reason):
             grant = authority_row(conn, room_id)
             if grant["revoked"] or grant["generation"] != row["generation"]:
                 raise RuntimeError("INT1-B16 REFUSED // stale or revoked Room grant")
+            # Receipt is immutable and source-owned; bind the cancellation
+            # request to its exact generation and nonce, not only a string ID.
+            if (not isinstance(row["nonce_hash"], str) or
+                    len(row["nonce_hash"]) != 64 or
+                    any(c not in "0123456789abcdef" for c in row["nonce_hash"])):
+                raise RuntimeError("INT1-B17 REFUSED // invalid reservation nonce")
+            conn.execute(CANCELLATIONS)
             if conn.execute(
-                "SELECT 1 FROM session_events WHERE session_id=? "
-                "AND event_type='turn.cancel.requested' "
-                "AND json_extract(payload_json,'$.turnId')=?",
-                (session_id, turn_id),
+                "SELECT 1 FROM int1_fake_turn_cancellations WHERE turn_id=?",
+                (turn_id,),
             ).fetchone():
-                raise RuntimeError("INT1-B16 REFUSED // cancellation already requested")
-            updated = conn.execute(
-                "UPDATE int1_fake_authority "
-                "SET generation=generation+1,revoked=1 "
-                "WHERE room_id=? AND generation=? AND revoked=0",
-                (room_id, row["generation"]),
+                raise RuntimeError("INT1-B17 REFUSED // cancellation already requested")
+            conn.execute(
+                "INSERT INTO int1_fake_turn_cancellations"
+                "(turn_id,room_id,session_id,generation,nonce_hash)"
+                "VALUES(?,?,?,?,?)",
+                (turn_id, room_id, session_id, row["generation"], row["nonce_hash"]),
             )
-            if updated.rowcount != 1:
-                raise RuntimeError("INT1-B16 REFUSED // concurrent revocation")
             conn.execute(
                 "INSERT INTO session_events(session_id,event_type,payload_json) "
                 "VALUES(?,'turn.cancel.requested',?)",
                 (session_id, json.dumps({
                     "turnId": turn_id, "roomId": room_id,
-                    "reason": reason.strip(), "scope": "ROOM_GRANT_REVOCATION",
+                    "reason": reason.strip(), "scope": "SINGLE_SYNTHETIC_TURN",
                     "workerTerminationVerified": False,
                     "automaticRetryAllowed": False, "fakeOnly": True,
                 }, sort_keys=True)),
@@ -200,7 +204,8 @@ def cancel_fake_turn(session_id, turn_id, reason):
             return {
                 "roomId": room_id, "sessionId": session_id,
                 "turnId": turn_id, "state": "CANCELLATION_REQUESTED",
-                "cancelRequested": True, "roomAuthorityRevoked": True,
+                "cancelRequested": True, "roomAuthorityRevoked": False,
+                "turnCancellationScoped": True,
                 "workerTerminationVerified": False,
                 "automaticRetryAllowed": False,
                 "syntheticOnly": True, "productionReady": False,
