@@ -26,7 +26,7 @@ PINNED_GIT_BLOBS = {
 def _git_blob_oid(data):
     """Compute the Git SHA-1 object ID of EXACT bytes, including blob framing."""
     return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") +
-                        b"\\x00" + data).hexdigest()
+                        b"\x00" + data).hexdigest()
 
 
 def require_source_pin(capability):
