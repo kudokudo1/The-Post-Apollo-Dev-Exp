@@ -379,6 +379,12 @@ class INT1AActualAgentTests(unittest.TestCase):
         end = self.ok(self.b15_status("b16-running"))
         self.assertEqual(end["state"], "FAILED")
         self.assertFalse(end["automaticRetryAllowed"])
+        # B19: cancellation request is not termination evidence. Only the
+        # surviving supervisor's completed cleanup can write this receipt.
+        self.assertTrue(end["supervisorTeardownEvidenceRecorded"])
+        self.assertTrue(end["wrapperReapedVerified"])
+        self.assertTrue(end["knownDescendantPidfdExitVerified"])
+        self.assertFalse(end["workerTerminationVerifiedAfterCrash"])
         entries = self.ok(self.fx.hospital("events", "int1-fake-session",
                                            "--limit", "100"))
         cancelled = [event for event in entries

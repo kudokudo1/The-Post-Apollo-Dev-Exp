@@ -617,5 +617,99 @@ class B11DispatchTests(unittest.TestCase):
         self.assertIn("crash injection requires fixed tree task", refused.stderr)
         self.assertEqual(before, self.messages())
 
+
+    def test_b19_crash_after_cleanup_before_receipt_refuses_late_proof(self):
+        # The verified pidfd signal is process-local until the receipt
+        # commits. A dead supervisor cannot retroactively attest it.
+        crashed = self.dispatch(
+            "b19-gap", "--task", "SUM_1_TO_8",
+            "--scenario", "gated-tree", "--test-crash-after-cleanup",
+        )
+        self.assertEqual(crashed.returncode, 79, crashed.stderr)
+        first = self.ok(self.lifecycle("status", "b19-gap"))
+        self.assertEqual(first["state"], "ACKED_UNFINALIZED")
+        self.assertEqual(first["receiptState"], "ACKED")
+        self.assertEqual(first["doctorMessageId"], "")
+        self.assertFalse(first["supervisorTeardownEvidenceRecorded"])
+        self.assertFalse(first["wrapperReapedVerified"])
+        self.assertFalse(first["knownDescendantPidfdExitVerified"])
+        self.assertFalse(first["workerTerminationVerifiedAfterCrash"])
+        self.assertTrue(first["needsExplicitRecovery"])
+        self.assertFalse(first["automaticRetryAllowed"])
+        self.assertEqual(first, self.ok(self.lifecycle("status", "b19-gap")))
+        same_turn = self.dispatch("b19-gap", "--task", "SUM_1_TO_8",
+                                  "--scenario", "gated-tree")
+        self.assertNotEqual(same_turn.returncode, 0)
+        self.assertIn("no automatic turn replay", same_turn.stderr)
+        closed = self.ok(self.lifecycle(
+            "resolve-incomplete", "b19-gap",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "Supervisor died in teardown receipt commit gap",
+        ))
+        self.assertEqual(closed["state"], "FAILED")
+        self.assertFalse(closed["workerTerminationVerified"])
+        after = self.ok(self.lifecycle("status", "b19-gap"))
+        self.assertEqual(after["state"], "FAILED")
+        self.assertFalse(after["supervisorTeardownEvidenceRecorded"])
+        self.assertEqual(self.ok(self.lifecycle(
+            "turn", "b19-later-good", "--body-stdin"))["state"], "COMPLETED")
+
+    def test_b19_crash_after_teardown_commit_has_proof_but_no_reply(self):
+        crashed = self.dispatch(
+            "b19-committed", "--task", "SUM_1_TO_8",
+            "--scenario", "gated-tree",
+            "--test-crash-after-teardown-commit",
+        )
+        self.assertEqual(crashed.returncode, 80, crashed.stderr)
+        row = self.ok(self.lifecycle("status", "b19-committed"))
+        self.assertEqual(row["state"], "ACKED_UNFINALIZED")
+        self.assertTrue(row["supervisorTeardownEvidenceRecorded"])
+        self.assertTrue(row["wrapperReapedVerified"])
+        self.assertTrue(row["knownDescendantPidfdExitVerified"])
+        self.assertFalse(row["workerTerminationVerifiedAfterCrash"])
+        self.assertEqual(row["doctorMessageId"], "")
+        self.assertTrue(row["needsExplicitRecovery"])
+        self.assertFalse(row["automaticRetryAllowed"])
+        self.assertEqual(row, self.ok(self.lifecycle("status", "b19-committed")))
+        event_rows = self.ok(self.fx.hospital("events", SESSION, "--limit", "100"))
+        self.assertEqual(sum(
+            e["type"] == "turn.supervisor.teardown" for e in event_rows
+        ), 1)
+        self.assertEqual(sum(e["type"] == "turn.completed" for e in event_rows), 0)
+        close = self.ok(self.lifecycle(
+            "resolve-incomplete", "b19-committed",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "ACK and teardown commit without Doctor reply",
+        ))
+        self.assertEqual(close["state"], "FAILED")
+        again = self.ok(self.lifecycle("status", "b19-committed"))
+        self.assertEqual(again["state"], "FAILED")
+        self.assertTrue(again["supervisorTeardownEvidenceRecorded"])
+        self.assertEqual(again["doctorMessageId"], "")
+        self.assertNotEqual(self.dispatch(
+            "b19-committed", "--scenario", "gated-tree",
+            "--task", "SUM_1_TO_8").returncode, 0)
+
+    def test_b19_fault_modes_fail_closed_before_acceptance(self):
+        before = self.messages()
+        bad = (
+            ("--scenario", "gated-task", "--task", "SUM_1_TO_8",
+             "--test-crash-after-cleanup"),
+            ("--scenario", "gated-tree", "--task", "NOOP",
+             "--test-crash-after-teardown-commit"),
+            ("--scenario", "gated-tree", "--task", "SUM_1_TO_8",
+             "--test-crash-after-cleanup", "--test-crash-after-teardown-commit"),
+            ("--scenario", "gated-tree", "--task", "SUM_1_TO_8",
+             "--test-crash-after-reserve", "--test-crash-after-cleanup"),
+            ("--scenario", "gated-tree", "--task", "SUM_1_TO_8",
+             "--test-crash-after-frame", "--test-crash-after-cleanup"),
+        )
+        for n, options in enumerate(bad):
+            denied = self.dispatch("b19-invalid-" + str(n), *options)
+            self.assertNotEqual(denied.returncode, 0)
+        self.assertEqual(self.messages(), before)
+        self.assertFalse(self.receipt_table_exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

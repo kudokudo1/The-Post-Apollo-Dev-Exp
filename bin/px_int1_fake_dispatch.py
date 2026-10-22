@@ -395,7 +395,8 @@ def mark_failed(conn, turn_id):
 
 def run(room_id, session_id, turn_id, body, *, scenario="gated",
         task="NOOP", revoke_before_dispatch=False, test_crash_after_reserve=False,
-        test_crash_after_frame=False):
+        test_crash_after_frame=False, test_crash_after_cleanup=False,
+        test_crash_after_teardown_commit=False):
     for value, field in ((room_id, "Room ID"), (session_id, "session ID"),
                          (turn_id, "turn ID")):
         require_id(value, field)
@@ -412,6 +413,15 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
             test_crash_after_reserve or scenario != "gated-tree-cancel"
             or task != "SUM_1_TO_8"):
         raise RuntimeError("INT1-B18 REFUSED // crash injection requires fixed tree task")
+    # B19 fault locations are mutually exclusive and source-owned. They
+    # are never valid for a general provider, arbitrary task or unknown tree.
+    if test_crash_after_cleanup or test_crash_after_teardown_commit:
+        if (test_crash_after_reserve or test_crash_after_frame or
+                test_crash_after_cleanup and test_crash_after_teardown_commit or
+                scenario != "gated-tree" or task != "SUM_1_TO_8"):
+            raise RuntimeError(
+                "INT1-B19 REFUSED // cleanup crash needs one fixed tree task"
+            )
     with connect() as conn:
         before = context_digest(conn, room_id, session_id)
         already = conn.execute(
@@ -496,12 +506,31 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     tree_tracker.pidfd is not None
                 )
                 tree_tracker.verify_and_close()
+            # Deterministic crash at the *actual* cleanup-to-commit gap.
+            # Although this live supervisor verified wrapper + known child
+            # exit, its death before SQLite commit cannot produce evidence.
+            # A restarted observer must remain uncertain about termination.
+            if test_crash_after_cleanup:
+                if not accepted or not verified_descendant:
+                    raise RuntimeError(
+                        "INT1-B19 REFUSED // cleanup proof not established"
+                    )
+                os._exit(79)
             if accepted:
                 record_supervised_teardown(
                     conn, room_id=room_id, session_id=session_id,
                     turn_id=turn_id,
                     descendant_pidfd_exit_verified=verified_descendant,
                 )
+                # This fault has a committed supervised proof but deliberately
+                # does not run B14 Doctor reply finalization. No restart may
+                # infer a reply from teardown evidence or ACK alone.
+                if test_crash_after_teardown_commit:
+                    if not verified_descendant:
+                        raise RuntimeError(
+                            "INT1-B19 REFUSED // descendant exit unverified"
+                        )
+                    os._exit(80)
 
 
 def main():
@@ -515,6 +544,8 @@ def main():
     parser.add_argument("--test-revoke-before-dispatch", action="store_true")
     parser.add_argument("--test-crash-after-reserve", action="store_true")
     parser.add_argument("--test-crash-after-frame", action="store_true")
+    parser.add_argument("--test-crash-after-cleanup", action="store_true")
+    parser.add_argument("--test-crash-after-teardown-commit", action="store_true")
     args = parser.parse_args()
     try:
         result = run(
@@ -523,6 +554,8 @@ def main():
             revoke_before_dispatch=args.test_revoke_before_dispatch,
             test_crash_after_reserve=args.test_crash_after_reserve,
             test_crash_after_frame=args.test_crash_after_frame,
+            test_crash_after_cleanup=args.test_crash_after_cleanup,
+            test_crash_after_teardown_commit=args.test_crash_after_teardown_commit,
         )
         print(json.dumps(result, sort_keys=True))
         return 0
