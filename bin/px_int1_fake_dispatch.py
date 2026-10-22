@@ -47,6 +47,60 @@ CANCELLATIONS = """CREATE TABLE IF NOT EXISTS int1_fake_turn_cancellations (
     nonce_hash TEXT NOT NULL CHECK(length(nonce_hash) = 64)
 )"""
 
+# B18 is only a positive proof of this exact supervisor's COMPLETED
+# cleanup procedure, not a proof of death after a different supervisor
+# crashes. No external worker can submit or set these receipt fields.
+TEARDOWN = """CREATE TABLE IF NOT EXISTS int1_fake_supervisor_teardown (
+    turn_id TEXT PRIMARY KEY REFERENCES int1_fake_accepted_turns(turn_id),
+    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    wrapper_reaped INTEGER NOT NULL CHECK(wrapper_reaped = 1),
+    known_descendant_pidfd_exit INTEGER NOT NULL
+        CHECK(known_descendant_pidfd_exit IN (0,1))
+)"""
+
+
+def record_supervised_teardown(conn, *, room_id, session_id, turn_id,
+                               descendant_pidfd_exit_verified):
+    # Call only after _terminate_and_reap succeeded AND optional
+    # DescendantTracker.verify_and_close returned without error.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        verify_hooks(conn)
+        verify_b4(conn)
+        row = conn.execute(
+            "SELECT 1 FROM int1_fake_accepted_turns "
+            "WHERE turn_id=? AND room_id=? AND session_id=?",
+            (turn_id, room_id, session_id),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("INT1-B18 REFUSED // no matching accepted turn")
+        conn.execute(TEARDOWN)
+        conn.execute(
+            "INSERT INTO int1_fake_supervisor_teardown"
+            "(turn_id,room_id,session_id,wrapper_reaped,"
+            "known_descendant_pidfd_exit) VALUES(?,?,?,1,?)",
+            (turn_id, room_id, session_id,
+             int(bool(descendant_pidfd_exit_verified))),
+        )
+        conn.execute(
+            "INSERT INTO session_events(session_id,event_type,payload_json) "
+            "VALUES(?,'turn.supervisor.teardown',?)",
+            (session_id, json.dumps({
+                "turnId": turn_id, "roomId": room_id,
+                "wrapperReapedVerified": True,
+                "knownDescendantPidfdExitVerified":
+                    bool(descendant_pidfd_exit_verified),
+                "workerTerminationVerifiedAfterCrash": False,
+                "source": "SUPERVISOR_SUCCESSFUL_FINALLY",
+                "automaticRetryAllowed": False, "fakeOnly": True,
+            }, sort_keys=True)),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
 
 def ensure_turn_not_cancelled(conn, *, room_id, session_id, turn_id,
                               generation, nonce):
@@ -219,7 +273,8 @@ def receive_ack(child, *, nonce, turn_id, expected_result="SYNTHETIC_NOOP",
 
 def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
                      generation, digest, nonce, ack_timeout,
-                     task="NOOP", on_tick=None, live_revocation=False):
+                     task="NOOP", on_tick=None, live_revocation=False,
+                     crash_after_frame_with_descendant=False):
     conn.execute("BEGIN IMMEDIATE")
     try:
         current_authority(conn, room_id=room_id, session_id=session_id,
@@ -250,6 +305,26 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
         child.stdin.write(frame)
         child.stdin.flush()
         child.stdin.close()
+        if crash_after_frame_with_descendant:
+            # B18 synthetic-only crash injection: frame has already crossed
+            # the dispatch pipe, but no ACK or cleanup result is durable.
+            # Release the writer transaction; prove only that one B13 child
+            # fork was observed before killing the SUPERVISOR with os._exit.
+            # This is deliberately NOT a termination attestation.
+            conn.commit()
+            if on_tick is None:
+                raise RuntimeError("INT1-B18 REFUSED // missing descendant tracker")
+            deadline = time.monotonic() + 1.8
+            while time.monotonic() < deadline:
+                on_tick()
+                # The caller's tracker captures a pidfd, but no PID values
+                # are exported to the fixture database or treated as a grant.
+                # Give the known fixed worker time to produce the child.
+                if getattr(on_tick, "__self__", None) is not None and getattr(
+                        on_tick.__self__, "pidfd", None) is not None:
+                    os._exit(78)
+                time.sleep(0.02)
+            raise RuntimeError("INT1-B18 REFUSED // fork not observed in time")
         callback = on_tick
         if live_revocation:
             # No untrusted task gets a DB handle. Only the trusted supervisor
@@ -319,7 +394,8 @@ def mark_failed(conn, turn_id):
 
 
 def run(room_id, session_id, turn_id, body, *, scenario="gated",
-        task="NOOP", revoke_before_dispatch=False, test_crash_after_reserve=False):
+        task="NOOP", revoke_before_dispatch=False, test_crash_after_reserve=False,
+        test_crash_after_frame=False):
     for value, field in ((room_id, "Room ID"), (session_id, "session ID"),
                          (turn_id, "turn ID")):
         require_id(value, field)
@@ -332,6 +408,10 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
         raise RuntimeError("INT1-B13 REFUSED // task/scenario mismatch")
     if not body.strip() or len(body) > 4096:
         raise RuntimeError("INT1-B11 REFUSED // invalid synthetic prompt")
+    if test_crash_after_frame and (
+            test_crash_after_reserve or scenario != "gated-tree-cancel"
+            or task != "SUM_1_TO_8"):
+        raise RuntimeError("INT1-B18 REFUSED // crash injection requires fixed tree task")
     with connect() as conn:
         before = context_digest(conn, room_id, session_id)
         already = conn.execute(
@@ -383,6 +463,7 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     task=task,
                     on_tick=tree_tracker.capture if tree_tracker else None,
                     live_revocation=scenario == "gated-tree-cancel",
+                    crash_after_frame_with_descendant=test_crash_after_frame,
                     ack_timeout=(3.0 if scenario == "gated-tree-cancel" else
                                  0.3 if scenario in (
                                      "gated-timeout-ack", "gated-tree-timeout")
@@ -405,11 +486,22 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                 "productionReady": False,
             }
         finally:
-            try:
-                _terminate_and_reap(child)
-            finally:
-                if tree_tracker is not None:
-                    tree_tracker.verify_and_close()
+            # Write B18 positive evidence ONLY after both cleanup checks.
+            # os._exit(), a failed wait, or a missing pidfd bypasses evidence.
+            _terminate_and_reap(child)
+            verified_descendant = False
+            if tree_tracker is not None:
+                verified_descendant = bool(
+                    tree_tracker.readiness_wait_started and
+                    tree_tracker.pidfd is not None
+                )
+                tree_tracker.verify_and_close()
+            if accepted:
+                record_supervised_teardown(
+                    conn, room_id=room_id, session_id=session_id,
+                    turn_id=turn_id,
+                    descendant_pidfd_exit_verified=verified_descendant,
+                )
 
 
 def main():
@@ -422,6 +514,7 @@ def main():
     parser.add_argument("--task", choices=("NOOP", "SUM_1_TO_8"), default="NOOP")
     parser.add_argument("--test-revoke-before-dispatch", action="store_true")
     parser.add_argument("--test-crash-after-reserve", action="store_true")
+    parser.add_argument("--test-crash-after-frame", action="store_true")
     args = parser.parse_args()
     try:
         result = run(
@@ -429,6 +522,7 @@ def main():
             scenario=args.scenario, task=args.task,
             revoke_before_dispatch=args.test_revoke_before_dispatch,
             test_crash_after_reserve=args.test_crash_after_reserve,
+            test_crash_after_frame=args.test_crash_after_frame,
         )
         print(json.dumps(result, sort_keys=True))
         return 0

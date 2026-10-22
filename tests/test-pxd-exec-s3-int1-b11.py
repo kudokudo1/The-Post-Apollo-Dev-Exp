@@ -543,5 +543,79 @@ class B11DispatchTests(unittest.TestCase):
         )), 0)
 
 
+
+    def test_b18_supervised_cleanup_receipt_survives_reopen(self):
+        ack = self.ok(self.dispatch(
+            "b18-reaped", "--scenario", "gated-tree",
+            "--task", "SUM_1_TO_8",
+        ))
+        self.assertTrue(ack["descendantTerminationVerified"])
+        status = self.ok(self.lifecycle("status", "b18-reaped"))
+        self.assertEqual(status["state"], "ACKED_UNFINALIZED")
+        self.assertTrue(status["supervisorTeardownEvidenceRecorded"])
+        self.assertTrue(status["wrapperReapedVerified"])
+        self.assertTrue(status["knownDescendantPidfdExitVerified"])
+        self.assertFalse(status["workerTerminationVerifiedAfterCrash"])
+        # A later new process sees evidence committed after actual cleanup.
+        again = self.ok(self.lifecycle("status", "b18-reaped"))
+        self.assertEqual(status, again)
+        events = self.ok(self.fx.hospital("events", SESSION, "--limit", "100"))
+        proof = [e for e in events if e["type"] == "turn.supervisor.teardown"]
+        self.assertEqual(len(proof), 1)
+        self.assertTrue(proof[0]["payload"]["knownDescendantPidfdExitVerified"])
+
+    def test_b18_after_frame_crash_has_no_teardown_evidence_or_reply(self):
+        crashed = self.dispatch(
+            "b18-post-frame", "--scenario", "gated-tree-cancel",
+            "--task", "SUM_1_TO_8", "--test-crash-after-frame",
+        )
+        self.assertEqual(crashed.returncode, 78, crashed.stderr)
+        # Frame WAS dispatched; after restart, delivery cannot be determined
+        # by a DB receipt or the exit code of the dead supervisor.
+        status = self.ok(self.lifecycle("status", "b18-post-frame"))
+        self.assertEqual(status["state"], "DELIVERY_UNCERTAIN")
+        self.assertEqual(status["receiptState"], "RESERVED")
+        self.assertFalse(status["supervisorTeardownEvidenceRecorded"])
+        self.assertFalse(status["wrapperReapedVerified"])
+        self.assertFalse(status["knownDescendantPidfdExitVerified"])
+        self.assertFalse(status["workerTerminationVerifiedAfterCrash"])
+        self.assertFalse(status["automaticRetryAllowed"])
+        self.assertNotEqual(self.dispatch(
+            "b18-post-frame", "--scenario", "gated-task",
+            "--task", "SUM_1_TO_8",
+        ).returncode, 0)
+        resolved = self.ok(self.close_uncertain(
+            "b18-post-frame", reason="B18 frame sent, supervisor died without ACK"
+        ))
+        self.assertEqual(resolved["state"], "FAILED_UNCERTAIN_DELIVERY")
+        self.assertFalse(resolved["workerTerminationVerified"])
+        after = self.ok(self.lifecycle("status", "b18-post-frame"))
+        self.assertEqual(after["state"], "FAILED")
+        self.assertFalse(after["supervisorTeardownEvidenceRecorded"])
+        self.assertFalse(after["workerTerminationVerifiedAfterCrash"])
+
+    def test_b18_before_frame_crash_never_claims_teardown(self):
+        crashed = self.dispatch("b18-pre-frame", "--test-crash-after-reserve")
+        self.assertEqual(crashed.returncode, 77, crashed.stderr)
+        status = self.ok(self.lifecycle("status", "b18-pre-frame"))
+        self.assertEqual(status["state"], "DELIVERY_UNCERTAIN")
+        self.assertFalse(status["supervisorTeardownEvidenceRecorded"])
+        self.assertFalse(status["wrapperReapedVerified"])
+        self.assertFalse(status["knownDescendantPidfdExitVerified"])
+        self.assertFalse(status["workerTerminationVerifiedAfterCrash"])
+        self.ok(self.close_uncertain(
+            "b18-pre-frame", reason="B18 pre-frame crash no success claim"
+        ))
+
+    def test_b18_crash_injection_does_not_enable_arbitrary_task(self):
+        before = self.messages()
+        refused = self.dispatch(
+            "b18-invalid", "--test-crash-after-frame",
+            "--scenario", "gated-task", "--task", "SUM_1_TO_8",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("crash injection requires fixed tree task", refused.stderr)
+        self.assertEqual(before, self.messages())
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

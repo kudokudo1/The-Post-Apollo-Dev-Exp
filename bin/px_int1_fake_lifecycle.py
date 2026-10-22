@@ -58,6 +58,13 @@ def inspect(conn, room, session, turn):
     try:
         row = _turn(conn, room, session, turn)
         reply = _reply(conn, turn) if row else None
+        teardown = (conn.execute(
+            "SELECT wrapper_reaped,known_descendant_pidfd_exit "
+            "FROM int1_fake_supervisor_teardown "
+            "WHERE turn_id=? AND room_id=? AND session_id=?",
+            (turn, room, session),
+        ).fetchone() if row and _table(conn, "int1_fake_supervisor_teardown")
+                    else None)
         cancellation = bool(row and _table(conn, "int1_fake_turn_cancellations") and
             conn.execute(
                 "SELECT 1 FROM int1_fake_turn_cancellations "
@@ -94,6 +101,12 @@ def inspect(conn, room, session, turn):
                 "UNRESOLVED" if row else "IDLE"
             ),
             "supervisorLivenessVerified": False,
+            "supervisorTeardownEvidenceRecorded": bool(teardown),
+            "wrapperReapedVerified": bool(teardown and teardown["wrapper_reaped"]),
+            "knownDescendantPidfdExitVerified": bool(
+                teardown and teardown["known_descendant_pidfd_exit"]),
+            # No teardown record can establish supervisor-crash worker death.
+            "workerTerminationVerifiedAfterCrash": False,
             "automaticRetryAllowed": False, "syntheticOnly": True,
         }
         conn.commit()
