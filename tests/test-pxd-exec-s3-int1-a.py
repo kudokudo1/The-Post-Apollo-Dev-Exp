@@ -6,6 +6,8 @@ no host repository execution, no live Hospital and no production writes.
 """
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import unittest
@@ -329,6 +331,116 @@ class INT1AActualAgentTests(unittest.TestCase):
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("revoked", denied.stderr.lower())
         self.assertEqual(self.before(), before)
+
+
+    def b16_cancel(self, turn_id, reason="B16 synthetic cancellation request"):
+        return self.fx.agent(
+            "cancel", "int1-fake-session",
+            "--exec-s3-fake-turn-id", turn_id, "--reason", reason,
+        )
+
+    def test_b16_real_agent_cancel_interrupts_running_synthetic_child(self):
+        self.install_b15_authority()
+        # One known fake worker plus exactly one forked test descendant.
+        # The supervisor owns the kernel pidfd and independently proves exit.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.fx.agent,
+                "turn", "int1-fake-session", "--exec-s3-fake-turn",
+                "--exec-s3-fake-turn-id", "b16-running",
+                "--exec-s3-fake-cancel-demo",
+                "--prompt", "SYNTHETIC_SUM_1_TO_8")
+            for _ in range(120):
+                status = self.b15_status("b16-running")
+                if status.returncode == 0:
+                    if self.ok(status)["state"] == "DELIVERY_UNCERTAIN":
+                        break
+                time.sleep(.04)
+            else:
+                self.fail("B16 synthetic reservation not observed")
+            time.sleep(.4)  # Allow the fixed descendant to fork and be tracked.
+            old = self.before()
+            implicit = self.fx.agent("cancel", "int1-fake-session")
+            self.assertNotEqual(implicit.returncode, 0)
+            self.assertIn("explicit --exec-s3-fake-turn-id", implicit.stderr)
+            self.assertEqual(self.before(), old)
+            denied = self.b15_turn("b16-running")
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("already operating", denied.stderr)
+            requested = self.ok(self.b16_cancel("b16-running"))
+            self.assertTrue(requested["cancelRequested"])
+            self.assertTrue(requested["roomAuthorityRevoked"])
+            self.assertFalse(requested["workerTerminationVerified"])
+            self.assertFalse(requested["automaticRetryAllowed"])
+            failed = pending.result(timeout=18)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("revoked", failed.stderr.lower())
+        self.assertNotIn("descendant survived", failed.stderr)
+        end = self.ok(self.b15_status("b16-running"))
+        self.assertEqual(end["state"], "FAILED")
+        self.assertFalse(end["automaticRetryAllowed"])
+        entries = self.ok(self.fx.hospital("events", "int1-fake-session",
+                                           "--limit", "100"))
+        cancelled = [event for event in entries
+                     if event["type"] == "turn.cancel.requested"]
+        self.assertEqual(len(cancelled), 1)
+        self.assertFalse(cancelled[0]["payload"]["workerTerminationVerified"])
+        msgs = self.ok(self.fx.hospital("messages", "S3-INT1",
+                                        "--limit", "100"))
+        self.assertEqual([row["authorRole"] for row in msgs], ["operator"])
+        second = self.b16_cancel("b16-running")
+        self.assertNotEqual(second.returncode, 0)
+        another = self.b15_turn("b16-after")
+        self.assertNotEqual(another.returncode, 0)
+        self.assertIn("revoked", another.stderr.lower())
+
+    def test_b16_completed_turn_cannot_be_cancelled(self):
+        self.install_b15_authority()
+        self.ok(self.b15_turn("b16-done"))
+        before = self.before()
+        denied = self.b16_cancel("b16-done")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("reserved synthetic turn", denied.stderr)
+        self.assertEqual(before, self.before())
+        self.ok(self.b15_turn("b16-still-authorized"))
+
+    def test_b16_nonexistent_turn_or_bad_reason_refuses_without_revocation(self):
+        self.install_b15_authority()
+        before = self.before()
+        unknown = self.b16_cancel("b16-not-found")
+        self.assertNotEqual(unknown.returncode, 0)
+        blank = self.b16_cancel("b16-not-found", reason=" ")
+        self.assertNotEqual(blank.returncode, 0)
+        self.assertEqual(before, self.before())
+        self.ok(self.b15_turn("b16-fresh"))
+
+    def test_b16_native_session_cannot_use_synthetic_cancel_flag(self):
+        self.ok(self.fx.hospital(
+            "session-put", "b16-native",
+            "--room-id", "S3-INT1", "--doctor-id", "S3-FAKE-DOCTOR",
+            "--provider-id", "codex", "--status", "IDLE",
+        ))
+        self.ok(self.fx.hospital(
+            "session-runtime", "b16-native",
+            "--working-directory", "/fixture/bed", "--status", "IDLE",
+        ))
+        before = self.before()
+        refused = self.fx.agent(
+            "cancel", "b16-native", "--exec-s3-fake-turn-id", "b16-native-turn",
+            "--reason", "Native provider cannot impersonate fake profile",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(self.before(), before)
+
+    def test_b16_demo_flag_without_explicit_fake_turn_refuses(self):
+        before = self.before()
+        refused = self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-cancel-demo",
+            "--prompt", "SYNTHETIC_SUM_1_TO_8",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("demo needs fake turn", refused.stderr)
+        self.assertEqual(before, self.before())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

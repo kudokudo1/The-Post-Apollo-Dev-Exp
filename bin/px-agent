@@ -778,6 +778,11 @@ def terminate_process_group(pid: int, grace_seconds: float = 1.5) -> bool:
 
 def cancel_session(args) -> dict:
     session = px_hospital("session", args.session_id)
+    if str(session.get("providerId") or "") == "int1-fake":
+        raise RuntimeError(
+            "INT1-B16 REFUSED // explicit --exec-s3-fake-turn-id required "
+            "for synthetic cancellation"
+        )
     active_pid = int(session.get("activePid") or 0)
     status = str(session.get("status") or "").upper()
 
@@ -1691,6 +1696,8 @@ def run_turn(args) -> dict:
     fake_turn_id = str(getattr(args, "exec_s3_fake_turn_id", "") or "")
     if fake_turn_id and not fake_turn:
         raise RuntimeError("INT1-B15 REFUSED // turn ID without fake execution flag")
+    if bool(getattr(args, "exec_s3_fake_cancel_demo", False)) and not fake_turn:
+        raise RuntimeError("INT1-B16 REFUSED // cancellation demo needs fake turn")
     if fake_turn and not fake_turn_id:
         raise RuntimeError("INT1-B15 REFUSED // explicit synthetic turn ID required")
     if fake_preflight or fake_turn:
@@ -1829,6 +1836,7 @@ def _run_turn_unlocked(args) -> dict:
             context=context, room_id=room_id, session_id=args.session_id,
             turn_id=args.exec_s3_fake_turn_id, prompt=prompt,
             identity=identity,
+            cancellation_demo=bool(getattr(args, "exec_s3_fake_cancel_demo", False)),
         )
 
     provider_input = provider_prompt
@@ -2967,6 +2975,8 @@ def build_parser():
     fake_mode.add_argument("--exec-s3-fake-preflight", action="store_true")
     fake_mode.add_argument("--exec-s3-fake-turn", action="store_true")
     turn.add_argument("--exec-s3-fake-turn-id", default="")
+    turn.add_argument("--exec-s3-fake-cancel-demo", action="store_true",
+                      help="Disposable B16 one-descendant cancellation probe only")
     turn.add_argument("--json", action="store_true")
 
     context = sub.add_parser("context")
@@ -2981,6 +2991,7 @@ def build_parser():
     cancel = sub.add_parser("cancel")
     cancel.add_argument("session_id")
     cancel.add_argument("--reason", default="OPERATOR")
+    cancel.add_argument("--exec-s3-fake-turn-id", default="")
     cancel.add_argument("--json", action="store_true")
 
     quick = sub.add_parser("quick")
@@ -3043,7 +3054,13 @@ def main() -> int:
             else:
                 emit(status_payload(args.session_id), args.json)
         elif args.command == "cancel":
-            emit(cancel_session(args), args.json)
+            if args.exec_s3_fake_turn_id:
+                from px_int1_fake_agent_bridge import cancel_fake_turn
+                emit(cancel_fake_turn(args.session_id,
+                                      args.exec_s3_fake_turn_id,
+                                      args.reason), args.json)
+            else:
+                emit(cancel_session(args), args.json)
         elif args.command == "quick":
             emit(run_quick(args), args.json)
         elif args.command == "orchestrate-ready":
