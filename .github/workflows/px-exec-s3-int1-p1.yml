@@ -1,0 +1,75 @@
+name: PX / EXEC-S3 INT1 Fixture Confinement
+on:
+  pull_request:
+    paths:
+      - 'tests/px_int1_fixture.py'
+      - 'tests/test-pxd-exec-s3-int1-p1.py'
+      - 'tests/test-pxd-exec-s3-int1-a.py'
+      - 'bin/px-agent'
+      - 'bin/px_int1_fake_guard.py'
+      - 'bin/px_int1_fake_capability.py'
+      - 'bin/px_int1_fake_version_pin.py'
+      - 'bin/px_int1_fake_atomic.py'
+      - 'bin/px_int1_fake_epoch.py'
+      - 'bin/px_int1_fake_continuity.py'
+      - 'tests/test-pxd-exec-s3-int1-b4.py'
+      - 'tests/test-pxd-exec-s3-int1-b5.py'
+      - 'tests/test-pxd-exec-s3-int1-b8.py'
+      - 'tests/test-pxd-exec-s3-int1-b9.py'
+      - 'bin/px_int1_fake_broker.py'
+      - 'bin/px_int1_fake_dispatch.py'
+      - 'bin/px_int1_fake_recovery.py'
+      - 'bin/px_int1_fake_lifecycle.py'
+      - 'bin/px_int1_fake_agent_bridge.py'
+      - 'tests/test-pxd-exec-s3-int1-b11.py'
+      - 'tests/test-pxd-exec-s3-int1-b1.py'
+      - 'tests/test-pxd-exec-s3-int1-b2.py'
+      - '.github/workflows/px-exec-s3-int1-p1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-confinement:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fixed root-owned Bubblewrap (disposable runner only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Control accepted S1 OS sandbox smoke
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s1-isolation.py --smoke
+      - name: Compile fixture code without PX execution
+        run: |
+          python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py tests/test-pxd-exec-s3-int1-a.py tests/test-pxd-exec-s3-int1-b1.py bin/px_int1_fake_guard.py bin/px_int1_fake_capability.py bin/px_int1_fake_version_pin.py bin/px_int1_fake_atomic.py bin/px-agent tests/test-pxd-exec-s3-int1-b2.py bin/px_int1_fake_epoch.py tests/test-pxd-exec-s3-int1-b4.py bin/px_int1_fake_continuity.py tests/test-pxd-exec-s3-int1-b5.py tests/test-pxd-exec-s3-int1-b8.py tests/test-pxd-exec-s3-int1-b9.py bin/px_int1_fake_broker.py tests/test-pxd-exec-s3-int1-b11.py bin/px_int1_fake_dispatch.py bin/px_int1_fake_recovery.py bin/px_int1_fake_lifecycle.py bin/px_int1_fake_agent_bridge.py
+      - name: INT1-B11/B12 inert dispatch, crash recovery and failure proof
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b11.py
+      - name: INT1-B9/B10 isolated idle broker readiness and cleanup proofs
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b9.py
+      - name: INT1-P1 disposable SQLite canary, safe setup and refusal tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-p1.py
+      - name: INT1-A actual agent default-off synthetic preflight tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-a.py
+      - name: INT1-B1 disposable atomic storage and cross-process revocation proof
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b1.py
+      - name: INT1-B2 disposable legacy authority mutation hook proof
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b2.py
+      - name: INT1-B4 detached continuity authority mutation proof
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b4.py
+      - name: INT1-B5/B6 canonical continuity acceptance integration
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b5.py
+      - name: INT1-B8 disposable real-context selection parity probe
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b8.py
