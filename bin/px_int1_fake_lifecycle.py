@@ -79,6 +79,11 @@ def inspect(conn, room, session, turn):
             "needsExplicitRecovery": state in (
                 "DELIVERY_UNCERTAIN", "ACKED_UNFINALIZED",
                 "ACCEPTED_UNRESERVED", "INCONSISTENT"),
+            "syntheticSessionStatus": (
+                "WAITING" if state == "COMPLETED" else
+                "FAILED" if state == "FAILED" else
+                "UNRESOLVED" if row else "IDLE"
+            ),
             "supervisorLivenessVerified": False,
             "automaticRetryAllowed": False, "syntheticOnly": True,
         }
@@ -139,17 +144,15 @@ def finalize_verified(conn, room, session, turn):
                 "result": RESULT, "fakeOnly": True, "modelCalls": 0,
             }, sort_keys=True)),
         )
-        conn.execute(
-            "UPDATE sessions SET status='WAITING',last_exit_code=0,"
-            "active_pid=NULL,turn_started_at='',last_error='',"
-            "updated_at=CURRENT_TIMESTAMP WHERE session_id=? AND room_id=?",
-            (session, room),
-        )
+        # Do not update the canonical sessions row here: B2 must revoke
+        # execution grants on any real session lifecycle mutation.
+        # Synthetic session status is projected from the turn ledger.
         conn.commit()
         return {
             "turnId": turn, "state": "COMPLETED",
             "doctorMessageId": str(message.lastrowid), "doctorReply": REPLY,
-            "result": RESULT, "productionReady": False, "syntheticOnly": True,
+            "result": RESULT, "syntheticSessionStatus": "WAITING",
+            "productionReady": False, "syntheticOnly": True,
         }
     except BaseException:
         conn.rollback()
@@ -186,18 +189,14 @@ def resolve_incomplete(conn, room, session, turn, acknowledgment, reason):
                 "workerTerminationVerified": False, "fakeOnly": True,
             }, sort_keys=True)),
         )
-        conn.execute(
-            "UPDATE sessions SET status='FAILED',last_error=?,"
-            "active_pid=NULL,turn_started_at='',updated_at=CURRENT_TIMESTAMP "
-            "WHERE session_id=? AND room_id=?",
-            ("Manual synthetic incomplete-turn closure", session, room),
-        )
+        # No canonical session status mutation while fake B2 authority is active.
         conn.commit()
         return {
             "turnId": turn, "state": "FAILED",
             "acceptedMessageRetained": True, "auditEventWritten": True,
             "workerTerminationVerified": False,
             "automaticRetryAllowed": False, "syntheticOnly": True,
+            "syntheticSessionStatus": "FAILED",
         }
     except BaseException:
         conn.rollback()

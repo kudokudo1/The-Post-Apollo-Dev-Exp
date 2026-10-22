@@ -392,7 +392,8 @@ class B11DispatchTests(unittest.TestCase):
         self.assertEqual(rows["messages"][1][1], "incoming")
         self.assertEqual(rows["messages"][1][2], result["doctorReply"])
         self.assertEqual(rows["events"], 1)
-        self.assertEqual(rows["status"], "WAITING")
+        self.assertEqual(rows["status"], "IDLE")
+        self.assertEqual(status["syntheticSessionStatus"], "WAITING")
 
     def test_b14_completed_turn_refuses_replay_and_second_reply(self):
         self.ok(self.lifecycle("turn", "b14-once", "--body-stdin"))
@@ -401,6 +402,19 @@ class B11DispatchTests(unittest.TestCase):
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("no automatic turn replay", denied.stderr)
         self.assertEqual(before, self.messages())
+
+    def test_b14_two_turns_share_a_session_without_revoking_the_grant(self):
+        first = self.ok(self.lifecycle("turn", "b14-one", "--body-stdin"))
+        second = self.ok(self.lifecycle("turn", "b14-two", "--body-stdin"))
+        self.assertEqual(first["state"], "COMPLETED")
+        self.assertEqual(second["state"], "COMPLETED")
+        self.assertNotEqual(first["doctorMessageId"], second["doctorMessageId"])
+        self.assertEqual(
+            self.ok(self.lifecycle("status", "b14-one"))["state"], "COMPLETED"
+        )
+        self.assertEqual(
+            self.ok(self.lifecycle("status", "b14-two"))["state"], "COMPLETED"
+        )
 
     def test_b14_unknown_status_is_read_only_without_receipt_table(self):
         before = self.messages()
