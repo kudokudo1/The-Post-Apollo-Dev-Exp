@@ -360,5 +360,121 @@ class B11DispatchTests(unittest.TestCase):
 
 
 
+    def lifecycle(self, command, turn, *options):
+        return self.run_source(
+            "/source/bin/px_int1_fake_lifecycle.py",
+            command, "--room-id", ROOM, "--session-id", SESSION,
+            "--turn-id", turn, *options,
+            input="Fixed synthetic Hospital Doctor task" if command == "turn" else None,
+        )
+
+    def test_b14_doctor_reply_and_status_persist_atomically(self):
+        result = self.ok(self.lifecycle("turn", "b14-complete", "--body-stdin"))
+        self.assertEqual(result["state"], "COMPLETED")
+        self.assertEqual(result["result"], "SYNTHETIC_SUM_36")
+        self.assertTrue(result["brokerReaped"])
+        status = self.ok(self.lifecycle("status", "b14-complete"))
+        self.assertEqual(status["state"], "COMPLETED")
+        self.assertFalse(status["automaticRetryAllowed"])
+        self.assertEqual(status["doctorMessageId"], result["doctorMessageId"])
+        code = (
+            "import sqlite3,json;"
+            "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',uri=True);"
+            "print(json.dumps({'messages':list(c.execute("
+            "'SELECT author_role,direction,body_md FROM messages ORDER BY message_id')),"
+            "'events':c.execute("
+            "'SELECT COUNT(*) FROM session_events WHERE event_type=?',"
+            "('turn.completed',)).fetchone()[0],"
+            "'status':c.execute('SELECT status FROM sessions').fetchone()[0]}))"
+        )
+        rows = self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", code))
+        self.assertEqual([m[0] for m in rows["messages"]], ["operator", "doctor"])
+        self.assertEqual(rows["messages"][1][1], "incoming")
+        self.assertEqual(rows["messages"][1][2], result["doctorReply"])
+        self.assertEqual(rows["events"], 1)
+        self.assertEqual(rows["status"], "WAITING")
+
+    def test_b14_completed_turn_refuses_replay_and_second_reply(self):
+        self.ok(self.lifecycle("turn", "b14-once", "--body-stdin"))
+        before = self.messages()
+        denied = self.lifecycle("turn", "b14-once", "--body-stdin")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("no automatic turn replay", denied.stderr)
+        self.assertEqual(before, self.messages())
+
+    def test_b14_unknown_status_is_read_only_without_receipt_table(self):
+        before = self.messages()
+        result = self.ok(self.lifecycle("status", "b14-unknown"))
+        self.assertEqual(result["state"], "NOT_FOUND")
+        self.assertEqual(before, self.messages())
+        self.assertFalse(self.receipt_table_exists())
+
+    def test_b14_accepted_unreserved_manual_failure_no_retry(self):
+        digest = self.ok(self.b1(
+            "context-digest", "--room-id", ROOM, "--session-id", SESSION
+        ))
+        accepted = self.run_source(
+            "/source/bin/px_int1_fake_atomic.py", "accept",
+            "--room-id", ROOM, "--session-id", SESSION,
+            "--turn-id", "b14-unreserved",
+            "--generation", str(digest["generation"]),
+            "--context-hash", digest["contextHash"], "--body-stdin",
+            input="Synthetic accepted prompt",
+        )
+        self.ok(accepted)
+        status = self.ok(self.lifecycle("status", "b14-unreserved"))
+        self.assertEqual(status["state"], "ACCEPTED_UNRESERVED")
+        before = self.messages()
+        denied = self.lifecycle(
+            "resolve-incomplete", "b14-unreserved",
+            "--acknowledge", "invalid", "--reason", "Test closure",
+        )
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertEqual(before, self.messages())
+        self.ok(self.lifecycle(
+            "resolve-incomplete", "b14-unreserved",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "Accepted without dispatch reservation",
+        ))
+        self.assertEqual(self.ok(self.lifecycle("status", "b14-unreserved"))["state"],
+                         "FAILED")
+        self.assertNotEqual(self.lifecycle(
+            "resolve-incomplete", "b14-unreserved",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "Repeated closure must be refused",
+        ).returncode, 0)
+
+    def test_b14_acked_without_reply_cannot_auto_complete(self):
+        self.ok(self.dispatch("b14-acked", "--task", "SUM_1_TO_8",
+                              "--scenario", "gated-task"))
+        status = self.ok(self.lifecycle("status", "b14-acked"))
+        self.assertEqual(status["state"], "ACKED_UNFINALIZED")
+        self.assertTrue(status["needsExplicitRecovery"])
+        self.assertFalse(status["automaticRetryAllowed"])
+        self.ok(self.lifecycle(
+            "resolve-incomplete", "b14-acked",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "Orphaned ACK cannot prove terminated children",
+        ))
+        self.assertEqual(self.ok(self.lifecycle("status", "b14-acked"))["state"],
+                         "FAILED")
+        self.assertNotEqual(self.lifecycle(
+            "turn", "b14-acked", "--body-stdin").returncode, 0)
+
+    def test_b14_reserved_crash_stays_with_b12_recovery(self):
+        crashed = self.dispatch("b14-reserved-crash", "--test-crash-after-reserve")
+        self.assertEqual(crashed.returncode, 77, crashed.stderr)
+        status = self.ok(self.lifecycle("status", "b14-reserved-crash"))
+        self.assertEqual(status["state"], "DELIVERY_UNCERTAIN")
+        denied = self.lifecycle(
+            "resolve-incomplete", "b14-reserved-crash",
+            "--acknowledge", "I_ACKNOWLEDGE_INCOMPLETE_SYNTHETIC_TURN_NO_RETRY",
+            "--reason", "Reserved delivery must follow B12",
+        )
+        self.assertNotEqual(denied.returncode, 0)
+        self.ok(self.close_uncertain("b14-reserved-crash"))
+        self.assertEqual(self.ok(self.lifecycle(
+            "status", "b14-reserved-crash"))["state"], "FAILED")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

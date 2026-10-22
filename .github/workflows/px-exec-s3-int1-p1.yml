@@ -17,6 +17,7 @@ on:
       - 'bin/px_int1_fake_broker.py'
       - 'bin/px_int1_fake_dispatch.py'
       - 'bin/px_int1_fake_recovery.py'
+      - 'bin/px_int1_fake_lifecycle.py'
       - 'tests/test-pxd-exec-s3-int1-b11.py'
       - 'tests/test-pxd-exec-s3-int1-b1.py'
       - 'tests/test-pxd-exec-s3-int1-b2.py'
@@ -41,7 +42,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s1-isolation.py --smoke
       - name: Compile fixture code without PX execution
         run: |
-          python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py tests/test-pxd-exec-s3-int1-a.py tests/test-pxd-exec-s3-int1-b1.py bin/px_int1_fake_guard.py bin/px_int1_fake_atomic.py bin/px-agent tests/test-pxd-exec-s3-int1-b2.py bin/px_int1_fake_epoch.py tests/test-pxd-exec-s3-int1-b4.py bin/px_int1_fake_continuity.py tests/test-pxd-exec-s3-int1-b5.py tests/test-pxd-exec-s3-int1-b8.py tests/test-pxd-exec-s3-int1-b9.py bin/px_int1_fake_broker.py tests/test-pxd-exec-s3-int1-b11.py bin/px_int1_fake_dispatch.py bin/px_int1_fake_recovery.py
+          python3 -B -m py_compile tests/px_int1_fixture.py tests/test-pxd-exec-s3-int1-p1.py tests/test-pxd-exec-s3-int1-a.py tests/test-pxd-exec-s3-int1-b1.py bin/px_int1_fake_guard.py bin/px_int1_fake_atomic.py bin/px-agent tests/test-pxd-exec-s3-int1-b2.py bin/px_int1_fake_epoch.py tests/test-pxd-exec-s3-int1-b4.py bin/px_int1_fake_continuity.py tests/test-pxd-exec-s3-int1-b5.py tests/test-pxd-exec-s3-int1-b8.py tests/test-pxd-exec-s3-int1-b9.py bin/px_int1_fake_broker.py tests/test-pxd-exec-s3-int1-b11.py bin/px_int1_fake_dispatch.py bin/px_int1_fake_recovery.py bin/px_int1_fake_lifecycle.py
       - name: INT1-B11/B12 inert dispatch, crash recovery and failure proof
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-int1-b11.py
