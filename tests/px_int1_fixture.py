@@ -226,6 +226,8 @@ class DisposablePX:
                 "/source/bin/hospital_target_preflight.py",
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_guard.py"),
                 "/source/bin/px_int1_fake_guard.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_capability.py"),
+                "/source/bin/px_int1_fake_capability.py",
                 # INT1-B1 detached storage proof: never exposes host paths.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_atomic.py"),
                 "/source/bin/px_int1_fake_atomic.py",
@@ -235,6 +237,17 @@ class DisposablePX:
                 # Detached B4 continuity epoch hooks, fixture-only.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_continuity.py"),
                 "/source/bin/px_int1_fake_continuity.py",
+                # B9 idle child source: ro-only, no executable broker grants.
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_broker.py"),
+                "/source/bin/px_int1_fake_broker.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_dispatch.py"),
+                "/source/bin/px_int1_fake_dispatch.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_recovery.py"),
+                "/source/bin/px_int1_fake_recovery.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_lifecycle.py"),
+                "/source/bin/px_int1_fake_lifecycle.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_agent_bridge.py"),
+                "/source/bin/px_int1_fake_agent_bridge.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
