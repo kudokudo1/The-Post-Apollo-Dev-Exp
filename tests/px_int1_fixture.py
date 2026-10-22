@@ -226,6 +226,8 @@ class DisposablePX:
                 "/source/bin/hospital_target_preflight.py",
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_guard.py"),
                 "/source/bin/px_int1_fake_guard.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_capability.py"),
+                "/source/bin/px_int1_fake_capability.py",
                 # INT1-B1 detached storage proof: never exposes host paths.
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_atomic.py"),
                 "/source/bin/px_int1_fake_atomic.py",

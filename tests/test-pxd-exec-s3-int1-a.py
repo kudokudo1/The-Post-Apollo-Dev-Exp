@@ -565,5 +565,147 @@ class INT1AActualAgentTests(unittest.TestCase):
                          "DELIVERY_UNCERTAIN")
         self.assertEqual(self.ok(self.b15_turn("b17-clean"))["state"], "COMPLETED")
 
+
+    def test_b21_preflight_reports_only_closed_fake_capability(self):
+        before = self.before()
+        result = self.ok(self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "B21 source-owned capability",
+        ))
+        proof = result["capability"]
+        self.assertTrue(proof["capabilityValidatedInFixture"])
+        self.assertEqual(proof["capabilityProfile"], "FIXED_SYNTHETIC_ONLY")
+        self.assertEqual(proof["contractVersion"], 1)
+        self.assertEqual(len(proof["sourceDigest"]), 64)
+        self.assertEqual(proof["sourceEvidence"], "READ_ONLY_FIXTURE_BYTES_NOT_SIGNED")
+        self.assertFalse(proof["modelOnlyCertified"])
+        self.assertFalse(proof["realProviderCertified"])
+        self.assertFalse(proof["credentialsAvailable"])
+        self.assertFalse(proof["nativeToolsAllowed"])
+        self.assertFalse(proof["gatewayActive"])
+        self.assertFalse(proof["productionReady"])
+        self.assertEqual(proof["realModelCalls"], 0)
+        self.assert_no_turn_mutation(before)
+
+    def test_b21_contract_reinspection_is_deterministic_and_read_only(self):
+        before = self.before()
+        a = self.ok(self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "First fixed capability inspection",
+        ))
+        b = self.ok(self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "Second fixed capability inspection",
+        ))
+        self.assertEqual(a["capability"], b["capability"])
+        self.assert_no_turn_mutation(before)
+
+    def test_b21_closed_contract_rejects_escalation_and_new_schema(self):
+        script = r"""
+import copy,json,sys
+sys.path.insert(0, '/source/bin')
+from px_int1_fake_capability import FAKE_CONTRACT,require_fake_capability
+provider = {'name':'INT1 FAKE','executionProfile':'EXEC_S3_FAKE_ONLY',
+            'dialect':'exec-s3-fake-only'}
+registry = {'version':1,'providers':{'int1-fake':provider}}
+bad = [
+    {'contractVersion':2},
+    {'providerId':'codex'},
+    {'providerBinary':'/usr/bin/codex'},
+    {'nativeModelTransport':'CODEX_EXEC'},
+    {'credentialMode':'INHERITED_HOST'},
+    {'nativeTools':['shell']},
+    {'modelOnlyCertified':True},
+    {'modelOnlyCertified':1},
+    {'externalToolCallsAllowed':True},
+    {'toolProtocol':'UNRESTRICTED'},
+    {'executionOwner':'HERMES_GATEWAY'},
+    {'cancellationOwner':'KILL_CLIENT_PID'},
+    {'gateway':'PERSISTENT'},
+    {'nativeResume':True},
+    {'crashRecovery':'AUTO_RETRY'},
+    {'unknownCapability':'UPGRADE'},
+]
+count = 0
+for mutation in bad:
+    candidate = copy.deepcopy(FAKE_CONTRACT)
+    candidate.update(mutation)
+    try:
+        require_fake_capability('int1-fake',provider,registry,candidate=candidate)
+    except RuntimeError as e:
+        assert 'unsupported or escalated' in str(e), str(e)
+        count += 1
+    else:
+        raise AssertionError('unsafe candidate accepted: '+str(mutation))
+print(json.dumps({'denied':count,'total':len(bad)}))
+"""
+        before = self.before()
+        proof = self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", script))
+        self.assertEqual(proof["denied"], 16)
+        self.assertEqual(proof["total"], 16)
+        self.assert_no_turn_mutation(before)
+
+    def test_b21_fake_contract_cannot_certify_native_provider_ids(self):
+        script = r"""
+import json,sys
+sys.path.insert(0,'/source/bin')
+from px_int1_fake_capability import require_fake_capability,FAKE_CONTRACT
+provider = {'name':'INT1 FAKE','executionProfile':'EXEC_S3_FAKE_ONLY',
+            'dialect':'exec-s3-fake-only'}
+registry={'version':1,'providers':{'int1-fake':provider}}
+blocked=[]
+for name in ('codex','hermes','unregistered'):
+    try:
+        require_fake_capability(name, provider, registry,
+                                candidate=FAKE_CONTRACT)
+    except RuntimeError:
+        blocked.append(name)
+    else:
+        raise AssertionError('native provider accepted')
+print(json.dumps({'blocked':blocked}))
+"""
+        before = self.before()
+        proof = self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
+        self.assertEqual(proof["blocked"], ["codex","hermes","unregistered"])
+        self.assert_no_turn_mutation(before)
+
+    def test_b21_turn_proves_contract_without_model_or_native_tools(self):
+        self.install_b15_authority()
+        result = self.ok(self.b15_turn("b21-turn"))
+        self.assertEqual(result["state"], "COMPLETED")
+        cap = result["capability"]
+        self.assertTrue(cap["capabilityValidatedInFixture"])
+        self.assertFalse(cap["modelOnlyCertified"])
+        self.assertFalse(cap["nativeToolsAllowed"])
+        self.assertFalse(cap["credentialsAvailable"])
+        self.assertFalse(cap["productionReady"])
+        self.assertEqual(result["modelCalls"], 0)
+        self.assertEqual(result["toolCalls"], 0)
+        second = self.ok(self.b15_turn("b21-resumed"))
+        self.assertEqual(second["capability"]["sourceDigest"], cap["sourceDigest"])
+
+    def test_b21_fixture_capability_denies_untrusted_source_context(self):
+        script = r"""
+import json,sys
+sys.path.insert(0,'/source/bin')
+import px_int1_fake_capability as c
+try:
+    original = c.SOURCE_PATHS
+    c.SOURCE_PATHS = ('/fixture/bed/tracked.txt',)
+    try:
+        c._source_digest()
+    except RuntimeError as e:
+        assert 'not pinned read-only' in str(e),str(e)
+        print(json.dumps({'denied':True}))
+    else:
+        raise AssertionError('writable Bed source admitted')
+finally:
+    c.SOURCE_PATHS = original
+"""
+        original = self.before()
+        verdict = self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
+        self.assertTrue(verdict["denied"])
+        self.assert_no_turn_mutation(original)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

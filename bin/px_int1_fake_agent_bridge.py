@@ -19,6 +19,7 @@ from px_int1_fake_epoch import verify_hooks
 from px_int1_fake_continuity import verify_b4
 from px_int1_fake_lifecycle import run, finalize_verified, inspect
 from px_int1_fake_dispatch import CANCELLATIONS
+from px_int1_fake_capability import require_fake_capability
 
 
 def _required_context_parity(conn, context, room_id, session_id):
@@ -59,6 +60,16 @@ def execute_fake_turn(*, context, room_id, session_id, turn_id, prompt,
     require_id(turn_id, "turn ID")
     if prompt != "SYNTHETIC_SUM_1_TO_8":
         raise RuntimeError("INT1-B15 REFUSED // unsupported synthetic task")
+    # Recheck before any accepted-turn action. Compare observations made
+    # earlier in the real PX entry point; do not trust response metadata
+    # as a transferable grant or inherit a native tool mode.
+    from px_int1_fake_guard import require_profile
+    from pathlib import Path
+    registry = json.loads(Path("/fixture/providers/fake.json").read_text())
+    record = (registry.get("providers") or {}).get(FAKE_ID)
+    capability = require_fake_capability(FAKE_ID, record, registry)
+    if identity.get("capability") != capability:
+        raise RuntimeError("INT1-B21 REFUSED // fake capability changed")
     with connect() as conn:
         matched = _required_context_parity(conn, context, room_id, session_id)
     # No fake accepted-turn write happens until source continuity and Stage A
@@ -82,6 +93,7 @@ def execute_fake_turn(*, context, room_id, session_id, turn_id, prompt,
         "approvedRoomChartIds": identity["approvedRoomChartIds"],
         "approvedPatientChartIds": identity["approvedPatientChartIds"],
         "sourceDigestChecked": bool(matched["contextHash"]),
+        "capability": capability,
         "syntheticFrames": ack["syntheticFrames"],
         "modelCalls": 0, "toolCalls": 0, "productionReady": False,
     }

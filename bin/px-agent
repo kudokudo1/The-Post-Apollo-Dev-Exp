@@ -1817,11 +1817,18 @@ def _run_turn_unlocked(args) -> dict:
         supplemental_context,
     )
     if fake_selected:
+        # B21 closed, fake-only capability admission. It must precede
+        # accepted-turn persistence and cannot grant any native tools.
+        from px_int1_fake_capability import require_fake_capability
+        capabilities = require_fake_capability(
+            provider_id, record, load_registry(),
+        )
         from px_int1_fake_guard import preflight_result
         identity = preflight_result(
             context, provider_id=provider_id, room_id=room_id,
             bed_path=str(cwd), resume=bool(provider_session_id),
         )
+        identity["capability"] = capabilities
         if fake_preflight:
             # INT1-A remains read-only: no startup, accepted turn or provider.
             return identity

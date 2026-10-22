@@ -145,3 +145,29 @@ Do not infer a successful provider API/authentication or usable subscription fro
 - Hermes tool capabilities and plugin exposure: https://hermes-agent.nousresearch.com/docs/user-guide/features/tools
 
 **Verification classification:** GitHub source read and public docs inspected; no local CLI/version checked, no authentication performed, no model call, no process or network probe, no live execution, no Hospital DB write.
+
+
+## 10 // B21 implementation decision: fake capability admission only
+
+> B21 is a **source-owned disposable-fixture contract**, not a Codex or
+> Hermes execution adapter. It carries no credential, process launch,
+> generic model transport, native tool capability or production grant.
+
+The B21 adapter in `bin/px_int1_fake_capability.py` pins an exact
+versioned `int1-fake` profile, checks the existing fake provider registry
+and Linux read-only source mounts, and hashes the fixture's source-owned
+broker, dispatcher and adapter files. Those bytes are observed inside the
+already accepted isolated fixture, **not signed provider attestation**.
+
+The real `px-agent` fake preflight checks this profile without accepting a
+turn; synthetic execution rechecks it immediately before source parity and
+dispatch. Both responses clearly expose `modelOnlyCertified: false`,
+`realProviderCertified: false`, `productionReady: false`,
+`realModelCalls: 0` and `nativeToolsAllowed: false`. The test probe rejects
+mismatched contract versions, Codex/Hermes IDs, credentials, tools, gateway
+ownership, native resume, unsafe cancellation and automatic replay.
+
+**B21 does not change `config/agent-providers.json`, open an authenticated
+provider, or authorize any new execution profile.** It is a negative-path
+building block for the separate version-pinned, operator-authorized real
+provider feasibility gate. The parent B20 assessment remains PROPOSED.
