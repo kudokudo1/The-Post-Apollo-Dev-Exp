@@ -4,6 +4,8 @@
 Fake-only disposable Bubblewrap fixture. No real model, shell tool or live DB.
 """
 import json
+import concurrent.futures
+import time
 from pathlib import Path
 import unittest
 
@@ -489,6 +491,57 @@ class B11DispatchTests(unittest.TestCase):
         self.ok(self.close_uncertain("b14-reserved-crash"))
         self.assertEqual(self.ok(self.lifecycle(
             "status", "b14-reserved-crash"))["state"], "FAILED")
+
+
+    def test_b14_active_revoke_interrupts_synthetic_tree(self):
+        probe = (
+            "import sqlite3;"
+            "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',"
+            "uri=True,timeout=.2);"
+            "exists=c.execute(\"SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='int1_fake_dispatch_receipts'\").fetchone();"
+            "print('1' if exists and c.execute("
+            "\"SELECT 1 FROM int1_fake_dispatch_receipts "
+            "WHERE turn_id='b14-cancel' AND state='RESERVED'\").fetchone() "
+            "else '0')"
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                self.lifecycle, "turn", "b14-cancel", "--body-stdin",
+                "--cancel-demo",
+            )
+            for _ in range(100):
+                check = self.fx.run("/usr/bin/python3", "-B", "-c", probe)
+                if check.returncode == 0 and check.stdout.strip() == "1":
+                    break
+                time.sleep(.025)
+            else:
+                self.fail("synthetic dispatch never produced RESERVED receipt")
+            # The synthetic child forks after receipt, then pins its pidfd.
+            time.sleep(.4)
+            pending_state = self.ok(self.lifecycle("status", "b14-cancel"))
+            self.assertEqual(pending_state["state"], "DELIVERY_UNCERTAIN")
+            self.ok(self.b1("revoke", "--room-id", ROOM,
+                            "--reason", "B14 synthetic active cancellation"))
+            refused = pending.result(timeout=12)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("revoked", refused.stderr.lower())
+        self.assertNotIn("descendant survived", refused.stderr)
+        self.assertEqual(
+            self.ok(self.lifecycle("status", "b14-cancel"))["state"], "FAILED"
+        )
+        self.assertEqual(self.database()["receipts"],
+                         [["b14-cancel", "FAILED", ""]])
+        code = (
+            "import sqlite3;"
+            "c=sqlite3.connect('file:/fixture/hospital/data/hospital.db?mode=ro',uri=True);"
+            "print(c.execute(\"SELECT COUNT(*) FROM messages "
+            "WHERE author_role='doctor'\").fetchone()[0])"
+        )
+        self.assertEqual(self.ok(self.fx.run(
+            "/usr/bin/python3", "-B", "-c", code
+        )), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

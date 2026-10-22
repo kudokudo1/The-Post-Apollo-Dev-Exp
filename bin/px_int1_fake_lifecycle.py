@@ -213,6 +213,8 @@ def main():
         p.add_argument("--turn-id", required=True)
         if name == "turn":
             p.add_argument("--body-stdin", required=True, action="store_true")
+            p.add_argument("--cancel-demo", action="store_true",
+                           help="B14 fixed synthetic one-child cancellation probe")
         if name == "resolve-incomplete":
             p.add_argument("--acknowledge", required=True)
             p.add_argument("--reason", required=True)
@@ -225,7 +227,8 @@ def main():
         if args.command == "turn":
             result = run(
                 args.room_id, args.session_id, args.turn_id, sys.stdin.read(),
-                scenario="gated-task", task="SUM_1_TO_8",
+                scenario=("gated-tree-cancel" if args.cancel_demo
+                          else "gated-task"), task="SUM_1_TO_8",
             )
             with connect() as conn:
                 completed = finalize_verified(

@@ -186,7 +186,7 @@ def receive_ack(child, *, nonce, turn_id, expected_result="SYNTHETIC_NOOP",
 
 def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
                      generation, digest, nonce, ack_timeout,
-                     task="NOOP", on_tick=None):
+                     task="NOOP", on_tick=None, live_revocation=False):
     conn.execute("BEGIN IMMEDIATE")
     try:
         current_authority(conn, room_id=room_id, session_id=session_id,
@@ -207,19 +207,47 @@ def dispatch_barrier(conn, child, *, room_id, session_id, turn_id,
                            sort_keys=True).encode() + b"\n"
         if len(frame) > 256:
             raise RuntimeError("INT1-B11 REFUSED // oversized dispatch frame")
-        # Explicit single inert frame; the DB write lock spans transmission
-        # AND ACK, serializing ordinary Hospital authority/continuity mutations.
+        # Stage C single fixed frame: serialize authorization and actual
+        # pipe dispatch under the SQLite write lock. The B14 mode releases
+        # that lock AFTER transmission, allowing an external cancellation
+        # to advance the authority generation while the task is running.
         child.stdin.write(frame)
         child.stdin.flush()
         child.stdin.close()
+        callback = on_tick
+        if live_revocation:
+            # No untrusted task gets a DB handle. Only the trusted supervisor
+            # rechecks the source hooks, Room/Session identity and generation.
+            conn.commit()
+            def callback():
+                if on_tick is not None:
+                    on_tick()
+                current_authority(conn, room_id=room_id,
+                                  session_id=session_id,
+                                  generation=generation, digest=digest)
         ack = receive_ack(child, nonce=nonce, turn_id=turn_id,
-                          expected_result=expected, on_tick=on_tick,
+                          expected_result=expected, on_tick=callback,
                           timeout=ack_timeout)
-        conn.execute(
+        if live_revocation:
+            # This barrier competes with revocation. A stale ACK cannot
+            # finalize even if the child was faster than the poll loop.
+            conn.execute("BEGIN IMMEDIATE")
+            current_authority(conn, room_id=room_id, session_id=session_id,
+                              generation=generation, digest=digest)
+            after = conn.execute(
+                "SELECT state,nonce_hash FROM int1_fake_dispatch_receipts "
+                "WHERE turn_id=?", (turn_id,),
+            ).fetchone()
+            if (after is None or after["state"] != "RESERVED" or
+                    after["nonce_hash"] != hashlib.sha256(nonce.encode()).hexdigest()):
+                raise RuntimeError("INT1-B14 REFUSED // dispatch receipt changed")
+        updated = conn.execute(
             "UPDATE int1_fake_dispatch_receipts SET state='ACKED', result=? "
             "WHERE turn_id=? AND state='RESERVED'",
             (ack["result"], turn_id),
         )
+        if updated.rowcount != 1:
+            raise RuntimeError("INT1-B14 REFUSED // receipt not uniquely ACKED")
         conn.commit()
         return ack
     except BaseException:
@@ -253,7 +281,8 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
         require_id(value, field)
     noop_scenarios = ("gated", "gated-malformed-ack", "gated-timeout-ack",
                       "early-exit", "malformed", "timeout")
-    task_scenarios = ("gated-task", "gated-tree", "gated-tree-timeout")
+    task_scenarios = ("gated-task", "gated-tree", "gated-tree-timeout",
+                      "gated-tree-cancel")
     if not ((task == "NOOP" and scenario in noop_scenarios)
             or (task == "SUM_1_TO_8" and scenario in task_scenarios)):
         raise RuntimeError("INT1-B13 REFUSED // task/scenario mismatch")
@@ -300,7 +329,8 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     os._exit(77)
                 if revoke_before_dispatch:
                     revoke(conn, room_id, "B11 synthetic before dispatch")
-                if scenario in ("gated-tree", "gated-tree-timeout"):
+                if scenario in ("gated-tree", "gated-tree-timeout",
+                                "gated-tree-cancel"):
                     tree_tracker = DescendantTracker(worker)
                 ack = dispatch_barrier(
                     conn, child, room_id=room_id, session_id=session_id,
@@ -308,8 +338,11 @@ def run(room_id, session_id, turn_id, body, *, scenario="gated",
                     nonce=nonce,
                     task=task,
                     on_tick=tree_tracker.capture if tree_tracker else None,
-                    ack_timeout=0.3 if scenario in (
-                        "gated-timeout-ack", "gated-tree-timeout") else 1.5,
+                    live_revocation=scenario == "gated-tree-cancel",
+                    ack_timeout=(3.0 if scenario == "gated-tree-cancel" else
+                                 0.3 if scenario in (
+                                     "gated-timeout-ack", "gated-tree-timeout")
+                                 else 1.5),
                 )
             except BaseException:
                 mark_failed(conn, turn_id)
