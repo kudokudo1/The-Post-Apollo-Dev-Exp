@@ -1686,9 +1686,16 @@ def acquire_turn_lock(session_id: str):
 
 
 def run_turn(args) -> dict:
-    if bool(getattr(args, "exec_s3_fake_preflight", False)):
+    fake_preflight = bool(getattr(args, "exec_s3_fake_preflight", False))
+    fake_turn = bool(getattr(args, "exec_s3_fake_turn", False))
+    fake_turn_id = str(getattr(args, "exec_s3_fake_turn_id", "") or "")
+    if fake_turn_id and not fake_turn:
+        raise RuntimeError("INT1-B15 REFUSED // turn ID without fake execution flag")
+    if fake_turn and not fake_turn_id:
+        raise RuntimeError("INT1-B15 REFUSED // explicit synthetic turn ID required")
+    if fake_preflight or fake_turn:
         from px_int1_fake_guard import require_fixture
-        require_fixture()  # Before even creating the session lock.
+        require_fixture()  # Before any Hospital read or session lock.
     turn_lock = acquire_turn_lock(args.session_id)
     try:
         return _run_turn_unlocked(args)
@@ -1712,13 +1719,15 @@ def _run_turn_unlocked(args) -> dict:
 
     record = provider_record(provider_id)
     fake_preflight = bool(getattr(args, "exec_s3_fake_preflight", False))
-    if fake_preflight:
+    fake_turn = bool(getattr(args, "exec_s3_fake_turn", False))
+    fake_selected = fake_preflight or fake_turn
+    if fake_selected:
         from px_int1_fake_guard import require_profile
         require_profile(provider_id, record, load_registry())
     elif record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or provider_id == "int1-fake":
-        raise RuntimeError("INT1-A REFUSED // explicit fake-only preflight required")
-    # Never resolve or execute any provider binary for the opt-in fake path.
-    executable = None if fake_preflight else resolve_command(str(record.get("command") or ""))
+        raise RuntimeError("INT1-A REFUSED // explicit fake-only preflight required (or bounded fake turn)")
+    # Never resolve a real provider executable on either opt-in fake path.
+    executable = None if fake_selected else resolve_command(str(record.get("command") or ""))
     dialect = str(record.get("dialect") or "").strip()
     cwd_text = (
         args.working_directory
@@ -1728,7 +1737,7 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError("Hospital session has no working directory")
 
     cwd = Path(cwd_text).expanduser()
-    if fake_preflight and cwd.resolve() != Path("/fixture/bed"):
+    if fake_selected and cwd.resolve() != Path("/fixture/bed"):
         raise RuntimeError("INT1-A REFUSED // synthetic Bed outside disposable fixture")
     if not cwd.is_dir():
         raise RuntimeError(f"Hospital session Bed does not exist: {cwd}")
@@ -1740,7 +1749,7 @@ def _run_turn_unlocked(args) -> dict:
     if not room_id:
         raise RuntimeError("HOSPITAL TARGET REFUSED // ROOM_UNRESOLVED")
     room = px_hospital("room", room_id)
-    if fake_preflight:
+    if fake_selected:
         from px_int1_fake_guard import require_doctor_room_binding
         # I1: store session-put permits mismatched Doctors. Refuse at the
         # actual launcher boundary before HANDOFF/Chart context retrieval,
@@ -1784,7 +1793,7 @@ def _run_turn_unlocked(args) -> dict:
     provider_session_id = str(
         session.get("providerSessionId") or ""
     ).strip()
-    if fake_preflight and provider_session_id not in ("", "INT1-FAKE-SESSION-1"):
+    if fake_selected and provider_session_id not in ("", "INT1-FAKE-SESSION-1"):
         raise RuntimeError("INT1-A REFUSED // synthetic resume identity mismatch")
 
     context = live_context_payload(
@@ -1800,14 +1809,26 @@ def _run_turn_unlocked(args) -> dict:
         context,
         supplemental_context,
     )
-    if fake_preflight:
+    if fake_selected:
         from px_int1_fake_guard import preflight_result
-        # INT1-A STOPS before provider_authority_environment (host env copy),
-        # prompt emission, message/event writes, broker startup or tool grants.
-        # INT1-B must first supply atomic acceptance and durable revocation.
-        return preflight_result(
+        identity = preflight_result(
             context, provider_id=provider_id, room_id=room_id,
             bed_path=str(cwd), resume=bool(provider_session_id),
+        )
+        if fake_preflight:
+            # INT1-A remains read-only: no startup, accepted turn or provider.
+            return identity
+        if (prompt != "SYNTHETIC_SUM_1_TO_8" or
+                args.author_id != "operator" or args.message_type != "chat" or
+                supplemental_context):
+            raise RuntimeError("INT1-B15 REFUSED // fixed synthetic task only")
+        # Distinct B15 fake-only bridge. No provider host env, command,
+        # credentials, native tool API or real Hospital runtime writes.
+        from px_int1_fake_agent_bridge import execute_fake_turn
+        return execute_fake_turn(
+            context=context, room_id=room_id, session_id=args.session_id,
+            turn_id=args.exec_s3_fake_turn_id, prompt=prompt,
+            identity=identity,
         )
 
     provider_input = provider_prompt
@@ -2942,9 +2963,10 @@ def build_parser():
     turn.add_argument("--author-id", default="operator")
     turn.add_argument("--message-type", default="chat")
     turn.add_argument("--timeout", type=int, default=1800)
-    # Opt-in dry preflight ONLY: intentionally cannot dispatch a tool or
-    # persist an accepted Doctor turn until INT1-B/C are reviewed.
-    turn.add_argument("--exec-s3-fake-preflight", action="store_true")
+    fake_mode = turn.add_mutually_exclusive_group()
+    fake_mode.add_argument("--exec-s3-fake-preflight", action="store_true")
+    fake_mode.add_argument("--exec-s3-fake-turn", action="store_true")
+    turn.add_argument("--exec-s3-fake-turn-id", default="")
     turn.add_argument("--json", action="store_true")
 
     context = sub.add_parser("context")
@@ -2953,6 +2975,7 @@ def build_parser():
 
     status = sub.add_parser("status")
     status.add_argument("session_id")
+    status.add_argument("--exec-s3-fake-turn-id", default="")
     status.add_argument("--json", action="store_true")
 
     cancel = sub.add_parser("cancel")
@@ -3013,7 +3036,12 @@ def main() -> int:
             payload["renderedText"] = render_live_context(payload)
             emit(payload, args.json)
         elif args.command == "status":
-            emit(status_payload(args.session_id), args.json)
+            if args.exec_s3_fake_turn_id:
+                from px_int1_fake_agent_bridge import inspect_fake_turn
+                emit(inspect_fake_turn(args.session_id,
+                                       args.exec_s3_fake_turn_id), args.json)
+            else:
+                emit(status_payload(args.session_id), args.json)
         elif args.command == "cancel":
             emit(cancel_session(args), args.json)
         elif args.command == "quick":

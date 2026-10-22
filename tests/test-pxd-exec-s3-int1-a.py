@@ -223,5 +223,112 @@ class INT1AActualAgentTests(unittest.TestCase):
         self.assertIn("synthetic Bed outside disposable fixture", result.stderr)
         self.assert_no_turn_mutation(original)
 
+
+    def install_b15_authority(self):
+        assignment = self.ok(self.fx.hospital(
+            "assignment-create", "--room-id", "S3-INT1",
+            "--title", "B15 synthetic", "--goal", "Bounded fake turn",
+            "--permissions-json", '["READ","EDIT"]',
+        ))
+        self.ok(self.fx.hospital("assignment-activate", assignment["id"]))
+        for path, cmd in (
+            ("/source/bin/px_int1_fake_atomic.py", "bootstrap"),
+            ("/source/bin/px_int1_fake_epoch.py", "install"),
+            ("/source/bin/px_int1_fake_continuity.py", "install"),
+        ):
+            self.ok(self.fx.run(
+                "/usr/bin/python3", "-B", path, cmd,
+                "--room-id", "S3-INT1", "--session-id", "int1-fake-session",
+            ))
+
+    def b15_turn(self, turn_id, *, prompt="SYNTHETIC_SUM_1_TO_8"):
+        return self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-turn",
+            "--exec-s3-fake-turn-id", turn_id, "--prompt", prompt,
+        )
+
+    def b15_status(self, turn_id):
+        return self.fx.agent(
+            "status", "int1-fake-session", "--exec-s3-fake-turn-id", turn_id,
+        )
+
+    def test_b15_actual_agent_turn_persists_verified_reply_and_status(self):
+        self.ok(self.fx.hospital(
+            "room-report-append", "--room-id", "S3-INT1",
+            "--session-id", "int1-fake-session", "--report-kind", "HANDOFF",
+            "--title", "B15 source", "--body", "B15 REQUIRED HANDOFF",
+        ))
+        self.ok(self.fx.hospital(
+            "chart-entry-add", "--scope", "PATIENT",
+            "--patient-id", "S3-SYNTHETIC-PATIENT", "--entry-kind", "INVARIANT",
+            "--title", "B15 patient", "--author-role", "operator",
+            "--body", "B15 PATIENT SOURCE",
+        ))
+        self.install_b15_authority()
+        result = self.ok(self.b15_turn("b15-first"))
+        self.assertEqual(result["state"], "COMPLETED")
+        self.assertEqual(result["assistant"], result["doctorReply"])
+        self.assertEqual(result["modelCalls"], 0)
+        self.assertEqual(result["toolCalls"], 0)
+        self.assertTrue(result["sourceDigestChecked"])
+        self.assertEqual(len(result["requiredHandoffIds"]), 1)
+        self.assertEqual(len(result["approvedPatientChartIds"]), 1)
+        status = self.ok(self.b15_status("b15-first"))
+        self.assertEqual(status["state"], "COMPLETED")
+        self.assertEqual(status["doctorMessageId"], result["assistantMessageId"])
+        self.assertEqual(status["syntheticSessionStatus"], "WAITING")
+        messages = self.ok(self.fx.hospital("messages", "S3-INT1", "--limit", "10"))
+        self.assertEqual([x["authorRole"] for x in messages], ["operator", "doctor"])
+
+    def test_b15_actual_agent_two_turns_and_replay_refusal(self):
+        self.install_b15_authority()
+        a = self.ok(self.b15_turn("b15-one"))
+        b = self.ok(self.b15_turn("b15-two"))
+        self.assertNotEqual(a["assistantMessageId"], b["assistantMessageId"])
+        before = self.before()
+        refused = self.b15_turn("b15-one")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("no automatic turn replay", refused.stderr)
+        self.assertEqual(self.before(), before)
+
+    def test_b15_no_fake_flag_refuses_even_after_authority_install(self):
+        self.install_b15_authority()
+        old = self.before()
+        refused = self.fx.agent(
+            "turn", "int1-fake-session", "--prompt", "SYNTHETIC_SUM_1_TO_8",
+            "--exec-s3-fake-turn-id", "b15-bypass",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(self.before(), old)
+
+    def test_b15_unsupported_task_does_not_accept_messages(self):
+        self.install_b15_authority()
+        before = self.before()
+        denied = self.b15_turn("b15-shell", prompt="SHELL")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("fixed synthetic task only", denied.stderr)
+        self.assertEqual(self.before(), before)
+
+    def test_b15_missing_bootstrap_or_hooks_refuses_without_message(self):
+        before = self.before()
+        denied = self.b15_turn("b15-uninitialized")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertEqual(self.before(), before)
+
+    def test_b15_revoked_grant_refuses_another_turn(self):
+        self.install_b15_authority()
+        self.ok(self.b15_turn("b15-before-revoke"))
+        self.ok(self.fx.run(
+            "/usr/bin/python3", "-B",
+            "/source/bin/px_int1_fake_atomic.py",
+            "revoke", "--room-id", "S3-INT1",
+            "--reason", "B15 synthetic revocation",
+        ))
+        before = self.before()
+        denied = self.b15_turn("b15-after-revoke")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("revoked", denied.stderr.lower())
+        self.assertEqual(self.before(), before)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

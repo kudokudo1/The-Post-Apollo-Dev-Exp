@@ -244,6 +244,8 @@ class DisposablePX:
                 "/source/bin/px_int1_fake_recovery.py",
                 "--ro-bind", str(self.repository / "bin/px_int1_fake_lifecycle.py"),
                 "/source/bin/px_int1_fake_lifecycle.py",
+                "--ro-bind", str(self.repository / "bin/px_int1_fake_agent_bridge.py"),
+                "/source/bin/px_int1_fake_agent_bridge.py",
                 # The FD refers to the original inode even if the host
                 # renames the root or substitutes a symlink after preflight.
                 "--bind", "/proc/self/fd/" + str(root_fd), "/fixture",
