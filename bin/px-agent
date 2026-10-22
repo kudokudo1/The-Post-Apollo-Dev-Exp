@@ -1823,12 +1823,17 @@ def _run_turn_unlocked(args) -> dict:
         capabilities = require_fake_capability(
             provider_id, record, load_registry(),
         )
+        # B22 independently pins the known fake source version. This is a
+        # deliberately closed contract, not general provider discovery.
+        from px_int1_fake_version_pin import require_source_pin
+        version_pin = require_source_pin(capabilities)
         from px_int1_fake_guard import preflight_result
         identity = preflight_result(
             context, provider_id=provider_id, room_id=room_id,
             bed_path=str(cwd), resume=bool(provider_session_id),
         )
         identity["capability"] = capabilities
+        identity["sourcePin"] = version_pin
         if fake_preflight:
             # INT1-A remains read-only: no startup, accepted turn or provider.
             return identity

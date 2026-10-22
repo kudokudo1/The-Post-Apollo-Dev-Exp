@@ -20,6 +20,7 @@ from px_int1_fake_continuity import verify_b4
 from px_int1_fake_lifecycle import run, finalize_verified, inspect
 from px_int1_fake_dispatch import CANCELLATIONS
 from px_int1_fake_capability import require_fake_capability
+from px_int1_fake_version_pin import require_source_pin
 
 
 def _required_context_parity(conn, context, room_id, session_id):
@@ -70,6 +71,9 @@ def execute_fake_turn(*, context, room_id, session_id, turn_id, prompt,
     capability = require_fake_capability(FAKE_ID, record, registry)
     if identity.get("capability") != capability:
         raise RuntimeError("INT1-B21 REFUSED // fake capability changed")
+    version_pin = require_source_pin(capability)
+    if identity.get("sourcePin") != version_pin:
+        raise RuntimeError("INT1-B22 REFUSED // fake version pin changed")
     with connect() as conn:
         matched = _required_context_parity(conn, context, room_id, session_id)
     # No fake accepted-turn write happens until source continuity and Stage A
@@ -94,6 +98,7 @@ def execute_fake_turn(*, context, room_id, session_id, turn_id, prompt,
         "approvedPatientChartIds": identity["approvedPatientChartIds"],
         "sourceDigestChecked": bool(matched["contextHash"]),
         "capability": capability,
+        "sourcePin": version_pin,
         "syntheticFrames": ack["syntheticFrames"],
         "modelCalls": 0, "toolCalls": 0, "productionReady": False,
     }

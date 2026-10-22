@@ -707,5 +707,136 @@ finally:
         self.assertTrue(verdict["denied"])
         self.assert_no_turn_mutation(original)
 
+
+    def test_b22_preflight_has_reviewed_fake_source_version(self):
+        original = self.before()
+        result = self.ok(self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "B22 version evidence only",
+        ))
+        record = result["sourcePin"]
+        self.assertTrue(record["versionPinnedInFixture"])
+        self.assertEqual(record["pinVersion"], 1)
+        self.assertEqual(len(record["manifestSha256"]), 64)
+        self.assertEqual(record["observedSourceSha256"],
+                         result["capability"]["sourceDigest"])
+        self.assertEqual(record["provenance"],
+                         "SOURCE_OWNED_GIT_BLOB_IDS_NOT_SIGNED")
+        self.assertFalse(record["realProviderVersionVerified"])
+        self.assertFalse(record["hostBinaryInspected"])
+        self.assertFalse(record["modelOnlyCertified"])
+        self.assertFalse(record["productionReady"])
+        self.assert_no_turn_mutation(original)
+
+    def test_b22_fake_turn_version_matches_preflight_and_restart(self):
+        preflight = self.ok(self.fx.agent(
+            "turn", "int1-fake-session", "--exec-s3-fake-preflight",
+            "--prompt", "Inspect source baseline",
+        ))
+        self.install_b15_authority()
+        result = self.ok(self.b15_turn("b22-first"))
+        self.assertEqual(result["state"], "COMPLETED")
+        self.assertEqual(result["sourcePin"], preflight["sourcePin"])
+        self.assertEqual(result["modelCalls"], 0)
+        self.assertEqual(result["toolCalls"], 0)
+        second = self.ok(self.b15_turn("b22-second"))
+        self.assertEqual(second["sourcePin"], result["sourcePin"])
+
+    def test_b22_stale_manifest_fails_before_acceptance(self):
+        script = r"""
+import json,sys
+sys.path.insert(0, '/source/bin')
+import px_int1_fake_version_pin as pin
+from px_int1_fake_capability import require_fake_capability
+provider={'name':'INT1 FAKE','executionProfile':'EXEC_S3_FAKE_ONLY',
+          'dialect':'exec-s3-fake-only'}
+registry={'version':1,'providers':{'int1-fake':provider}}
+cap=require_fake_capability('int1-fake',provider,registry)
+old=pin.PINNED_GIT_BLOBS
+try:
+    changed=dict(old)
+    changed['/source/bin/px_int1_fake_broker.py']='0'*40
+    pin.PINNED_GIT_BLOBS=changed
+    try:
+        pin.require_source_pin(cap)
+    except RuntimeError as e:
+        assert 'source version drift' in str(e),str(e)
+        print(json.dumps({'refused':True}))
+    else:
+        raise AssertionError('unapproved source version accepted')
+finally:
+    pin.PINNED_GIT_BLOBS=old
+"""
+        old = self.before()
+        proof = self.ok(self.fx.run("/usr/bin/python3", "-B", "-c", script))
+        self.assertTrue(proof["refused"])
+        self.assert_no_turn_mutation(old)
+
+    def test_b22_provider_spoofing_and_capability_escalation_refused(self):
+        script = r"""
+import json,sys
+sys.path.insert(0,'/source/bin')
+from px_int1_fake_capability import require_fake_capability
+from px_int1_fake_version_pin import require_source_pin
+provider={'name':'INT1 FAKE','executionProfile':'EXEC_S3_FAKE_ONLY',
+          'dialect':'exec-s3-fake-only'}
+registry={'version':1,'providers':{'int1-fake':provider}}
+cap=require_fake_capability('int1-fake',provider,registry)
+count=0
+for key,value in (('providerId','codex'),
+                  ('providerId','hermes'),
+                  ('credentialsAvailable',True),
+                  ('nativeToolsAllowed',True),
+                  ('modelOnlyCertified',True),
+                  ('realProviderCertified',True),
+                  ('productionReady',True),
+                  ('contractVersion',2)):
+    bad=dict(cap)
+    bad[key]=value
+    try:
+        require_source_pin(bad)
+    except RuntimeError as e:
+        assert 'invalid synthetic capability' in str(e),str(e)
+        count += 1
+    else:
+        raise AssertionError('unsafe provider accepted')
+print(json.dumps({'refusals':count}))
+"""
+        before = self.before()
+        result = self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
+        self.assertEqual(result["refusals"], 8)
+        self.assert_no_turn_mutation(before)
+
+    def test_b22_writable_source_manifest_cannot_upgrade_fixture(self):
+        script = r"""
+import json,sys
+sys.path.insert(0,'/source/bin')
+import px_int1_fake_version_pin as pin
+from px_int1_fake_capability import require_fake_capability
+provider={'name':'INT1 FAKE','executionProfile':'EXEC_S3_FAKE_ONLY',
+          'dialect':'exec-s3-fake-only'}
+registry={'version':1,'providers':{'int1-fake':provider}}
+cap=require_fake_capability('int1-fake',provider,registry)
+old=pin.PINNED_GIT_BLOBS
+try:
+    pins=dict(old)
+    pins['/fixture/bed/tracked.txt']=pins.pop(
+        '/source/bin/px_int1_fake_broker.py')
+    pin.PINNED_GIT_BLOBS=pins
+    try:
+        pin.require_source_pin(cap)
+    except RuntimeError as e:
+        assert 'invalid pinned source manifest' in str(e),str(e)
+        print(json.dumps({'refused':True}))
+    else:
+        raise AssertionError('writable fixture source accepted')
+finally:
+    pin.PINNED_GIT_BLOBS=old
+"""
+        original = self.before()
+        result = self.ok(self.fx.run("/usr/bin/python3","-B","-c",script))
+        self.assertTrue(result["refused"])
+        self.assert_no_turn_mutation(original)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
