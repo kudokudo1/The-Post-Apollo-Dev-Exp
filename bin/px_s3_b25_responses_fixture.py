@@ -65,7 +65,7 @@ def _identifier(value):
     return type(value) is str and ID_RE.fullmatch(value) is not None
 
 
-def _validate_terminal(response, response_id, added, args_done, text_seen):
+def _validate_terminal(response, response_id, added, finalized, args_done):
     if type(response) is not dict or response.get("status") != "completed":
         raise ValueError("B25_TERMINAL_STATUS")
     if response.get("id") != response_id:
@@ -80,8 +80,8 @@ def _validate_terminal(response, response_id, added, args_done, text_seen):
         if type(item) is not dict or item.get("type") not in (
                 "message", "function_call", "reasoning"):
             raise ValueError("B25_NATIVE_OR_UNKNOWN_OUTPUT")
-        if index not in added:
-            raise ValueError("B25_OUTPUT_NOT_STREAMED")
+        if index not in added or index not in finalized:
+            raise ValueError("B25_OUTPUT_NOT_FINALIZED")
         entry = added[index]
         if not _identifier(item.get("id")) or item["id"] != entry["id"]:
             raise ValueError("B25_ITEM_ID_MISMATCH")
@@ -129,7 +129,7 @@ def _validate_terminal(response, response_id, added, args_done, text_seen):
                 "arguments": {"record_id": arguments["record_id"]},
                 "requiresPxAuthorization": True, "dispatchAuthorized": False,
             })
-    if len(proposals) > 1 or (proposals and text):
+    if (not proposals and not text) or len(proposals) > 1 or (proposals and text):
         raise ValueError("B25_MIXED_OR_PARALLEL_OUTPUT")
     full_text = "".join(text)
     if len(full_text) > MAX_TEXT:
@@ -156,12 +156,16 @@ def consume_fixture_stream(events, *, cancel_at_sequence=None):
     added = {}
     args_buffer = {}
     args_done = {}
-    text_seen = set()
-    terminal = False
+    finalized = set()
+    event_count = 0
+    terminal_result = None
     try:
         for event in events:
-            if terminal:
+            if terminal_result is not None:
                 return _result("REFUSED", "B25_EVENTS_AFTER_TERMINAL")
+            event_count += 1
+            if event_count > MAX_EVENTS:
+                return _result("REFUSED", "B25_EVENT_COUNT_OVER_BUDGET")
             if type(event) is not dict:
                 return _result("REFUSED", "B25_EVENT_NOT_OBJECT")
             seq = event.get("sequence_number")
@@ -170,8 +174,6 @@ def consume_fixture_stream(events, *, cancel_at_sequence=None):
             last = seq
             if cancel_at_sequence is not None and seq >= cancel_at_sequence:
                 return _result("CANCEL_REQUESTED_UNVERIFIED", "B25_REMOTE_STOP_UNKNOWN")
-            if last > MAX_EVENTS * 100:
-                return _result("REFUSED", "B25_SEQUENCE_OVER_BUDGET")
             typ = event.get("type")
             if typ not in KNOWN_EVENTS:
                 return _result("REFUSED", "B25_UNSUPPORTED_STREAM_EVENT")
@@ -230,25 +232,26 @@ def consume_fixture_stream(events, *, cancel_at_sequence=None):
                 elif typ.startswith("response.output_text"):
                     if entry["type"] != "message":
                         return _result("REFUSED", "B25_TEXT_WRONG_ITEM")
-                    text_seen.add(i)
+                    pass  # Ignore untrusted intermediate deltas.
                 else:
                     item = event.get("item")
                     if (type(item) is not dict or item.get("type") != entry["type"] or
-                            item.get("id") != entry["id"]):
+                            item.get("id") != entry["id"] or i in finalized):
                         return _result("REFUSED", "B25_ITEM_FINAL_MISMATCH")
+                    finalized.add(i)
             elif typ == "response.completed":
-                terminal = True
                 try:
-                    return _validate_terminal(
+                    terminal_result = _validate_terminal(
                         event.get("response"), response_id, added,
-                        args_done, text_seen)
+                        finalized, args_done)
                 except ValueError as exc:
-                    return _result("REFUSED", str(exc))
+                    terminal_result = _result("REFUSED", str(exc))
             elif typ in ("response.failed", "response.incomplete", "error"):
-                terminal = True
-                return _result("FAILED_UNVERIFIED", "B25_PROVIDER_TERMINAL_ERROR")
+                terminal_result = _result(
+                    "FAILED_UNVERIFIED", "B25_PROVIDER_TERMINAL_ERROR")
             else:
                 return _result("REFUSED", "B25_EVENT_UNEXPECTED")
     except Exception:
         return _result("UNCERTAIN", "B25_STREAM_TRANSPORT_INTERRUPTED")
-    return _result("UNCERTAIN", "B25_NO_COMPLETED_TERMINAL")
+    return terminal_result if terminal_result is not None else _result(
+        "UNCERTAIN", "B25_NO_COMPLETED_TERMINAL")
