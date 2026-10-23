@@ -1,0 +1,26 @@
+name: PX / EXEC-S3 B25 Inert Responses Contract
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b25_responses_fixture.py'
+      - 'tests/test-pxd-exec-s3-b25-responses-fixtures.py'
+      - 'bin/px_s3_provider_admission.py'
+      - 'tests/test-pxd-exec-s3-b24-provider-admission.py'
+      - '.github/workflows/px-exec-s3-b25-responses-fixture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b25-synthetic-only:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: B25 request shape, stream failures and non-dispatch tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 fail-closed policy regression
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
