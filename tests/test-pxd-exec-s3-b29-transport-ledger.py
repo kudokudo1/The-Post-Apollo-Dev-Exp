@@ -65,9 +65,6 @@ class B29SyntheticLedgerTests(unittest.TestCase):
             self.ledger.initialize()
 
     def test_marker_mutation_refused(self):
-        self.conn.execute(
-            "UPDATE b29_fixture_marker SET identity='SPOOFED'"
-        ) if False else None
         self.conn.execute("DELETE FROM b29_fixture_marker")
         with self.assertRaisesRegex(Refused, "FIXTURE_MARKER"):
             self.ledger.initialize()
@@ -340,6 +337,37 @@ class B29SyntheticLedgerTests(unittest.TestCase):
                     self.ledger.configure_mock_budget("scopeB", bad)
         with self.assertRaisesRegex(Refused, "BINDING_GENERATION"):
             self.reserve(binding=dict(BINDING, generation=True))
+
+    def test_attempt_id_cannot_be_reused_for_new_turn(self):
+        self.reserve()
+        with self.assertRaisesRegex(Refused, "REUSED_REQUEST_ID"):
+            self.reserve(attempt="attemptA", client="clientB",
+                         binding=dict(BINDING, turnId="TURN_B"), units=15)
+        self.assertEqual(self.ledger.budget("scopeA")["reserved_units"], 40)
+
+    def test_unknown_mock_cancel_status_rejected_without_state_change(self):
+        self.submitted(mode="BACKGROUND_POLL")
+        self.ledger.bind_mock_response("attemptA", "respA")
+        self.ledger.cancel("attemptA")
+        with self.assertRaisesRegex(Refused, "CANCEL_STATUS"):
+            self.ledger.observe_mock_background_cancel(
+                "attemptA", "respA", "completed"
+            )
+        self.safe(self.ledger.state("attemptA"), "CANCEL_PENDING")
+        self.assertEqual(self.ledger.budget("scopeA")["reserved_units"], 40)
+
+    def test_cancelled_mock_receipt_does_not_authorize_settlement(self):
+        self.submitted(mode="BACKGROUND_POLL")
+        self.ledger.bind_mock_response("attemptA", "respA")
+        self.ledger.cancel("attemptA")
+        self.ledger.observe_mock_background_cancel(
+            "attemptA", "respA", "cancelled"
+        )
+        with self.assertRaisesRegex(Refused, "UNTRUSTED_SETTLEMENT"):
+            self.ledger.reconcile_mock_completed(
+                "attemptA", "respA", 0, BINDING
+            )
+        self.assertEqual(self.ledger.budget("scopeA")["reserved_units"], 40)
 
     def test_no_sdk_or_network_real_transports_in_source(self):
         # Static import check supplements runtime canaries, not OS attestation.
