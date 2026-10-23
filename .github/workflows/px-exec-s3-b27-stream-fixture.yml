@@ -1,0 +1,31 @@
+name: PX / EXEC-S3 B27 Stream Compatibility
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b27_stream_compat.py'
+      - 'tests/test-pxd-exec-s3-b27-stream-compat.py'
+      - 'bin/px_s3_b25_responses_fixture.py'
+      - 'tests/test-pxd-exec-s3-b25-responses-fixtures.py'
+      - 'bin/px_s3_provider_admission.py'
+      - 'tests/test-pxd-exec-s3-b24-provider-admission.py'
+      - '.github/workflows/px-exec-s3-b27-stream-fixture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b27-offline-only:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: B27 documented-shaped event and cancellation-state simulations
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
+      - name: Preserve B25 synthetic Responses regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 default-deny provider admission regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
