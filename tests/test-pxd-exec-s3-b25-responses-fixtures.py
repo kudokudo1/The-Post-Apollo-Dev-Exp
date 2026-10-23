@@ -259,6 +259,31 @@ class B25OfflineResponsesTests(unittest.TestCase):
                          state="UNCERTAIN",
                          reason="B25_STREAM_TRANSPORT_INTERRUPTED")
 
+    def test_late_event_after_completed_is_refused(self):
+        events = message_events()
+        events.append({"sequence_number": 6, "type": "response.in_progress",
+                       "response": {"id": "resp_fixture"}})
+        self.assert_safe(consume_fixture_stream(events),
+                         state="REFUSED", reason="B25_EVENTS_AFTER_TERMINAL")
+
+    def test_event_count_is_bounded(self):
+        events = [created()]
+        events += [
+            {"sequence_number": i, "type": "response.in_progress",
+             "response": {"id": "resp_fixture"}}
+            for i in range(2, 68)
+        ]
+        self.assert_safe(consume_fixture_stream(events),
+                         state="REFUSED",
+                         reason="B25_EVENT_COUNT_OVER_BUDGET")
+
+    def test_unfinalized_output_is_refused(self):
+        events = function_events()
+        events.pop(5)
+        events[-1]["sequence_number"] = 6
+        self.assert_safe(consume_fixture_stream(events),
+                         state="REFUSED", reason="B25_OUTPUT_NOT_FINALIZED")
+
     def test_no_ambient_io_or_persistent_mutation(self):
         events = message_events()
         original = copy.deepcopy(events)
