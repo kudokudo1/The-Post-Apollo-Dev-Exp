@@ -1,0 +1,26 @@
+name: PX / EXEC-S3 B29 Disposable Transport Ledger
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b29_transport_ledger.py'
+      - 'tests/test-pxd-exec-s3-b29-transport-ledger.py'
+      - 'bin/px_s3_provider_admission.py'
+      - 'tests/test-pxd-exec-s3-b24-provider-admission.py'
+      - '.github/workflows/px-exec-s3-b29-transport-ledger.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b29-mock-only:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: B29 disposable SQLite state and credential isolation simulation
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
+      - name: Preserve B24 default-deny real provider admission policy
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
