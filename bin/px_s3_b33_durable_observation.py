@@ -9,9 +9,8 @@ Never use this fixture for real spend, credentials, provider or tool dispatch.
 import sqlite3
 
 from px_s3_b29_transport_ledger import (
-    Refused, SyntheticLedger, STATES_HOLD, canonical_binding,
+    Refused, STATES_HOLD, canonical_binding,
 )
-from px_s3_b30_integrated_fixture import OfflineIntegratedTurn
 from px_s3_b31_evidence_boundary import TestOnlyEvidenceIssuer, _snapshot_events
 from px_s3_b32_staged_evidence import StagedOfflineEvidenceTurn
 
@@ -116,8 +115,10 @@ class DurableObservedFixture:
         if reason is not None:
             # Invalid or interrupted observations are never recorded as
             # completed and cannot subsequently release budget.
-            self._joint.revoke_if_changed(attempt_id, current_binding)
-            self._joint.interrupted_simulated(attempt_id)
+            row = self._joint.revoke_if_changed(attempt_id, current_binding)
+            if row["state"] in ("SUBMISSION_UNCONFIRMED",
+                                "REMOTE_OUTCOME_UNKNOWN"):
+                self._joint.interrupted_simulated(attempt_id)
             _deny("STREAM_UNCERTAIN")
         response_id = validated["responseId"]
 
