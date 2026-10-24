@@ -40,17 +40,7 @@ jobs:
           echo "MERGED_MAIN_BASE_VERIFIED=$EXPECTED_BASE_SHA"
       - name: B24-B33 suites directly from merged main (274 expected)
         run: |
-          for test in \
-            tests/test-pxd-exec-s3-b33-durable-observation.py \\
-            tests/test-pxd-exec-s3-b32-staged-evidence.py \\
-            tests/test-pxd-exec-s3-b30-integrated-fixture.py \\
-            tests/test-pxd-exec-s3-b31-evidence-boundary.py \\
-            tests/test-pxd-exec-s3-b29-transport-ledger.py \\
-            tests/test-pxd-exec-s3-b27-stream-compat.py \\
-            tests/test-pxd-exec-s3-b25-responses-fixtures.py \\
-            tests/test-pxd-exec-s3-b24-provider-admission.py
-          do
-            echo "RUNNING $test"
+          for test in tests/test-pxd-exec-s3-b33-durable-observation.py tests/test-pxd-exec-s3-b32-staged-evidence.py tests/test-pxd-exec-s3-b30-integrated-fixture.py tests/test-pxd-exec-s3-b31-evidence-boundary.py tests/test-pxd-exec-s3-b29-transport-ledger.py tests/test-pxd-exec-s3-b27-stream-compat.py tests/test-pxd-exec-s3-b25-responses-fixtures.py tests/test-pxd-exec-s3-b24-provider-admission.py; do            echo "RUNNING $test"
             PYTHONDONTWRITEBYTECODE=1 python3 -B "$test"
           done
 
@@ -70,16 +60,6 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b34-merged-main.py
       - name: Preserve all B24-B33 suites from the SAME checkout (274 expected)
         run: |
-          for test in \
-            tests/test-pxd-exec-s3-b33-durable-observation.py \\
-            tests/test-pxd-exec-s3-b32-staged-evidence.py \\
-            tests/test-pxd-exec-s3-b30-integrated-fixture.py \\
-            tests/test-pxd-exec-s3-b31-evidence-boundary.py \\
-            tests/test-pxd-exec-s3-b29-transport-ledger.py \\
-            tests/test-pxd-exec-s3-b27-stream-compat.py \\
-            tests/test-pxd-exec-s3-b25-responses-fixtures.py \\
-            tests/test-pxd-exec-s3-b24-provider-admission.py
-          do
-            echo "RUNNING $test"
+          for test in tests/test-pxd-exec-s3-b33-durable-observation.py tests/test-pxd-exec-s3-b32-staged-evidence.py tests/test-pxd-exec-s3-b30-integrated-fixture.py tests/test-pxd-exec-s3-b31-evidence-boundary.py tests/test-pxd-exec-s3-b29-transport-ledger.py tests/test-pxd-exec-s3-b27-stream-compat.py tests/test-pxd-exec-s3-b25-responses-fixtures.py tests/test-pxd-exec-s3-b24-provider-admission.py; do            echo "RUNNING $test"
             PYTHONDONTWRITEBYTECODE=1 python3 -B "$test"
           done
