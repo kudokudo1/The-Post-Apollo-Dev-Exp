@@ -218,6 +218,26 @@ class B31EvidenceTests(unittest.TestCase):
             self.settle(evidence, changed)
         self.assertEqual(self.budget()["reserved_units"], 30)
 
+    def test_original_mutation_after_snapshot_does_not_change_validation(self):
+        self.submitted()
+        events = text_events()
+        evidence = self.witness(events)
+        import px_s3_b31_evidence_boundary as module
+        original = module.normalize_documented_stream
+
+        def mutate_original(snapshot):
+            # Simulate another participant mutating caller-owned events only
+            # after the evidence digest has been matched to a frozen copy.
+            events[3]["delta"] = "hostile after snapshot"
+            return original(snapshot)
+
+        with patch("px_s3_b31_evidence_boundary.normalize_documented_stream",
+                   side_effect=mutate_original):
+            result = self.safe(self.settle(evidence, events))
+        self.assertEqual(result["state"], "MOCK_COMPLETED")
+        self.assertEqual(self.budget()["used_units"], 12)
+        self.assertEqual(events[3]["delta"], "hostile after snapshot")
+
     def test_unexpected_stream_after_witness_refused(self):
         self.submitted()
         evt = text_events()
