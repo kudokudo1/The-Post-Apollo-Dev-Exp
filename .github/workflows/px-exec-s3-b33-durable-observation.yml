@@ -1,0 +1,67 @@
+name: PX / EXEC-S3 B33 Durable Observation Continuity
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b33_durable_observation.py'
+      - 'tests/test-pxd-exec-s3-b33-durable-observation.py'
+      - '.github/workflows/px-exec-s3-b33-durable-observation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b33-offline-durable-event-continuity:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 9
+    steps:
+      - name: Checkout B33 fixture
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout immutable B30 prerequisite PR #88
+        uses: actions/checkout@v4
+        with:
+          ref: '5568e945c5f10750c3751d537138a3d18c42bcd0'
+          path: deps/b30
+          persist-credentials: false
+      - name: Checkout immutable B31 prerequisite PR #89
+        uses: actions/checkout@v4
+        with:
+          ref: 'f633b737a0a003d91d93caac04ea4f624103f6e8'
+          path: deps/b31
+          persist-credentials: false
+      - name: Checkout immutable B32 prerequisite PR #90
+        uses: actions/checkout@v4
+        with:
+          ref: '449335fc65a8752c6051f9b9892a0f0e93af2c19'
+          path: deps/b32
+          persist-credentials: false
+      - name: B33 atomic durable observation and settlement integrity
+        env:
+          PYTHONPATH: 'deps/b30/bin:deps/b31/bin:deps/b32/bin:bin'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b33-durable-observation.py
+      - name: Preserve B32 staged joint integration
+        env:
+          PYTHONPATH: 'deps/b30/bin:deps/b31/bin:deps/b32/bin:bin'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b32/tests/test-pxd-exec-s3-b32-staged-evidence.py
+      - name: Preserve B30 lifecycle integration
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b30/tests/test-pxd-exec-s3-b30-integrated-fixture.py
+      - name: Preserve B31 fixture evidence boundary
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b31/tests/test-pxd-exec-s3-b31-evidence-boundary.py
+      - name: Preserve B29 atomic mock ledger
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
+      - name: Preserve B27 SSE validation
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
+      - name: Preserve B25 fake Responses reducer
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 provider default deny
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
