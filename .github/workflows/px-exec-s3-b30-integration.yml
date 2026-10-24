@@ -1,0 +1,37 @@
+name: PX / EXEC-S3 B30 Offline Integrated Lifecycle
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b30_integrated_fixture.py'
+      - 'tests/test-pxd-exec-s3-b30-integrated-fixture.py'
+      - 'bin/px_s3_b29_transport_ledger.py'
+      - 'bin/px_s3_b27_stream_compat.py'
+      - 'bin/px_s3_b25_responses_fixture.py'
+      - 'bin/px_s3_provider_admission.py'
+      - '.github/workflows/px-exec-s3-b30-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b30-disposable-integration:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: B30 integrated B27+B29 crash/restart lifecycle proofs
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b30-integrated-fixture.py
+      - name: Preserve B29 durable ledger regression
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
+      - name: Preserve B27 stream compatibility regression
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
+      - name: Preserve B25 inert Responses regression
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 default-deny provider admission
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
