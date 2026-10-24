@@ -1,0 +1,37 @@
+name: PX / EXEC-S3 B31 Synthetic Provider Evidence Boundary
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b31_evidence_boundary.py'
+      - 'tests/test-pxd-exec-s3-b31-evidence-boundary.py'
+      - 'bin/px_s3_b29_transport_ledger.py'
+      - 'bin/px_s3_b27_stream_compat.py'
+      - 'bin/px_s3_b25_responses_fixture.py'
+      - 'bin/px_s3_provider_admission.py'
+      - '.github/workflows/px-exec-s3-b31-evidence-boundary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b31-disposable-fixture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: B31 synthetic evidence, identity, replay and mock billing
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b31-evidence-boundary.py
+      - name: Preserve B29 durable attempt and budget regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
+      - name: Preserve B27 documented streaming event regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
+      - name: Preserve B25 strict function-call regression
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 provider default deny
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
