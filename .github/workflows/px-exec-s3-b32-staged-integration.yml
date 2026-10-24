@@ -1,0 +1,56 @@
+name: PX / EXEC-S3 B32 Staged Offline B30+B31 Integration
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b32_staged_evidence.py'
+      - 'tests/test-pxd-exec-s3-b32-staged-evidence.py'
+      - '.github/workflows/px-exec-s3-b32-staged-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b32-pinned-offline-fixtures:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout B32 against current main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout immutable B30 draft dependency
+        uses: actions/checkout@v4
+        with:
+          ref: '5568e945c5f10750c3751d537138a3d18c42bcd0'
+          path: deps/b30
+          persist-credentials: false
+      - name: Checkout immutable B31 draft dependency
+        uses: actions/checkout@v4
+        with:
+          ref: 'f633b737a0a003d91d93caac04ea4f624103f6e8'
+          path: deps/b31
+          persist-credentials: false
+      - name: B32 joint evidence and restart lifecycle
+        env:
+          PYTHONPATH: 'deps/b30/bin:deps/b31/bin:bin'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b32-staged-evidence.py
+      - name: Preserve original B30 lifecycle suites at pinned HEAD
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b30/tests/test-pxd-exec-s3-b30-integrated-fixture.py
+      - name: Preserve original B31 evidence suite at pinned HEAD
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b31/tests/test-pxd-exec-s3-b31-evidence-boundary.py
+      - name: Preserve B29 ledger and uncertainty regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
+      - name: Preserve B27 Responses stream validation
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
+      - name: Preserve B25 Responses mock reducer
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
+      - name: Preserve B24 real-provider default deny
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
