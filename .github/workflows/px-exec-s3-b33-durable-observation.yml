@@ -1,9 +1,20 @@
-name: PX / EXEC-S3 B33 Durable Observation Continuity
+name: PX / EXEC-S3 B34 Merged-Main Offline Integration
+
 on:
   pull_request:
     paths:
-      - 'bin/px_s3_b33_durable_observation.py'
-      - 'tests/test-pxd-exec-s3-b33-durable-observation.py'
+      - 'bin/px_s3_*.py'
+      - 'bin/px-agent'
+      - 'tests/test-pxd-exec-s3-*.py'
+      - 'MODEL/contracts/exec-s3-doctor-execution-isolation.md'
+      - '.github/workflows/px-exec-s3-b33-durable-observation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bin/px_s3_*.py'
+      - 'bin/px-agent'
+      - 'tests/test-pxd-exec-s3-*.py'
+      - 'MODEL/contracts/exec-s3-doctor-execution-isolation.md'
       - '.github/workflows/px-exec-s3-b33-durable-observation.yml'
   workflow_dispatch:
 
@@ -11,57 +22,64 @@ permissions:
   contents: read
 
 jobs:
-  b33-offline-durable-event-continuity:
+  landed-main-baseline:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
-    timeout-minutes: 9
+    timeout-minutes: 10
     steps:
-      - name: Checkout B33 fixture
+      - name: Checkout exact current main base, not any draft-PR dependency
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
-      - name: Checkout immutable B30 prerequisite PR #88
-        uses: actions/checkout@v4
-        with:
-          ref: '5568e945c5f10750c3751d537138a3d18c42bcd0'
-          path: deps/b30
-          persist-credentials: false
-      - name: Checkout immutable B31 prerequisite PR #89
-        uses: actions/checkout@v4
-        with:
-          ref: 'f633b737a0a003d91d93caac04ea4f624103f6e8'
-          path: deps/b31
-          persist-credentials: false
-      - name: Checkout immutable B32 prerequisite PR #90
-        uses: actions/checkout@v4
-        with:
-          ref: '449335fc65a8752c6051f9b9892a0f0e93af2c19'
-          path: deps/b32
-          persist-credentials: false
-      - name: B33 atomic durable observation and settlement integrity
+      - name: Verify tested checkout is the exact merged main base
         env:
-          PYTHONPATH: 'deps/b30/bin:deps/b31/bin:deps/b32/bin:bin'
+          EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b33-durable-observation.py
-      - name: Preserve B32 staged joint integration
-        env:
-          PYTHONPATH: 'deps/b30/bin:deps/b31/bin:deps/b32/bin:bin'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE_SHA"
+          echo "MERGED_MAIN_BASE_VERIFIED=$EXPECTED_BASE_SHA"
+      - name: B24-B33 suites directly from merged main (274 expected)
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b32/tests/test-pxd-exec-s3-b32-staged-evidence.py
-      - name: Preserve B30 lifecycle integration
+          for test in \
+            tests/test-pxd-exec-s3-b33-durable-observation.py \\
+            tests/test-pxd-exec-s3-b32-staged-evidence.py \\
+            tests/test-pxd-exec-s3-b30-integrated-fixture.py \\
+            tests/test-pxd-exec-s3-b31-evidence-boundary.py \\
+            tests/test-pxd-exec-s3-b29-transport-ledger.py \\
+            tests/test-pxd-exec-s3-b27-stream-compat.py \\
+            tests/test-pxd-exec-s3-b25-responses-fixtures.py \\
+            tests/test-pxd-exec-s3-b24-provider-admission.py
+          do
+            echo "RUNNING $test"
+            PYTHONDONTWRITEBYTECODE=1 python3 -B "$test"
+          done
+
+  integration-on-triggering-commit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout event commit without extra dependency trees
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact checkout commit
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b30/tests/test-pxd-exec-s3-b30-integrated-fixture.py
-      - name: Preserve B31 fixture evidence boundary
+          echo "B34_EXECUTION_SHA=$(git rev-parse HEAD)"
+      - name: Run merged-tree provenance and lifecycle gate (B34)
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B deps/b31/tests/test-pxd-exec-s3-b31-evidence-boundary.py
-      - name: Preserve B29 atomic mock ledger
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b34-merged-main.py
+      - name: Preserve all B24-B33 suites from the SAME checkout (274 expected)
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
-      - name: Preserve B27 SSE validation
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b27-stream-compat.py
-      - name: Preserve B25 fake Responses reducer
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
-      - name: Preserve B24 provider default deny
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b24-provider-admission.py
+          for test in \
+            tests/test-pxd-exec-s3-b33-durable-observation.py \\
+            tests/test-pxd-exec-s3-b32-staged-evidence.py \\
+            tests/test-pxd-exec-s3-b30-integrated-fixture.py \\
+            tests/test-pxd-exec-s3-b31-evidence-boundary.py \\
+            tests/test-pxd-exec-s3-b29-transport-ledger.py \\
+            tests/test-pxd-exec-s3-b27-stream-compat.py \\
+            tests/test-pxd-exec-s3-b25-responses-fixtures.py \\
+            tests/test-pxd-exec-s3-b24-provider-admission.py
+          do
+            echo "RUNNING $test"
+            PYTHONDONTWRITEBYTECODE=1 python3 -B "$test"
+          done
