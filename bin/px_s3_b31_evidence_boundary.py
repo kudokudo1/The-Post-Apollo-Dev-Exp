@@ -21,7 +21,8 @@ def _deny(code):
     raise Refused("B31_REFUSED_" + code)
 
 
-def _digest(events):
+def _snapshot_events(events):
+    """Snapshot once: checksum and validator must see identical event bytes."""
     if type(events) is not list or not 2 <= len(events) <= 64:
         _deny("EVENTS_SHAPE")
     try:
@@ -31,7 +32,11 @@ def _digest(events):
         _deny("EVENTS_ENCODING")
     if len(data) > 262144:
         _deny("EVENTS_BUDGET")
-    return hashlib.sha256(data).hexdigest()
+    return json.loads(data), hashlib.sha256(data).hexdigest()
+
+
+def _digest(events):
+    return _snapshot_events(events)[1]
 
 
 class _FixtureWitness:
@@ -131,15 +136,16 @@ class OfflineEvidenceBoundary:
         # Observed evidence is an in-memory capability, never a model JSON
         # boolean, copied dict or caller-supplied usage number.
         obs = self.issuer._take(evidence)
+        snapshot, digest = _snapshot_events(events)
         if (obs["attempt"] != attempt_id or
                 obs["client"] != row["clientRequestId"] or
                 obs["binding"] != bound or
                 obs["status"] != "completed" or
-                obs["digest"] != _digest(events)):
+                obs["digest"] != digest):
             _deny("EVIDENCE_SCOPE_OR_STATUS")
 
         try:
-            normalized = normalize_documented_stream(events)
+            normalized = normalize_documented_stream(snapshot)
         except FixtureRefusal:
             _deny("STREAM_INVALID")
         result = consume_fixture_stream(normalized)
