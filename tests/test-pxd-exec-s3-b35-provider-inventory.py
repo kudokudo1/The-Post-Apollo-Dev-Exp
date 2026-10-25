@@ -127,8 +127,29 @@ class B35OfflineInventoryTests(unittest.TestCase):
             return part
 
         with patch.object(b35.os, "read", side_effect=swap_after_read):
-            self.denied(reason="PATH_CHANGED_DURING_READ")
+            with self.assertRaises(b35.InventoryRefusal) as caught:
+                self.inspect()
+        # Linux may update the renamed open inode ctime, so either of the
+        # two independent change checks can reject the same swap.
+        self.assertIn(str(caught.exception), (
+            "B35_REFUSED_CHANGED_DURING_READ",
+            "B35_REFUSED_PATH_CHANGED_DURING_READ",
+        ))
         self.assertTrue(changed)
+
+    def test_open_fd_with_mismatching_final_path_identity_refused(self):
+        original_stat = os.stat
+        alternate = Path(self.tmp.name) / "another-executable"
+        alternate.write_bytes(b"#!/bin/sh\\n# separate inode\\n")
+        alternate.chmod(0o755)
+
+        def return_different_path_identity(path, *args, **kwargs):
+            if str(path) == str(self.path) and kwargs.get("follow_symlinks") is False:
+                return original_stat(alternate, follow_symlinks=False)
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(b35.os, "stat", side_effect=return_different_path_identity):
+            self.denied(reason="PATH_CHANGED_DURING_READ")
 
     def test_unknown_header_is_not_inferred_as_trusted(self):
         self.path.write_bytes(b"opaque executable test content")
