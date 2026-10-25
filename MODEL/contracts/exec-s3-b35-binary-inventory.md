@@ -13,7 +13,7 @@
 B34 passed 288/288 offline tests on real merged main. The next *real-world feasibility prerequisite* from B20 is B20-2: accurate host-specific provider executable identity. B35 provides a read-only fingerprint helper, not another synthetic model-turn simulator.
 
 - bin/px_s3_b35_provider_binary_inventory.py takes one explicitly chosen absolute executable path and a Codex/Hermes name. It never searches PATH, launches a provider, inspects provider configuration/login, sends a network request or accesses live Hospital.
-- It resolves a launcher symlink, opens the target as a regular executable with O_NOFOLLOW, bounds the read to 128 MiB, hashes it and checks metadata before and after. It reports observed path, target, kind, size, inode, mtime and SHA-256.
+- It resolves a launcher symlink, opens the target as a regular executable with O_NOFOLLOW, bounds the read to 128 MiB, hashes it and checks open-FD metadata before and after, then confirms the resolved pathname still names that same file. It reports observed path, target, kind, size, inode, mtime and SHA-256.
 - Every success reports decision INVENTORY_ONLY, versionObserved=false, modelOnlyCertified=false and productionReady=false.
 - Missing/relative/changed/non-executable/nonregular/oversize inputs refuse with stable codes, without exposing input bytes or path in an error.
 - Tests use only disposable synthetic executable files; no native provider, SDK, network, credentials or Hospital writes.
@@ -35,14 +35,14 @@ Host inspection remains operator-initiated and is not performed automatically by
 
 ## VERIFY
 
-The existing B34 merged-main workflow is extended to run B35 standalone tests alongside B24-B34 regressions. Tests cover exact SHA, symlinks, changed bytes, invalid providers/paths, oversized and special files, changed metadata, structured stdout, scrubbed stderr and no process/network execution.
+The existing B34 merged-main workflow is extended to run B35 standalone tests alongside B24-B34 regressions. Tests cover exact SHA, symlinks, changed bytes, invalid providers/paths, oversized and special files, changed metadata, in-read pathname replacement, special FIFO inputs, structured stdout, scrubbed stderr and no process/network execution.
 
 Passing CI proves only the source behavior on disposable GitHub fixtures, **not** the operator's Fedora or Toolbox binary.
 
 ## WATCH OUT FOR
 
 1. Legacy config/agent-providers.json still launches native Codex/Hermes CLIs with no S3-certified model-only mode. Neither has independently verified disabled native shell, browser, MCP, plugins, gateway or resume tools.
-2. Fingerprinting a launcher is not fingerprinting its interpreter/package tree or Hermes gateway execution owner. A different host/Toolbox can resolve different bytes. Concurrent filesystem mutation remains a residual risk.
+2. Fingerprinting a launcher is not fingerprinting its interpreter/package tree or Hermes gateway execution owner. A different host/Toolbox can resolve different bytes. Concurrent filesystem mutation remains a residual risk: the post-read pathname check detects a replacement during inventory, but is not an atomic launch pin and cannot prevent changes after the read.
 3. A Hermes gateway turn may survive a client CLI exit. Never stop the operator's running Hermes service merely to collect B35 fingerprints.
 4. An OpenAI Responses request with no tools and tool_choice none can constrain API-level tool invocation per published docs, but does not prove process or credential isolation and may require separately billed API use. This is an **unselected alternative**, not a silent change to the user's ChatGPT or Codex subscription.
 5. No authenticated provider call, cost, production Doctor, real tool-dispatch authority or live Hospital attachment is approved.
