@@ -16,6 +16,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 import px_s3_b35_provider_binary_inventory as b35
 
+DEFAULT_PATH = object()
+
 
 class B35OfflineInventoryTests(unittest.TestCase):
     def setUp(self):
@@ -26,12 +28,12 @@ class B35OfflineInventoryTests(unittest.TestCase):
         self.path.write_bytes(self.bytes)
         self.path.chmod(0o755)
 
-    def inspect(self, provider="codex", path="__B35_DEFAULT__"):
-        # Unlike None, this dedicated default does not disguise invalid input.
-        candidate = str(self.path) if path == "__B35_DEFAULT__" else path
+    def inspect(self, provider="codex", path=DEFAULT_PATH):
+        # A unique sentinel preserves explicit None as an invalid test input.
+        candidate = str(self.path) if path is DEFAULT_PATH else path
         return b35.inventory_binary(provider, str(candidate) if isinstance(candidate, Path) else candidate)
 
-    def denied(self, provider="codex", path="__B35_DEFAULT__", reason=None):
+    def denied(self, provider="codex", path=DEFAULT_PATH, reason=None):
         with self.assertRaises(b35.InventoryRefusal) as caught:
             self.inspect(provider, path)
         if reason:
