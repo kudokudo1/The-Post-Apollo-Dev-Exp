@@ -26,10 +26,12 @@ class B35OfflineInventoryTests(unittest.TestCase):
         self.path.write_bytes(self.bytes)
         self.path.chmod(0o755)
 
-    def inspect(self, provider="codex", path=None):
-        return b35.inventory_binary(provider, str(self.path if path is None else path))
+    def inspect(self, provider="codex", path="__B35_DEFAULT__"):
+        # Unlike None, this dedicated default does not disguise invalid input.
+        candidate = str(self.path) if path == "__B35_DEFAULT__" else path
+        return b35.inventory_binary(provider, str(candidate) if isinstance(candidate, Path) else candidate)
 
-    def denied(self, provider="codex", path=None, reason=None):
+    def denied(self, provider="codex", path="__B35_DEFAULT__", reason=None):
         with self.assertRaises(b35.InventoryRefusal) as caught:
             self.inspect(provider, path)
         if reason:
