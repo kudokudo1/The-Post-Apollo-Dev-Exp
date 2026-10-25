@@ -106,6 +106,30 @@ class B35OfflineInventoryTests(unittest.TestCase):
             stream.truncate(b35.MAX_BINARY_BYTES + 1)
         self.denied(reason="FILE_SIZE")
 
+    def test_fifo_is_refused_without_waiting_for_writer(self):
+        fifo = Path(self.tmp.name) / "named-pipe"
+        os.mkfifo(fifo, 0o700)
+        self.denied(path=fifo, reason="NOT_REGULAR_FILE")
+
+    def test_replaced_path_during_read_is_refused(self):
+        original_read = os.read
+        moved = Path(self.tmp.name) / "old-executable"
+        changed = False
+
+        def swap_after_read(fd, size):
+            nonlocal changed
+            part = original_read(fd, size)
+            if part and not changed:
+                changed = True
+                self.path.rename(moved)
+                self.path.write_bytes(b"#!/bin/sh\\n# NEW UNRELATED FILE\\n")
+                self.path.chmod(0o755)
+            return part
+
+        with patch.object(b35.os, "read", side_effect=swap_after_read):
+            self.denied(reason="PATH_CHANGED_DURING_READ")
+        self.assertTrue(changed)
+
     def test_unknown_header_is_not_inferred_as_trusted(self):
         self.path.write_bytes(b"opaque executable test content")
         self.assertEqual(self.inspect()["fileKind"], "OTHER_EXECUTABLE")
