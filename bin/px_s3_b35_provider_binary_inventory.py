@@ -72,6 +72,16 @@ def inventory_binary(provider, absolute_path):
         after = os.fstat(fd)
         if length != before.st_size or _identity(before) != _identity(after):
             _refuse("CHANGED_DURING_READ")
+        # Also reject common rename/replace races: the path must still name
+        # the same open file. This is observational, NOT an atomic pin or
+        # protection against an attacker who replaces it immediately after.
+        try:
+            named_after = os.stat(str(resolved), follow_symlinks=False)
+        except OSError:
+            _refuse("PATH_CHANGED_DURING_READ")
+        if (not stat.S_ISREG(named_after.st_mode)
+                or _identity(named_after) != _identity(after)):
+            _refuse("PATH_CHANGED_DURING_READ")
         file_kind = ("ELF" if prefix == b"\x7fELF"
                      else "SHEBANG" if prefix.startswith(b"#!")
                      else "OTHER_EXECUTABLE")
