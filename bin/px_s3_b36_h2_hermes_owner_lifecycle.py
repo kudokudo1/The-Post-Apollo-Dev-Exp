@@ -38,6 +38,8 @@ def _state_valid(state):
             and _scope_valid(state.get("scope")) and _owner_valid(state.get("ownerId"))
             and type(state.get("phase")) is str and state["phase"] in PHASES
             and type(state.get("sequence")) is int and state["sequence"] >= 0
+            and ((state["sequence"] == 0 and state["phase"] == "UNALLOCATED")
+                 or (state["sequence"] > 0 and state["phase"] != "UNALLOCATED"))
             and (state.get("lastEventId") == "" if state["sequence"] == 0
                  else _id_valid(state.get("lastEventId"))))
 
