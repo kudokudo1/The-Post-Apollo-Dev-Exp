@@ -163,7 +163,7 @@ def exercise_fake_group(*, escaped_descendant=False):
             "decision": "DENY", "observedSameGroup": same_group,
             "descendantSurvivedGroupKill": descendant_still_executing,
             "workerExecutionStopped": not _same_live_process(worker_birth),
-            "dedicatedCgroupObserved": cgroup_separated,
+            "workerCgroupDiffersFromRunner": cgroup_separated,
             "rootAndChildShareCgroup": (
                 root_cgroup is not None and child_cgroup == root_cgroup),
             "networkEgressPrevented": False, "credentialBoundaryCertified": False,
