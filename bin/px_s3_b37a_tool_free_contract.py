@@ -76,6 +76,10 @@ def validate_request(candidate):
     if type(item["role"]) is not str or item["role"] != "user":
         _refuse("INPUT_ROLE")
     _valid_prompt(item["content"])
+    # A valid in-memory request must also fit its strict JSON wire budget.
+    canonical = json.dumps(candidate, ensure_ascii=True, separators=(",", ":"))
+    if len(canonical.encode("ascii")) > MAX_WIRE_BYTES:
+        _refuse("WIRE_OVER_BUDGET")
     return candidate
 
 
