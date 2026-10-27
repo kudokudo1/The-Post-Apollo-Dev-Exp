@@ -184,6 +184,13 @@ class B36H2Tests(unittest.TestCase):
         self.assertIn("INVALID_PRIOR_FIXTURE", r["reasons"])
         self.assertIsNone(r["nextState"])
 
+    def test_forged_phase_without_lifecycle_event_refused(self):
+        f = seed()
+        f["phase"] = "RESERVED_FAKE"
+        out = h2.assess_transition(f, event("REQUEST_STOP", seed()))
+        self.assertIn("INVALID_PRIOR_FIXTURE", out["reasons"])
+        self.assertIsNone(out["nextState"])
+
     def test_bad_event_schema_receipt_and_kind(self):
         f = seed()
         for change, why in (({"extra": "x"}, "EVENT_SCHEMA"),
