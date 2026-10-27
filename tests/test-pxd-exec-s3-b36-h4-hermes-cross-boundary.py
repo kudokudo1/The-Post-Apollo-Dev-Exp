@@ -116,9 +116,12 @@ def make_case(kind="RESERVE"):
     }
 
 
+_MISSING = object()
+
+
 class H4OfflineIntegrationTests(unittest.TestCase):
-    def denied(self, case=None, reason=None, fake=None, expected=None, generation=7):
-        result = h4.assess(make_case() if case is None else case,
+    def denied(self, case=_MISSING, reason=None, fake=None, expected=None, generation=7):
+        result = h4.assess(make_case() if case is _MISSING else case,
                            scope() if expected is None else expected, generation)
         self.assertEqual(result["decision"], "DENY")
         self.assertFalse(result["launchAuthorized"])
