@@ -1,0 +1,30 @@
+name: PX / EXEC-S3 B37-A Offline Tool-Free Contract
+
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b37a_tool_free_contract.py'
+      - 'tests/test-pxd-exec-s3-b37a-tool-free-contract.py'
+      - 'MODEL/contracts/exec-s3-b37a-tool-free-contract.md'
+      - 'bin/px_s3_b25_responses_fixture.py'
+      - '.github/workflows/px-exec-s3-b37a-tool-free-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-only-shape-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact triggering commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: B37-A fixed fake-model transport shape and negative boundary tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
+      - name: Preserve unchanged B25 fixture request and event validation
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b25-responses-fixtures.py
