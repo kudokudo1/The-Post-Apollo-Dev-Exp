@@ -56,6 +56,9 @@ jobs:
       - name: Record exact checkout commit
         run: |
           echo "B34_EXECUTION_SHA=$(git rev-parse HEAD)"
+      - name: B36-H4 Hermes cross-boundary negative integration (offline; 41 expected)
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h4-hermes-cross-boundary.py
       - name: B36-H3 trusted supervisor boundary (offline fixtures only; 28 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h3-hermes-supervisor.py
