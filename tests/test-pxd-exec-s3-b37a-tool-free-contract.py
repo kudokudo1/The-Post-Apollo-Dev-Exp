@@ -157,6 +157,13 @@ class B37AToolFreeTests(unittest.TestCase):
     def test_prompt_exact_boundary(self):
         self.assertEqual(len(build_request("x" * 2048)["input"][0]["content"]), 2048)
 
+    def test_in_memory_multibyte_prompt_obeys_wire_budget(self):
+        with self.assertRaisesRegex(ValueError, "B37A_WIRE_OVER_BUDGET"):
+            build_request("\U0001f600" * 2048)
+        modified = copy.deepcopy(self.request)
+        modified["input"][0]["content"] = "\U0001f600" * 2048
+        self.assert_denied(modified)
+
     def test_wire_duplicate_root_and_nested_keys(self):
         raw = json.dumps(self.request)
         self.assert_denied(raw.replace('"model":', '"model": "codex", "model":', 1))
