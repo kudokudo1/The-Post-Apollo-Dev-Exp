@@ -21,7 +21,7 @@ At an operator-authorized later use on Fedora, H6 would read ONLY this fixed OS 
 - /proc/self/ns/{user,mnt,pid,net,cgroup} via readlink, reporting presence only, NOT namespace IDs nor whether a future worker is actually isolated.
 - Fixed executable metadata for /usr/bin/bwrap, /usr/bin/unshare, /usr/bin/systemd-run and socket-type metadata for /run/user/<current-uid>/bus. Presence is not verified tool behavior or a working user service manager.
 
-**No user home, ~/.hermes, config.yaml, state.db, token, provider session, SSH agent, environment dump, process list, other PID procfs entry, or user-supplied arbitrary path is inspected.** No raw contents, actual paths, PID, UID, hostname, environment, mount source, namespace identifier or exception strings are emitted. Output has only allowlisted flags, known controller labels and fixed refusal codes. Each input source is read with a bounded size and errors become UNKNOWN.
+**No user home, ~/.hermes, config.yaml, state.db, token, provider session, SSH agent, environment dump, process list, other PID procfs entry, or user-supplied arbitrary path is inspected.** No raw contents, actual paths, PID, UID, hostname, environment, mount source, namespace identifier or exception strings are emitted. Output has only allowlisted flags, known controller labels and fixed refusal codes. Each input source is read with a bounded size and inaccessible entries become UNKNOWN while genuinely missing namespace/tool/socket paths report ABSENT.
 
 The parser accepts untrusted synthetic snapshots during CI, and even a synthetically perfect snapshot always reports DENY. Notably, existing process Seccomp mode, cgroup v2 mount, SELinux enforcing and tools being installed do **not** certify model-only Hermes, native tool denial, an isolated credential plane, direct gateway STOP_ACK or complete descendant teardown.
 
@@ -41,9 +41,9 @@ CI only runs a synthetic snapshot and fixed-path access contract test:
 
 ## VERIFY
 
-29 H6 fake-only tests cover positive and missing/UNKNOWN observations, literal fixed host source allowlists, cgroup and namespace parsing, userns sysctls, Fedora variant, SELinux flag, tool metadata, bounded untrusted content, cyclic/hostile payloads, malformed input, no raw data echo, exact opt-in refusal and mocked read-only collector. All tests mock collection or use injected fixtures. **No real process or Hermes is launched in H6.**
+32 H6 fake-only tests cover positive and missing/UNKNOWN observations, literal fixed host source allowlists, cgroup and namespace parsing, userns sysctls, Fedora variant, SELinux flag, tool metadata, bounded untrusted content, cyclic/hostile payloads, malformed input, no raw data echo, exact opt-in refusal and mocked read-only collector. All tests mock collection or use injected fixtures. **No real process or Hermes is launched in H6.**
 
-Current main CI total after H5 is 441. Expected PR integration: **470/470** (H6 29 + H5 13 + H4 41 + H3 28 + H2 26 + H1 23 + B35 22 + B34 14 + B24–B33 274). Historic baseline remains **274/274** by the existing workflow contract. Actual CI counts, the exact tested merge checkout, and all grammar checks must be independently verified.
+Current main CI total after H5 is 441. Expected PR integration: **473/473** (H6 32 + H5 13 + H4 41 + H3 28 + H2 26 + H1 23 + B35 22 + B34 14 + B24–B33 274). Historic baseline remains **274/274** by the existing workflow contract. Actual CI counts, the exact tested merge checkout, and all grammar checks must be independently verified.
 
 ## WATCH OUT FOR
 
@@ -59,7 +59,7 @@ Current main CI total after H5 is 441. Expected PR integration: **470/470** (H6 
 
 - [x] Reverify H5 merge and canonical source seams
 - [x] Add inert-by-default fixed-source Linux inventory with safe diagnostic output
-- [x] Add 29 offline malicious/UNKNOWN/access-confinement tests
+- [x] Add 32 offline malicious/UNKNOWN/access-confinement tests
 - [ ] Independently verify CI, PR merge checkout and main baseline
 - [ ] Independent security acceptance and operator-authorized PR merge
 - [ ] Obtain separate explicit approval for any Fedora local script deployment
