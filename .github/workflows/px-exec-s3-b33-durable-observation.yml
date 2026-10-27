@@ -56,6 +56,11 @@ jobs:
       - name: Record exact checkout commit
         run: |
           echo "B34_EXECUTION_SHA=$(git rev-parse HEAD)"
+      - name: B36-H5 Linux fake Python group ownership probe (CI-only; 13 expected)
+        env:
+          PX_H5_FAKE_OS_PROBE_APPROVED_IN_CI: '1'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h5-linux-fake-owner.py
       - name: B36-H4 Hermes cross-boundary negative integration (offline; 41 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h4-hermes-cross-boundary.py
