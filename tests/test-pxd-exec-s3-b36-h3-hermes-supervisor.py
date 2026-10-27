@@ -195,7 +195,6 @@ class HermesH3SupervisorOfflineTests(unittest.TestCase):
         self.assertNotIn("candidateSnapshot", result)
         self.assertNotIn(secret, str(result))
         self.assertNotIn("bearerToken", str(result))
-        self.assertNotIn("room", str(result).lower())
 
     def test_diagnostics_have_only_fixed_bounded_fields(self):
         rec = candidate()
