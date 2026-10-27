@@ -7,8 +7,6 @@ synthetically perfect envelope remains DENY until a real trusted supervisor
 boundary and independently verified teardown path exist.
 """
 
-from copy import deepcopy
-
 from px_s3_b36_hermes_recovery_fence import _scope_valid
 
 SCHEMA = "B36_H3_HERMES_SUPERVISOR_OFFLINE_V1"
@@ -130,6 +128,8 @@ def assess(candidate, expected_scope, expected_generation):
     reasons.add("KERNEL_ATTESTATION_UNAVAILABLE")
     reasons.add("REAL_PROVIDER_PRODUCTION_HOLD")
 
+    # Security diagnostics contain only fixed schema/status fields and reason codes.
+    # Untrusted candidate data must never be copied or echoed into results.
     return {
         "schema": SCHEMA,
         "decision": "DENY",
@@ -144,7 +144,6 @@ def assess(candidate, expected_scope, expected_generation):
         "gatewayCalls": 0,
         "hospitalWrites": 0,
         "productionReady": False,
-        "candidateSnapshot": deepcopy(candidate) if type(candidate) is dict else {},
     }
 
 
