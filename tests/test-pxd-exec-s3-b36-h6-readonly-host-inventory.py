@@ -258,6 +258,24 @@ class H6OfflineInventoryTests(unittest.TestCase):
              patch("socket.socket", side_effect=AssertionError("socket")):
             self.checked()
 
+    def test_namespace_metadata_missing_vs_inaccessible(self):
+        with patch.object(h6.os, "readlink", side_effect=FileNotFoundError):
+            self.assertFalse(h6._fixed_namespace_exists("net"))
+        with patch.object(h6.os, "readlink", side_effect=PermissionError):
+            self.assertIsNone(h6._fixed_namespace_exists("net"))
+
+    def test_tool_metadata_missing_vs_inaccessible(self):
+        with patch.object(h6.os, "stat", side_effect=FileNotFoundError):
+            self.assertFalse(h6._fixed_tool_executable("/usr/bin/bwrap"))
+        with patch.object(h6.os, "stat", side_effect=PermissionError):
+            self.assertIsNone(h6._fixed_tool_executable("/usr/bin/bwrap"))
+
+    def test_user_bus_metadata_missing_vs_inaccessible(self):
+        with patch.object(h6.os, "stat", side_effect=FileNotFoundError):
+            self.assertFalse(h6._fixed_bus_socket())
+        with patch.object(h6.os, "stat", side_effect=PermissionError):
+            self.assertIsNone(h6._fixed_bus_socket())
+
     def test_missing_namespace_flag_reports_unknown(self):
         sample = fixture()
         sample["namespaces"]["pid"] = None
