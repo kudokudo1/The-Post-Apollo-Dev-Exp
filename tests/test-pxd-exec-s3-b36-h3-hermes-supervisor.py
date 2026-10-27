@@ -185,6 +185,51 @@ class HermesH3SupervisorOfflineTests(unittest.TestCase):
                         self.denied(rec)
         self.assertEqual(rec, before)
 
+    def test_diagnostics_never_echo_sensitive_candidate_data(self):
+        rec = candidate()
+        secret = "SENSITIVE_UNTRUSTED_TOKEN_NEVER_EXPOSE"
+        rec["untrustedExtra"] = {"bearerToken": secret}
+        rec["stop"]["requestId"] = "stop-" + secret
+        rec["scope"]["room"] = secret
+        result = self.denied(rec, reason="SCHEMA_ROOT")
+        self.assertNotIn("candidateSnapshot", result)
+        self.assertNotIn(secret, str(result))
+        self.assertNotIn("bearerToken", str(result))
+        self.assertNotIn("room", str(result).lower())
+
+    def test_diagnostics_have_only_fixed_bounded_fields(self):
+        rec = candidate()
+        rec["maliciousPayload"] = "SENSITIVE_LONG_" + ("x" * 250000)
+        result = self.denied(rec, reason="SCHEMA_ROOT")
+        self.assertEqual(set(result), {
+            "schema", "decision", "reasons", "launchAuthorized",
+            "resumeAuthorized", "terminationVerified", "gatewayAckTrusted",
+            "kernelEvidenceTrusted", "modelCalls", "toolCalls",
+            "gatewayCalls", "hospitalWrites", "productionReady",
+        })
+        self.assertLess(len(str(result)), 1500)
+
+    def test_noncopyable_untrusted_extension_is_not_traversed(self):
+        class Hostile:
+            def __deepcopy__(self, memo):
+                raise AssertionError("Untrusted content must not be deep-copied")
+            def __repr__(self):
+                raise AssertionError("Untrusted content must not be formatted")
+
+        rec = candidate()
+        rec["untrustedExtra"] = Hostile()
+        result = self.denied(rec, reason="SCHEMA_ROOT")
+        self.assertNotIn("candidateSnapshot", result)
+
+    def test_recursive_untrusted_input_never_escapes_into_output(self):
+        rec = candidate()
+        rec["untrustedExtra"] = rec
+        result = self.denied(rec, reason="SCHEMA_ROOT")
+        self.assertNotIn("candidateSnapshot", result)
+        import json
+        encoded = json.dumps(result)
+        self.assertLess(len(encoded), 1500)
+
     def test_enforcement_api_always_refuses(self):
         with self.assertRaisesRegex(RuntimeError, "REAL_PROVIDER_PRODUCTION_HOLD"):
             require_supervisor_admission(candidate(), scope(), 7)
