@@ -15,7 +15,9 @@ import sys
 from pathlib import Path
 
 PROVIDERS = frozenset(("codex", "hermes"))
-MAX_BINARY_BYTES = 128 * 1024 * 1024
+# Bound read-only fingerprinting for standalone Codex builds (observed: 289166920 bytes).
+# This is an inspection ceiling, never permission to launch or trust a provider.
+MAX_BINARY_BYTES = 512 * 1024 * 1024
 CHUNK = 1024 * 1024
 
 
