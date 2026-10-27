@@ -146,6 +146,9 @@ def assess(case, expected_scope, expected_generation):
             # This is always a claim from a FAKE owner, even when H2 closed.
             reasons.add("FAKE_CGROUP_RECEIPT_NOT_KERNEL_ATTESTATION")
 
+    if b24_valid and any(code != "REAL_PROVIDER_PRODUCTION_HOLD"
+                           for code in proofs["B24"].get("reasons", ())):
+        reasons.add("PROVIDER_PROFILE_UNVERIFIED")
     if h2_valid and proofs["H2"].get("fixtureOutcome") == "REFUSED":
         reasons.add("OWNER_LIFECYCLE_REFUSED")
     if h3_valid and any(value in proofs["H3"].get("reasons", ()) for value in (
