@@ -24,6 +24,7 @@ def fixture():
             "unprivilegedUserns": "1\n",
             "maxUserns": "123\n",
             "osRelease": 'NAME="Fedora Linux"\nID=fedora\nVARIANT_ID=silverblue\n',
+            "selinuxEnforce": "1\n",
         },
         "namespaces": {name: True for name in h6.NAMESPACE_KINDS},
         "tools": {name: True for name in h6.TOOLS},
@@ -60,6 +61,7 @@ class H6OfflineInventoryTests(unittest.TestCase):
         self.assertTrue(obs["maxUserNamespacesPositive"])
         self.assertTrue(obs["currentProcessNoNewPrivs"])
         self.assertEqual(obs["currentProcessSeccompMode"], 2)
+        self.assertTrue(obs["selinuxEnforcing"])
         self.assertEqual(obs["visibleCgroupControllers"], ["cpu", "io", "memory", "pids"])
 
     def test_missing_cgroup_v2_mount_is_not_safety_grant(self):
@@ -121,6 +123,13 @@ class H6OfflineInventoryTests(unittest.TestCase):
         sample["sources"]["osRelease"] = "ID=ubuntu\n"
         self.assertFalse(self.checked(sample)["observations"]["fedoraSilverblueReported"])
 
+    def test_selinux_observation_disabled_or_missing(self):
+        sample = fixture()
+        sample["sources"]["selinuxEnforce"] = "0\n"
+        self.assertFalse(self.checked(sample)["observations"]["selinuxEnforcing"])
+        sample["sources"]["selinuxEnforce"] = None
+        self.assertIsNone(self.checked(sample)["observations"]["selinuxEnforcing"])
+
     def test_missing_os_release_is_unknown(self):
         sample = fixture()
         sample["sources"]["osRelease"] = None
@@ -138,7 +147,9 @@ class H6OfflineInventoryTests(unittest.TestCase):
     def test_bad_root_input_denies(self):
         for val in (None, [], {}, {"sources": "oops"}, "secret"):
             with self.subTest(value=type(val).__name__):
-                result = self.checked(val if val is not None else {"sources": []}, bad=True)
+                result = h6.assess(val)
+                self.assertEqual(result["decision"], "DENY")
+                self.assertIn("INVALID_INVENTORY_SNAPSHOT", result["reasons"])
                 self.assertIsNone(result["observations"]["cgroupV2MountedAtStandardPath"])
 
     def test_extra_secret_fields_never_echoed(self):
