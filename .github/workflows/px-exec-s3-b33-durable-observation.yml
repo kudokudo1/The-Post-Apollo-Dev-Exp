@@ -56,7 +56,7 @@ jobs:
       - name: Record exact checkout commit
         run: |
           echo "B34_EXECUTION_SHA=$(git rev-parse HEAD)"
-      - name: B36-H7 sanitized H6 feasibility interpretation (offline; 37 expected)
+      - name: B36-H7 sanitized H6 feasibility interpretation (offline; 38 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h7-feasibility.py
       - name: B36-H6 Fedora host capability inventory (injected fixtures only; 32 expected)
