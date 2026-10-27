@@ -94,16 +94,23 @@ def assess(case, expected_scope, expected_generation):
     if type(kind) is not str or kind not in KINDS:
         reasons.add("OWNER_EVENT_KIND_INVALID")
     else:
-        if owner_state.get("ownerId") != owner_event.get("ownerId"):
+        state_owner = owner_state.get("ownerId")
+        event_owner = owner_event.get("ownerId")
+        if (type(state_owner) is not str or type(event_owner) is not str
+                or state_owner != event_owner):
             reasons.add("OWNER_IDENTITY_MISMATCH")
         if owner_state.get("phase") in ("CLOSED_FAKE", "QUARANTINED_FAKE"):
             reasons.add("TERMINAL_OWNER_REENTRY")
-        if owner_event.get("scope") != owner_state.get("scope"):
+        event_scope, state_scope = owner_event.get("scope"), owner_state.get("scope")
+        if (not _scope_valid(event_scope) or not _scope_valid(state_scope)
+                or event_scope != state_scope):
             reasons.add("OWNER_EVENT_STATE_SCOPE_MISMATCH")
 
-        if _dict(supervisor.get("stop")).get("intent") != STOP_INTENT[kind]:
+        stop_intent = _dict(supervisor.get("stop")).get("intent")
+        if type(stop_intent) is not str or stop_intent != STOP_INTENT[kind]:
             reasons.add("STOP_INTENT_STAGE_MISMATCH")
-        if recovery.get("cancellation") != H1_CANCEL[kind]:
+        cancellation = recovery.get("cancellation")
+        if type(cancellation) is not str or cancellation != H1_CANCEL[kind]:
             reasons.add("CANCELLATION_STAGE_MISMATCH")
 
         # An ACK must not be projected backward to REQUEST_STOP, and
@@ -111,11 +118,15 @@ def assess(case, expected_scope, expected_generation):
         stop = _dict(supervisor.get("stop"))
         ack_needed = kind in ("ACK_STOP", "OBSERVE_EXIT")
         kernel_needed = kind == "OBSERVE_EXIT"
-        if ((stop.get("gatewayAck") == "STOP_ACK") != ack_needed
+        claimed_ack = stop.get("gatewayAck")
+        has_ack = type(claimed_ack) is str and claimed_ack == "STOP_ACK"
+        if (has_ack != ack_needed
                 or (stop.get("gatewayAckAuthenticated") is True) != ack_needed):
             reasons.add("GATEWAY_ACK_STAGE_MISMATCH")
+        claimed_kernel = stop.get("kernelEvidenceId")
+        has_kernel_marker = type(claimed_kernel) is str and bool(claimed_kernel)
         if ((stop.get("descendantsEmpty") is True) != kernel_needed
-                or bool(stop.get("kernelEvidenceId")) != kernel_needed):
+                or has_kernel_marker != kernel_needed):
             reasons.add("KERNEL_CLAIM_STAGE_MISMATCH")
 
         expected_trigger = {
@@ -124,9 +135,11 @@ def assess(case, expected_scope, expected_generation):
         }
         if kind in AUTO_KINDS:
             reasons.add("AUTOMATIC_NATIVE_REPLAY_FORBIDDEN")
-            if recovery.get("trigger") != expected_trigger[kind]:
+            trigger = recovery.get("trigger")
+            if type(trigger) is not str or trigger != expected_trigger[kind]:
                 reasons.add("RECOVERY_TRIGGER_EVENT_MISMATCH")
-        elif recovery.get("trigger") in ("STARTUP_AUTO_RESUME", "PLATFORM_RECONNECT"):
+        elif (type(recovery.get("trigger")) is str and
+              recovery["trigger"] in ("STARTUP_AUTO_RESUME", "PLATFORM_RECONNECT")):
             reasons.add("RECOVERY_TRIGGER_EVENT_MISMATCH")
 
         if kind == "OBSERVE_EXIT":
