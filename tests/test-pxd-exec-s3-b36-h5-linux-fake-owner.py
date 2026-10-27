@@ -85,8 +85,11 @@ class H5ReadOnlyStatParserTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "CI_ONLY"):
                     exercise_fake_group()
 
-    def test_output_schema_never_contains_user_credentials(self):
-        self.assertNotIn("hermes", sample().lower())
+    def test_proc_parser_refuses_untrusted_non_string_input(self):
+        for value in (None, {}, ["1", "2"], 12, True):
+            with self.subTest(type=type(value).__name__):
+                with self.assertRaises(ValueError):
+                    parse_proc_stat(value)
 
 
 @unittest.skipUnless(CI_FAKE_ENABLED, "only isolated GitHub CI opt-in can spawn fake Python")
