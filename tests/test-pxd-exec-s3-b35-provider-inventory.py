@@ -113,7 +113,7 @@ class B35OfflineInventoryTests(unittest.TestCase):
         self.assertGreater(observed_size, 128 * 1024 * 1024)
         self.assertLess(observed_size, b35.MAX_BINARY_BYTES)
         with self.path.open("r+b") as stream:
-            stream.write(b"\\x7fELF")
+            stream.write(bytes((0x7f, 0x45, 0x4c, 0x46)))
             stream.truncate(observed_size)
         result = self.inspect()
         self.assertEqual(result["sizeBytes"], observed_size)
