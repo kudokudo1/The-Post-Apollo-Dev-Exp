@@ -56,6 +56,9 @@ jobs:
       - name: Record exact checkout commit
         run: |
           echo "B34_EXECUTION_SHA=$(git rev-parse HEAD)"
+      - name: B36-H2 Hermes owner lifecycle (disposable fixtures only; 26 expected)
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h2-hermes-owner.py
       - name: B36 Hermes recovery authority fence (disposable fixtures only; 23 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-hermes-recovery-fence.py
