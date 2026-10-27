@@ -15,7 +15,8 @@ H6 is now merged and provides a deliberately restricted **opt-in read-only Fedor
 
 Its limited purpose is **choose which disposable, non-Hermes isolation experiment would be worth reviewing next**, not grant execution. It uses two conditional checklists:
 
-- `systemdUserScope`: cgroup v2 mounted at the standard path, this process in a unified cgroup, `pids` controller visible, fixed `/usr/bin/systemd-run` executable metadata and a current user-bus socket. Even with all present, this is `POTENTIAL_FAKE_EXPERIMENT_ONLY`, *not* delegated cgroup control, process identity, working user-service systemd, or proof that `systemd-run --user --scope` can confine a worker. A tool's presence is insufficient to prove successful unit launch, `Delegate=`, `KillMode=`, subtree delegation, or teardown.
+- `systemdUserScope`: cgroup v2 mounted at the standard path, this process in a unified cgroup, fixed `/usr/bin/systemd-run` executable metadata and a current user-bus socket. Even with all present, this is `POTENTIAL_FAKE_EXPERIMENT_ONLY`, *not* delegated cgroup control, process identity, working user-service systemd, or proof that `systemd-run --user --scope` can confine a worker. A tool's presence is insufficient to prove successful unit launch, `Delegate=`, `KillMode=`, subtree delegation, or teardown.
+- **H7 postmerge correction:** the `pids` controller controls PID-count accounting/limits, but cgroup v2 core `cgroup.kill` and `cgroup.events` do not require it in `cgroup.controllers`. Missing `pids` is **not** an automatic veto for an exploratory user-scope candidate. The actual ability to create a dedicated cgroup, write to `cgroup.kill`, and observe an empty owned subtree is still completely unverified and must be measured before any real execution. This is a screening correction, not new authority.
 - `bubblewrapNamespaces`: fixed `/usr/bin/bwrap` executable metadata, current user/mount/net namespace links, and positive user namespace sysctl and max count. Even with all present, the result is `POTENTIAL_FAKE_EXPERIMENT_ONLY`, *not* proof an unprivileged Bubblewrap setup actually succeeds, or that networking/host home/tool/credential access is isolated. On Fedora an absent `unprivileged_userns_clone` sysctl may be legitimately UNKNOWN; never convert UNKNOWN to True.
 - `pidfdOrKernelLifecycle` is `NOT_MEASURED`. H6 does not attempt pidfd_open, cgroup.procs reads, direct OS kills, delegated cgroup creation or any syscall probes.
 - Hermes native tool denial, per-turn authenticated STOP, restart safety and credential isolation remain `SOURCE_AUDIT_REQUIRED`, independently of either OS strategy.
@@ -39,9 +40,9 @@ Alternatively, the operator can supply H6's sanitized JSON output in this conver
 
 ## VERIFY
 
-37 new H7 tests cover valid synthetic H6 potential routes, systemd-vs-bwrap fallback, unknown/absent prerequisites, cgroup/pids/user bus, user namespaces, malformed/spoofed claims, nonzero provider activity, wrong schema/reasons/nested field types, secret-containing fields, huge/recursive data, strict bounded stdin and duplicate-key rejection, disabled default CLI and no host/process/network/filesystem access.
+38 H7 tests (including postmerge correction) cover valid synthetic H6 potential routes, systemd-vs-bwrap fallback, unknown/absent prerequisites, cgroup/pids/user bus, user namespaces, malformed/spoofed claims, nonzero provider activity, wrong schema/reasons/nested field types, secret-containing fields, huge/recursive data, strict bounded stdin and duplicate-key rejection, disabled default CLI and no host/process/network/filesystem access.
 
-Expected full CI integration: **510** (H7 37 + H6 32 + H5 13 + H4 41 + H3 28 + H2 26 + H1 23 + B35 22 + B34 14 + B24-B33 274). Existing historical main-baseline job: **274** by design. Exact GitHub Actions provenance and counts must be verified after opening the draft PR.
+Expected full CI integration: **511** (H7 38 + H6 32 + H5 13 + H4 41 + H3 28 + H2 26 + H1 23 + B35 22 + B34 14 + B24-B33 274). Existing historical main-baseline job: **274** by design. Exact GitHub Actions provenance and counts must be verified after opening the draft PR.
 
 These tests do not establish actual Fedora capability or real kernel attestation.
 
@@ -58,7 +59,7 @@ These tests do not establish actual Fedora capability or real kernel attestation
 
 - [x] Inspect PR #101 merge and current H6 and H5 source
 - [x] Build strict H6-report interpreter with conditional non-Hermes experiment direction
-- [x] Add 37 malformed/unknown/no-input-leak offline tests
+- [x] Preserve 38 malformed/unknown/no-input-leak offline tests
 - [ ] Independently verify full PR CI/Grammar and exact merge checkout
 - [ ] Independent security acceptance and operator-authorized PR merge
 - [ ] Obtain actual approved Fedora read-only H6 report
