@@ -24,6 +24,7 @@ HOST_SOURCES = {
     "unprivilegedUserns": "/proc/sys/kernel/unprivileged_userns_clone",
     "maxUserns": "/proc/sys/user/max_user_namespaces",
     "osRelease": "/etc/os-release",
+    "selinuxEnforce": "/sys/fs/selinux/enforce",
 }
 NAMESPACE_KINDS = ("user", "mnt", "pid", "net", "cgroup")
 KNOWN_CONTROLLERS = frozenset(("cpu", "cpuset", "io", "memory", "pids", "rdma", "hugetlb", "misc"))
@@ -138,6 +139,7 @@ def assess(snapshot):
             "currentProcessSeccompMode": seccomp,
             "unprivilegedUsernsSysctlAllows": _nonzero(get("unprivilegedUserns")),
             "maxUserNamespacesPositive": _nonzero(get("maxUserns")),
+            "selinuxEnforcing": _nonzero(get("selinuxEnforce")),
             "namespaceLinksPresent": {
                 kind: _positive_bool(namespaces.get(kind)) if not invalid else None
                 for kind in NAMESPACE_KINDS
