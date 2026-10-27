@@ -78,11 +78,23 @@ class H7FeasibilityTests(unittest.TestCase):
         out = self.denied(fake)
         self.assertEqual(out["options"]["systemdUserScope"], "PREREQUISITE_NOT_OBSERVED")
 
-    def test_missing_pids_controller_blocks_systemd_indication(self):
+    def test_missing_pids_controller_does_not_block_candidate_experiment(self):
+        # cgroup.kill is a cgroup v2 core file, not part of pids controller.
         fake = h6_report()
         fake["observations"]["visibleCgroupControllers"] = ["cpu", "memory"]
-        self.assertEqual(self.denied(fake)["options"]["systemdUserScope"],
-                         "PREREQUISITE_NOT_OBSERVED")
+        result = self.denied(fake)
+        self.assertEqual(result["options"]["systemdUserScope"],
+                         "POTENTIAL_FAKE_EXPERIMENT_ONLY")
+        self.assertFalse(result["cgroupDelegationVerified"])
+        self.assertFalse(result["descendantTeardownVerified"])
+
+    def test_zero_visible_resource_controllers_still_not_containment_proof(self):
+        fake = h6_report()
+        fake["observations"]["visibleCgroupControllers"] = []
+        result = self.denied(fake)
+        self.assertEqual(result["options"]["systemdUserScope"],
+                         "POTENTIAL_FAKE_EXPERIMENT_ONLY")
+        self.assertFalse(result["cgroupDelegationVerified"])
 
     def test_missing_systemd_run_not_assumed_operational(self):
         fake = h6_report()

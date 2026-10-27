@@ -119,7 +119,9 @@ def assess(report):
         systemd = _option((
             obs["cgroupV2MountedAtStandardPath"],
             obs["selfCgroupV2Member"],
-            True if "pids" in obs["visibleCgroupControllers"] else False,
+            # "pids" is an optional process-count controller, not a
+            # prerequisite for cgroup v2 core cgroup.kill/cgroup.events.
+            # Real cgroup delegation and kill access remain UNVERIFIED.
             tools["systemdRun"],
             obs["userBusSocketPresent"],
         ))
