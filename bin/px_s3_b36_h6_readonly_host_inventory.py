@@ -172,24 +172,30 @@ def _fixed_namespace_exists(name):
     try:
         target = os.readlink(path)
         return re.fullmatch(re.escape(name) + r":\[[0-9]+\]", target) is not None
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return None
 
 
 def _fixed_tool_executable(path):
     try:
         result = os.stat(path)  # fixed literal path from TOOLS
         return stat.S_ISREG(result.st_mode) and bool(result.st_mode & 0o111)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return None
 
 
 def _fixed_bus_socket():
     try:
         path = "/run/user/" + str(os.getuid()) + "/bus"
         return stat.S_ISSOCK(os.stat(path).st_mode)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return None
 
 
 def collect_host_readonly():
