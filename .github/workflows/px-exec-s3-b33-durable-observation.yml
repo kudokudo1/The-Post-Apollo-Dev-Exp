@@ -59,10 +59,13 @@ jobs:
       - name: B36-H3 trusted supervisor boundary (offline fixtures only; 24 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h3-hermes-supervisor.py
+      - name: B36-H2 Hermes owner lifecycle (disposable fixtures only; 26 expected)
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-h2-hermes-owner.py
       - name: B36 Hermes recovery authority fence (disposable fixtures only; 23 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b36-hermes-recovery-fence.py
-      - name: B35 provider executable inventory (fake-files only; 20 expected)
+      - name: B35 provider executable inventory (fake-files only; 22 expected)
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b35-provider-inventory.py
       - name: Run merged-tree provenance and lifecycle gate (B34)

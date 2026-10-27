@@ -106,6 +106,28 @@ class B35OfflineInventoryTests(unittest.TestCase):
             stream.truncate(b35.MAX_BINARY_BYTES + 1)
         self.denied(reason="FILE_SIZE")
 
+    def test_codex_289166920_byte_sparse_elf_inventory(self):
+        # Matches the observed standalone Codex file SIZE, not its content.
+        # Sparse fixture: no provider binary, execution, credentials or network.
+        observed_size = 289166920
+        self.assertGreater(observed_size, 128 * 1024 * 1024)
+        self.assertLess(observed_size, b35.MAX_BINARY_BYTES)
+        with self.path.open("r+b") as stream:
+            stream.write(bytes((0x7f, 0x45, 0x4c, 0x46)))
+            stream.truncate(observed_size)
+        result = self.inspect()
+        self.assertEqual(result["sizeBytes"], observed_size)
+        self.assertEqual(result["fileKind"], "ELF")
+        self.assertEqual(len(result["sha256"]), 64)
+        self.assertFalse(result["providerStarted"])
+        self.assertFalse(result["productionReady"])
+
+    def test_512_mib_inventory_ceiling_and_oversize_refusal(self):
+        self.assertEqual(b35.MAX_BINARY_BYTES, 512 * 1024 * 1024)
+        with self.path.open("r+b") as stream:
+            stream.truncate(b35.MAX_BINARY_BYTES + 1)
+        self.denied(reason="FILE_SIZE")
+
     def test_fifo_is_refused_without_waiting_for_writer(self):
         fifo = Path(self.tmp.name) / "named-pipe"
         os.mkfifo(fifo, 0o700)
