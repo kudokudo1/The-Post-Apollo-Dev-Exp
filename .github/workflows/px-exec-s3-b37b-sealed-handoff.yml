@@ -1,0 +1,34 @@
+name: PX / EXEC-S3 B37-B Sealed Offline Handoff
+
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b37b_sealed_handoff.py'
+      - 'tests/test-pxd-exec-s3-b37b-sealed-handoff.py'
+      - 'MODEL/contracts/exec-s3-b37b-sealed-handoff.md'
+      - 'bin/px_s3_b37a_tool_free_contract.py'
+      - 'bin/px_s3_b29_transport_ledger.py'
+      - '.github/workflows/px-exec-s3-b37b-sealed-handoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sealed-mock-only:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact triggering commit with no persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: B37-B immutable request bytes and B29 synthetic state
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+      - name: B37-A no-launch fixture regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
+      - name: B29 synthetic ledger regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b29-transport-ledger.py
