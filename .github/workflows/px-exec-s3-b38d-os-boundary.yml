@@ -1,0 +1,45 @@
+name: PX EXEC-S3 B38-D fake credential OS isolation
+
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b38b_trusted_sender_mock.py'
+      - 'tests/test-pxd-exec-s3-b38d-default-policy.py'
+      - 'tests/test-pxd-exec-s3-b38d-os-boundary.py'
+      - 'MODEL/contracts/exec-s3-b38d-os-boundary.md'
+      - '.github/workflows/px-exec-s3-b38d-os-boundary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b38d-os-isolation:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify disposable OS probe prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: B38-C default sender and full offline B38/B37 regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38d-default-policy.py
+          python3 -B tests/test-pxd-exec-s3-b38-default-atomic-integration.py
+          python3 -B tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
+          python3 -B tests/test-pxd-exec-s3-b38c-transport-policy.py
+          python3 -B tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
+          python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+          python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+          python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --unit
+      - name: Disposable Linux namespace FD mount and fake-secret denial
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --smoke
