@@ -19,6 +19,9 @@ import secrets
 import subprocess
 import sys
 
+# Python -I omits script directories; only add this pinned repository bin path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from px_s3_b37a_tool_free_contract import validate_wire_payload
 from px_s3_b37b_sealed_handoff import SealedFixture, verify_fixture
 from px_s3_b38c_transport_policy_fixture import (
