@@ -103,7 +103,7 @@ class MockTrustedSender:
             _deny("FAKE_RESERVATION_REQUIRED")
         if (row["state"] != "RESERVED"
                 or row["clientRequestId"] != sealed.client_request_id
-                or row["binding"] != sealed.binding_json):
+                or row["turnId"] != self._current_binding()["turnId"]):
             _deny("FAKE_RESERVATION_MISMATCH")
 
     def prepare_mock(self, ledger, sealed):
