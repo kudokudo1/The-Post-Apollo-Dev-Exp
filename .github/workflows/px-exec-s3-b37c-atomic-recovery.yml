@@ -1,0 +1,36 @@
+name: PX / EXEC-S3 B37-C Atomic Offline Recovery
+
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b37c_atomic_recovery_fixture.py'
+      - 'tests/test-pxd-exec-s3-b37c-atomic-recovery.py'
+      - 'MODEL/contracts/exec-s3-b37c-atomic-recovery.md'
+      - 'bin/px_s3_b37b_sealed_handoff.py'
+      - 'bin/px_s3_b33_durable_observation.py'
+      - '.github/workflows/px-exec-s3-b37c-atomic-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  atomic-fence-fake-only:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout generating PR merge commit without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Print exact synthetic execution SHA
+        run: echo "B37C_EXECUTION_SHA=$(git rev-parse HEAD)"
+      - name: B37-C SQLite identity fence and crash recovery
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+      - name: Preserve B37-B immutable sealing regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+      - name: Preserve B33 durable mock observation regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b33-durable-observation.py
