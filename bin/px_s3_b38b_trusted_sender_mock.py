@@ -16,6 +16,10 @@ from px_s3_b37b_sealed_handoff import (
 from px_s3_b38a_model_only_mock_client import (
     FakeTextStream, Refused as B38ARefused, exchange_mock,
 )
+from px_s3_b38c_transport_policy_fixture import (
+    OfflinePlan, Refused as B38CRefused, default_fake_manifest,
+    prepare_fake_plan, recheck_fake_plan,
+)
 
 _FAKE_TEXT = "B38B synthetic text, never a provider response"
 _FAKE_AUTH_MATERIAL = "B38B_SENTINEL_NOT_A_REAL_CREDENTIAL"
@@ -36,12 +40,13 @@ class _MockPermit:
     payload_sha256: str
     binding_json: str
     epoch: int
+    policy_plan: OfflinePlan
 
 
 class MockTrustedSender:
     """Pretend trusted sender lane; contains no pluggable real transport."""
 
-    def __init__(self, binding):
+    def __init__(self, binding, *, mock_manifest=None):
         try:
             binding_json = canonical_binding(binding)
         except Exception:
@@ -52,6 +57,11 @@ class MockTrustedSender:
         self._ready = True
         self._pending = {}
         self._fake_auth_material = _FAKE_AUTH_MATERIAL
+        # Caller-controlled *fake* policy description, never OS evidence.
+        # A mutable caller manifest is deliberately revalidated at send time.
+        self._mock_manifest = (
+            default_fake_manifest() if mock_manifest is None else mock_manifest
+        )
         self.fake_handoffs = 0
 
     def _current_binding(self):
@@ -111,8 +121,15 @@ class MockTrustedSender:
         """Synthetic Stage A/B checks, NOT a verified OS sandbox/readiness."""
         self._check_conditions()
         self._verify(atomic, sealed)
+        try:
+            plan = prepare_fake_plan(
+                self._mock_manifest, sealed=sealed,
+                current_binding=self._current_binding(),
+            )
+        except (B38CRefused, ValueError, TypeError, KeyError):
+            _deny("FAKE_POLICY_PREPARE_REFUSED")
         ticket = _MockPermit(sealed.client_request_id, sealed.payload_sha256,
-                             self._binding_json, self._epoch)
+                             self._binding_json, self._epoch, plan)
         self._pending[id(ticket)] = ticket
         return ticket
 
@@ -130,6 +147,29 @@ class MockTrustedSender:
         if (ticket.request_id != sealed.client_request_id
                 or ticket.payload_sha256 != sealed.payload_sha256):
             _deny("PERMIT_REQUEST_MISMATCH")
+        # The one-use permit also binds immutable policy bytes to this seal.
+        # Recheck caller-supplied offline shape immediately before mock action;
+        # no claim about real OS isolation, credentials, network or readiness.
+        try:
+            policy = recheck_fake_plan(
+                ticket.policy_plan, self._mock_manifest, sealed=sealed,
+                current_binding=self._current_binding(),
+            )
+        except (B38CRefused, ValueError, TypeError, KeyError):
+            _deny("FAKE_POLICY_RECHECK_REFUSED")
+        forbidden = (
+            "credentialBoundaryCertified", "networkPolicyEnforced",
+            "osIsolationVerified", "hospitalAuthorityVerified",
+            "transportReady", "launchAuthorized", "productionReady",
+        )
+        counters = ("modelCalls", "networkCalls", "toolCalls", "hospitalWrites")
+        if (type(policy) is not dict or
+                policy.get("decision") != "OFFLINE_SHAPE_ONLY" or
+                policy.get("requestShapeValid") is not True or
+                any(policy.get(key) is not False for key in forbidden) or
+                any(type(policy.get(key)) is not int or policy[key] != 0
+                    for key in counters)):
+            _deny("FAKE_POLICY_RECEIPT_INVALID")
         # Constructed entirely here. No arbitrary transport function is
         # injectable, and the fake credential is never placed in frames.
         frames = (
@@ -159,6 +199,10 @@ class MockTrustedSender:
             "realNetworkCalls": 0,
             "realProviderCalls": 0,
             "credentialBoundaryCertified": False,
+            "networkPolicyEnforced": False,
+            "osIsolationVerified": False,
+            "hospitalAuthorityVerified": False,
+            "transportReady": False,
             "launchAuthorized": False,
             "productionReady": False,
         }
