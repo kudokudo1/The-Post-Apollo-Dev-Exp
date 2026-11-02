@@ -91,9 +91,9 @@ def _fixed(candidate, expected):
         # Environment entries are names only; not values or secrets.
         if type(candidate) is not list:
             _deny("ENV_NAMES")
-        if len(candidate) != len(set(candidate)) or any(
-            type(n) is not str or n not in ENV_NAMES for n in candidate
-        ):
+        if any(type(n) is not str or n not in ENV_NAMES for n in candidate):
+            _deny("ENV_NAMES")
+        if len(candidate) != len(set(candidate)):
             _deny("ENV_NAMES")
         if candidate != sorted(candidate):
             _deny("ENV_ORDER")
