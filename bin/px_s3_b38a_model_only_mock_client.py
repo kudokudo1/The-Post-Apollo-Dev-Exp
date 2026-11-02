@@ -10,9 +10,9 @@ import hmac
 import json
 
 from px_s3_b37b_sealed_handoff import (
-    SealedFixture, Refused as B37BRefused, mock_handoff, verify_fixture,
+    SealedFixture, Refused as B37BRefused, verify_fixture,
 )
-from px_s3_b29_transport_ledger import SyntheticLedger
+from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture, Refused as B37CRefused
 
 MAX_FRAMES = 32
 MAX_FRAME_BYTES = 2048
@@ -94,15 +94,15 @@ class FakeTextReply:
     production_ready: bool = False
 
 
-def exchange_mock(ledger, sealed, *, current_binding, stream):
+def exchange_mock(atomic, sealed, *, current_binding, stream):
     """Validate byte-bound request and all fake text frames before mock handoff.
 
-    This invokes only the existing B37-B mock SQLite transition, NEVER a
-    network sender. 'current_binding' is caller-supplied synthetic data and
-    is NOT authenticated live Hospital state.
+    This uses B37-C's atomic registered-request transition, never the
+    old B37-B mock_handoff route. All data is synthetic and no network
+    sender or live Hospital authority exists.
     """
-    if type(ledger) is not SyntheticLedger:
-        _deny("FAKE_LEDGER_REQUIRED")
+    if type(atomic) is not AtomicOfflineFixture:
+        _deny("B37C_ATOMIC_FIXTURE_REQUIRED")
     if type(sealed) is not SealedFixture:
         _deny("FAKE_SEAL_REQUIRED")
     if type(stream) is not FakeTextStream:
@@ -139,10 +139,16 @@ def exchange_mock(ledger, sealed, *, current_binding, stream):
     if not complete:
         _deny("COMPLETION_REQUIRED")
     try:
-        mock_handoff(ledger, sealed, current_binding=current_binding,
-                     observed_bytes=stream.offered_bytes)
-    except (B37BRefused, ValueError, KeyError, TypeError):
-        _deny("MOCK_HANDOFF_DENIED")
+        receipt = atomic.begin_mock(
+            sealed, current_binding=current_binding,
+            offered_bytes=stream.offered_bytes,
+        )
+        if (type(receipt) is not dict or
+                receipt.get("state") != "SUBMISSION_UNCONFIRMED" or
+                receipt.get("reason") != "B37C_MOCK_TRANSITION_NOT_NETWORK_DELIVERY"):
+            _deny("B37C_ATOMIC_RECEIPT_INVALID")
+    except (B37CRefused, B37BRefused, ValueError, KeyError, TypeError):
+        _deny("B37C_ATOMIC_HANDOFF_DENIED")
     return FakeTextReply(text="".join(text_parts),
                          client_request_id=sealed.client_request_id)
 
