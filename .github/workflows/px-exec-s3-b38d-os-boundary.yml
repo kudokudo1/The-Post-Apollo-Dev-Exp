@@ -1,0 +1,63 @@
+name: PX EXEC-S3 B38-D reconciled OS isolation after strict policy gate
+
+on:
+  pull_request:
+    paths:
+      - 'tests/test-pxd-exec-s3-b38d-os-boundary.py'
+      - 'MODEL/contracts/exec-s3-b38d-os-boundary.md'
+      - '.github/workflows/px-exec-s3-b38d-os-boundary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b38d-os-isolation:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact generated PR merge tree
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Report execution provenance and preserve PR 114 stronger policy
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "EXECUTION_TREE_SHA=$(git rev-parse HEAD)"
+          echo "PR_BASE_SHA=$PR_BASE_SHA"
+          echo "PR_HEAD_SHA=$PR_HEAD_SHA"
+          python3 -B - <<'PY'
+          from pathlib import Path
+          source = Path("bin/px_s3_b38b_trusted_sender_mock.py").read_text()
+          for required in (
+              "prepare_fake_plan(", "recheck_fake_plan(",
+              "FAKE_POLICY_RECEIPT_INVALID", "FAKE_POLICY_RECHECK_REFUSED",
+              "OfflinePlan", "_mock_manifest",
+          ):
+              assert required in source, required
+          assert "mock_handoff(" not in source
+          PY
+      - name: Install trusted system Bubblewrap only on disposable GitHub runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Strict PR 114 policy gate plus B37/B38 regressions and B38-D unit tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38-policy-default-gate.py
+          python3 -B tests/test-pxd-exec-s3-b38-default-atomic-integration.py
+          python3 -B tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
+          python3 -B tests/test-pxd-exec-s3-b38c-transport-policy.py
+          python3 -B tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
+          python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+          python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+          python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --unit
+      - name: OS-observed disposable namespaces FDs mounts and fake-secret denial
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --smoke
