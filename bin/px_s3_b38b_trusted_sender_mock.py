@@ -16,6 +16,10 @@ from px_s3_b37b_sealed_handoff import (
 from px_s3_b38a_model_only_mock_client import (
     FakeTextStream, Refused as B38ARefused, exchange_mock,
 )
+from px_s3_b38c_transport_policy_fixture import (
+    Refused as B38CRefused, default_fake_manifest, prepare_fake_plan,
+    recheck_fake_plan,
+)
 
 _FAKE_TEXT = "B38B synthetic text, never a provider response"
 _FAKE_AUTH_MATERIAL = "B38B_SENTINEL_NOT_A_REAL_CREDENTIAL"
@@ -36,6 +40,7 @@ class _MockPermit:
     payload_sha256: str
     binding_json: str
     epoch: int
+    policy_plan: object  # Synthetic B38-C plan, never a real authorization token.
 
 
 class MockTrustedSender:
@@ -111,8 +116,15 @@ class MockTrustedSender:
         """Synthetic Stage A/B checks, NOT a verified OS sandbox/readiness."""
         self._check_conditions()
         self._verify(atomic, sealed)
+        try:
+            policy_plan = prepare_fake_plan(
+                default_fake_manifest(), sealed=sealed,
+                current_binding=self._current_binding(),
+            )
+        except B38CRefused:
+            _deny("B38C_POLICY_REFUSED")
         ticket = _MockPermit(sealed.client_request_id, sealed.payload_sha256,
-                             self._binding_json, self._epoch)
+                             self._binding_json, self._epoch, policy_plan)
         self._pending[id(ticket)] = ticket
         return ticket
 
@@ -130,6 +142,17 @@ class MockTrustedSender:
         if (ticket.request_id != sealed.client_request_id
                 or ticket.payload_sha256 != sealed.payload_sha256):
             _deny("PERMIT_REQUEST_MISMATCH")
+        try:
+            policy_result = recheck_fake_plan(
+                ticket.policy_plan, default_fake_manifest(),
+                sealed=sealed, current_binding=self._current_binding(),
+            )
+        except B38CRefused:
+            _deny("B38C_POLICY_REFUSED")
+        if (policy_result.get("decision") != "OFFLINE_SHAPE_ONLY"
+                or policy_result.get("transportReady") is not False
+                or policy_result.get("launchAuthorized") is not False):
+            _deny("B38C_POLICY_RESULT_INVALID")
         # Constructed entirely here. No arbitrary transport function is
         # injectable, and the fake credential is never placed in frames.
         frames = (
