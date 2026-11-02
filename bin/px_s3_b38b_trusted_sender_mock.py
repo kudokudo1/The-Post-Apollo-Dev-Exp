@@ -8,7 +8,8 @@ The only "send" passes fixed mock text frames into B38-A's fake parser.
 from dataclasses import dataclass
 import json
 
-from px_s3_b29_transport_ledger import SyntheticLedger, canonical_binding
+from px_s3_b29_transport_ledger import canonical_binding
+from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture
 from px_s3_b37b_sealed_handoff import (
     Refused as B37BRefused, SealedFixture, verify_fixture,
 )
@@ -88,9 +89,9 @@ class MockTrustedSender:
         if not self._ready:
             _deny("MOCK_SENDER_UNAVAILABLE")
 
-    def _verify(self, ledger, sealed):
-        if type(ledger) is not SyntheticLedger:
-            _deny("FAKE_LEDGER_REQUIRED")
+    def _verify(self, atomic, sealed):
+        if type(atomic) is not AtomicOfflineFixture:
+            _deny("B37C_ATOMIC_FIXTURE_REQUIRED")
         if type(sealed) is not SealedFixture:
             _deny("SEAL_TYPE")
         try:
@@ -98,7 +99,7 @@ class MockTrustedSender:
         except (B37BRefused, ValueError, KeyError, TypeError):
             _deny("SEALED_REQUEST_INVALID")
         try:
-            row = ledger.state(sealed.attempt_id)
+            row = atomic.ledger.state(sealed.attempt_id)
         except Exception:
             _deny("FAKE_RESERVATION_REQUIRED")
         if (row["state"] != "RESERVED"
@@ -106,16 +107,16 @@ class MockTrustedSender:
                 or row["turnId"] != self._current_binding()["turnId"]):
             _deny("FAKE_RESERVATION_MISMATCH")
 
-    def prepare_mock(self, ledger, sealed):
+    def prepare_mock(self, atomic, sealed):
         """Synthetic Stage A/B checks, NOT a verified OS sandbox/readiness."""
         self._check_conditions()
-        self._verify(ledger, sealed)
+        self._verify(atomic, sealed)
         ticket = _MockPermit(sealed.client_request_id, sealed.payload_sha256,
                              self._binding_json, self._epoch)
         self._pending[id(ticket)] = ticket
         return ticket
 
-    def send_mock(self, ledger, sealed, ticket):
+    def send_mock(self, atomic, sealed, ticket):
         """One-use simulated dispatch. No endpoint/transport/callback supplied."""
         if type(ticket) is not _MockPermit:
             _deny("PERMIT_TYPE")
@@ -125,7 +126,7 @@ class MockTrustedSender:
         if ticket.epoch != self._epoch or ticket.binding_json != self._binding_json:
             _deny("STALE_PERMIT")
         self._check_conditions()
-        self._verify(ledger, sealed)
+        self._verify(atomic, sealed)
         if (ticket.request_id != sealed.client_request_id
                 or ticket.payload_sha256 != sealed.payload_sha256):
             _deny("PERMIT_REQUEST_MISMATCH")
@@ -142,7 +143,7 @@ class MockTrustedSender:
         )
         try:
             reply = exchange_mock(
-                ledger, sealed, current_binding=self._current_binding(),
+                atomic, sealed, current_binding=self._current_binding(),
                 stream=stream,
             )
         except (B38ARefused, B37BRefused, ValueError, TypeError, KeyError):
