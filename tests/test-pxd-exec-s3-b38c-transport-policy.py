@@ -32,11 +32,13 @@ class B38CTransportPolicyTests(unittest.TestCase):
                                   attempt_id="fake-attempt")
         self.manifest = default_fake_manifest()
 
-    def prepare(self, manifest=None, sealed=None, binding=None):
+    _DEFAULT = object()
+
+    def prepare(self, manifest=_DEFAULT, sealed=_DEFAULT, binding=_DEFAULT):
         return prepare_fake_plan(
-            self.manifest if manifest is None else manifest,
-            sealed=self.sealed if sealed is None else sealed,
-            current_binding=self.binding if binding is None else binding,
+            self.manifest if manifest is self._DEFAULT else manifest,
+            sealed=self.sealed if sealed is self._DEFAULT else sealed,
+            current_binding=self.binding if binding is self._DEFAULT else binding,
         )
 
     def check(self, plan, manifest=None, sealed=None, binding=None):
@@ -79,7 +81,7 @@ class B38CTransportPolicyTests(unittest.TestCase):
     def test_mutable_caller_manifest_does_not_change_plan(self):
         old = self.prepare()
         original = old.manifest_bytes
-        self.manifest["environment"]["names"].append("LC_ALL")
+        self.manifest["environment"]["names"] = ["LANG", "LC_ALL", "TZ"]
         self.assertEqual(old.manifest_bytes, original)
         self.denied("MANIFEST_CHANGED", lambda: self.check(old))
         self.assertEqual(self.check(old, json.loads(original))["decision"],
