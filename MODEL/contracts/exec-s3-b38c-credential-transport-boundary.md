@@ -19,27 +19,27 @@ plugin/MCP hooks or the native CLI runtime. This B38-C increment is a
 authenticate, send network traffic, load keys, spawn a provider, or enable
 production, and it does not modify any existing B37/B38 execution file.
 
-New \`bin/px_s3_b38c_transport_policy_fixture.py\` defines one intentionally
+New `bin/px_s3_b38c_transport_policy_fixture.py` defines one intentionally
 inert, tightly bounded, exact-shape manifest, representing a pretend sender
 topology, and two pure operations:
 
-1. \`prepare_fake_plan\` checks the declared no-credential/no-process/
+1. `prepare_fake_plan` checks the declared no-credential/no-process/
    no-network/no-broker configuration **and** the existing B37-B immutable
    request seal against a caller-supplied synthetic B29 authority binding.
    It copies the manifest to canonical immutable bytes and records only
    its SHA-256 and the safe sealed-request identifiers.
-2. \`recheck_fake_plan\` requires the same policy bytes and request identity,
+2. `recheck_fake_plan` requires the same policy bytes and request identity,
    rechecks the B37-B seal and synthetic binding, then returns an explicitly
    **non-authorizing** diagnostic. It never hands the plan to a transport.
-3. \`require_real_transport\` permanently refuses. There is no real provider
+3. `require_real_transport` permanently refuses. There is no real provider
    selection, endpoint resolution, TLS handshake, network connection,
    credential retrieval, FD inspection, OS sandbox, or IPC.
 
-The fixed mock destination is \`mock-model.invalid\`, with transport
-\`IN_MEMORY_FIXTURE\` and \`tcpEnabled: false\`. It is only a string inside
+The fixed mock destination is `mock-model.invalid`, with transport
+`IN_MEMORY_FIXTURE` and `tcpEnabled: false`. It is only a string inside
 a manifest and must **never** be resolved or connected. Actual provider
 endpoints, URLs, credentials and HTTP headers are forbidden by this fixture.
-The allowable \`environment.names\` contain **names only** from LANG,
+The allowable `environment.names` contain **names only** from LANG,
 LC_ALL and TZ, never actual environment values.
 
 **Critical interpretation:** the manifest is supplied by the test caller,
@@ -50,7 +50,7 @@ external provider has been called. SHA-256 is not an authenticating signature.
 
 ### Proposed production trust ownership (NOT IMPLEMENTED)
 
-\`\`\`text
+```text
 LIVE AUTHORITY SOURCE  ->  PX Supervisor / audit authority
                               |
                    exact request identity + grant
@@ -76,7 +76,7 @@ LIVE AUTHORITY SOURCE  ->  PX Supervisor / audit authority
                               v
           PX broker -> disposable isolated worker
           NO model credential / NO tool egress
-\`\`\`
+```
 
 A process that holds model credentials is **trusted only for the narrowly
 reviewed model-communication role**, not a general Doctor tool executor.
@@ -85,7 +85,7 @@ reviewed model-communication role**, not a general Doctor tool executor.
 
 - Sender runs under a dedicated identity/process/namespace with an exact
   versioned executable/dependency profile; no native Hermes CLI tool code,
-  plugins, imports with side effects, general Python \`eval\` or shell path.
+  plugins, imports with side effects, general Python `eval` or shell path.
 - Credentials belong only to the trusted sender. Do not include them in
   prompts, JSON tool requests, process argv, inherited host env, logs,
   exception strings, stdout/stderr forwarded to the model, tool mounts,
@@ -98,7 +98,7 @@ reviewed model-communication role**, not a general Doctor tool executor.
   tool writable directory, no ambient agent/SSH/desktop sockets. Close or
   explicitly map every inherited FD and verify through trusted OS
   observations, not model output.
-- Neither a fake sentinel nor a \`noToolSecret: true\` assertion demonstrates
+- Neither a fake sentinel nor a `noToolSecret: true` assertion demonstrates
   confidentiality against malicious code in the same process.
 
 ### Network and transport boundary requirements (future only)
@@ -166,13 +166,13 @@ reviewed model-communication role**, not a general Doctor tool executor.
 From a disposable checkout **of the B38-C stacked branch**, no environment
 variables or API keys are required:
 
-\`\`\`bash
+```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b38c-transport-policy.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
-\`\`\`
+```
 
 These test fixtures use no real provider, credentials, process launch, socket,
 HTTP or live Hospital storage. Never enter an API key into their configuration.
