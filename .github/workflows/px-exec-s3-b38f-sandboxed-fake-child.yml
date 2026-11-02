@@ -23,8 +23,8 @@ jobs:
           persist-credentials: false
       - name: Show base, head and generated merge checkout SHA
         env:
-          PR_HEAD_SHA: \${{ github.event.pull_request.head.sha }}
-          PR_BASE_SHA: \${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           echo "B38F_EXECUTION_SHA=$(git rev-parse HEAD)"
           echo "B38F_PR_HEAD_SHA=$PR_HEAD_SHA"
