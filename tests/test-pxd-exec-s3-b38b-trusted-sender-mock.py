@@ -9,7 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from px_s3_b29_transport_ledger import SyntheticLedger
+from px_s3_b31_evidence_boundary import TestOnlyEvidenceIssuer
+from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture
 from px_s3_b37a_tool_free_contract import build_request
 from px_s3_b37b_sealed_handoff import reserve_mock, seal_fixture
 from px_s3_b38b_trusted_sender_mock import MockTrustedSender, Refused, require_real_sender
@@ -23,9 +24,9 @@ class B38BMockTrustedSenderTests(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:", isolation_level=None)
         self.addCleanup(self.db.close)
-        self.ledger = SyntheticLedger(self.db)
-        self.ledger.initialize()
-        self.ledger.configure_mock_budget("synthetic-budget", 20)
+        self.atomic = AtomicOfflineFixture(self.db, TestOnlyEvidenceIssuer())
+        self.ledger = self.atomic.ledger
+        self.atomic.configure_mock_budget("synthetic-budget", 20)
         self.binding = dict(BINDING)
         self.request = build_request("private fake prompt")
         self.sealed = seal_fixture(self.request, binding=self.binding,
@@ -34,15 +35,15 @@ class B38BMockTrustedSenderTests(unittest.TestCase):
         self.reserve()
 
     def reserve(self):
-        return reserve_mock(self.ledger, self.sealed, scope="synthetic-budget",
-                            units=2, current_binding=self.binding)
+        return self.atomic.register_mock(self.sealed, scope="synthetic-budget",
+                                         units=2, current_binding=self.binding)
 
-    def prepare(self, *, ledger=None, sealed=None):
-        return self.sender.prepare_mock(self.ledger if ledger is None else ledger,
+    def prepare(self, *, atomic=None, sealed=None):
+        return self.sender.prepare_mock(self.atomic if atomic is None else atomic,
                                         self.sealed if sealed is None else sealed)
 
-    def send(self, permit, *, ledger=None, sealed=None):
-        return self.sender.send_mock(self.ledger if ledger is None else ledger,
+    def send(self, permit, *, atomic=None, sealed=None):
+        return self.sender.send_mock(self.atomic if atomic is None else atomic,
                                      self.sealed if sealed is None else sealed,
                                      permit)
 
@@ -80,7 +81,7 @@ class B38BMockTrustedSenderTests(unittest.TestCase):
                     lambda: require_real_sender(self.sealed, api_key="fake"))
 
     def test_non_fixture_ledger_denied(self):
-        self.denied("FAKE_LEDGER_REQUIRED", lambda: self.prepare(ledger={}))
+        self.denied("B37C_ATOMIC_FIXTURE_REQUIRED", lambda: self.prepare(atomic={}))
 
     def test_non_fixture_seal_denied(self):
         self.denied("SEAL_TYPE", lambda: self.prepare(sealed={}))
@@ -179,7 +180,7 @@ class B38BMockTrustedSenderTests(unittest.TestCase):
 
     def test_fake_ledger_must_still_exist_at_send(self):
         ticket = self.prepare()
-        self.denied("FAKE_LEDGER_REQUIRED", lambda: self.send(ticket, ledger={}))
+        self.denied("B37C_ATOMIC_FIXTURE_REQUIRED", lambda: self.send(ticket, atomic={}))
 
     def test_mutated_input_still_uses_fixed_seal(self):
         old = self.sealed.payload
