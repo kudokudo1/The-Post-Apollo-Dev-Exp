@@ -109,6 +109,8 @@ class AtomicOfflineFixture:
                 row["turn_id"] != json.loads(binding_json)["turnId"] or
                 row["binding_json"] != binding_json):
             _deny("TRANSACTION_IDENTITY_CHANGED")
+        if row["mode"] != "FOREGROUND_STREAM":
+            _deny("MODE_NOT_FOREGROUND")
         if (row["b37c_payload_sha256"] is None or
                 not hmac.compare_digest(
                     row["b37c_payload_sha256"], sealed.payload_sha256)):
@@ -164,12 +166,15 @@ class AtomicOfflineFixture:
             row = self._checked(sealed.attempt_id, sealed, binding_json)
             if row["state"] != "RESERVED":
                 _deny("STATE_NOT_RESERVED")
+            if row["response_id"] is not None or row["b33_observed_digest"] is not None:
+                _deny("OBSERVATION_PRECEDES_SUBMISSION")
             cursor = self.conn.execute(
                 "UPDATE b29_fixture_attempts "
                 "SET state='SUBMISSION_UNCONFIRMED' "
                 "WHERE attempt_id=? AND state='RESERVED' "
                 "AND client_request_id=? AND b37c_payload_sha256=? "
-                "AND binding_json=? AND turn_id=?",
+                "AND binding_json=? AND turn_id=? AND mode=\'FOREGROUND_STREAM\' "
+                "AND response_id IS NULL AND b33_observed_digest IS NULL",
                 (sealed.attempt_id, sealed.client_request_id,
                  sealed.payload_sha256, binding_json,
                  json.loads(binding_json)["turnId"]),
