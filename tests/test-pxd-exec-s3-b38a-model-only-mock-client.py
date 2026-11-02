@@ -11,7 +11,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from px_s3_b29_transport_ledger import SyntheticLedger
+from px_s3_b31_evidence_boundary import TestOnlyEvidenceIssuer
+from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture
 from px_s3_b37a_tool_free_contract import build_request
 from px_s3_b37b_sealed_handoff import reserve_mock, seal_fixture
 from px_s3_b38a_model_only_mock_client import (
@@ -34,9 +35,9 @@ class B38AMockModelOnlyTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", isolation_level=None)
         self.addCleanup(self.conn.close)
-        self.ledger = SyntheticLedger(self.conn)
-        self.ledger.initialize()
-        self.ledger.configure_mock_budget("fake-budget-scope", 20)
+        self.atomic = AtomicOfflineFixture(self.conn, TestOnlyEvidenceIssuer())
+        self.ledger = self.atomic.ledger
+        self.atomic.configure_mock_budget("fake-budget-scope", 20)
         self.binding = dict(BINDING)
         self.request = build_request("fake prompt secret marker")
         self.sealed = seal_fixture(self.request, binding=self.binding,
@@ -44,8 +45,8 @@ class B38AMockModelOnlyTests(unittest.TestCase):
         self.reserve()
 
     def reserve(self):
-        return reserve_mock(self.ledger, self.sealed, scope="fake-budget-scope",
-                            units=3, current_binding=self.binding)
+        return self.atomic.register_mock(self.sealed, scope="fake-budget-scope",
+                                         units=3, current_binding=self.binding)
 
     def stream(self, frames=None, **changes):
         params = dict(request_id=self.sealed.client_request_id,
@@ -58,7 +59,7 @@ class B38AMockModelOnlyTests(unittest.TestCase):
         return FakeTextStream(**params)
 
     def exchange(self, stream=None, **changes):
-        params = dict(ledger=self.ledger, sealed=self.sealed,
+        params = dict(atomic=self.atomic, sealed=self.sealed,
                       current_binding=self.binding,
                       stream=self.stream() if stream is None else stream)
         params.update(changes)
@@ -226,14 +227,14 @@ class B38AMockModelOnlyTests(unittest.TestCase):
 
     def test_reject_unreserved_and_replayed_mock_handoff(self):
         self.ledger.mark_submission(self.sealed.attempt_id, self.binding)
-        self.denied("MOCK_HANDOFF_DENIED", lambda: self.exchange())
+        self.denied("B37C_ATOMIC_HANDOFF_DENIED", lambda: self.exchange())
 
     def test_replay_after_single_success_denied(self):
         self.assertEqual(self.exchange().text, "fixture hello")
-        self.denied("MOCK_HANDOFF_DENIED", lambda: self.exchange())
+        self.denied("B37C_ATOMIC_HANDOFF_DENIED", lambda: self.exchange())
 
     def test_never_accepts_real_ledger_or_stream_or_subclasses(self):
-        self.denied("FAKE_LEDGER_REQUIRED", lambda: self.exchange(ledger={}))
+        self.denied("B37C_ATOMIC_FIXTURE_REQUIRED", lambda: self.exchange(atomic={}))
         self.denied("FAKE_SEAL_REQUIRED", lambda: self.exchange(sealed={}))
         self.denied("IN_MEMORY_STREAM_REQUIRED", lambda: self.exchange(stream={}))
 
@@ -257,7 +258,7 @@ class B38AMockModelOnlyTests(unittest.TestCase):
             "openai", "litellm", "ctypes",
         })
         self.assertIn("px_s3_b37b_sealed_handoff", imports)
-        self.assertIn("px_s3_b29_transport_ledger", imports)
+        self.assertIn("px_s3_b37c_atomic_recovery_fixture", imports)
         for keyword in ("os.system", "eval(", "exec(", "Popen(", "create_connection("):
             self.assertNotIn(keyword, source)
 
