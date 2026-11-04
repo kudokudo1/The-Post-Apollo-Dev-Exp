@@ -162,6 +162,78 @@ def build_sandbox_command(s1, root, fake_key_fd, fake_secret):
     return command
 
 
+
+def _bounded_communicate(proc, payload, *, max_stdout, timeout):
+    """Bound both elapsed time and child stdout BEFORE allocating the reply.
+
+    The child is untrusted. Do not use Popen.communicate() to accumulate an
+    unbounded model reply in the trusted outside-supervisor's memory.
+    """
+    import selectors
+    import time
+    if (proc.stdin is None or proc.stdout is None or
+        type(payload) is not bytes or type(max_stdout) is not int or
+        not 0 < max_stdout <= MAX_REPLY + 1):
+        deny("IO_SETUP_INVALID")
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    sent = 0
+    os.set_blocking(proc.stdin.fileno(), False)
+    os.set_blocking(proc.stdout.fileno(), False)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdin, selectors.EVENT_WRITE, "write")
+            selector.register(proc.stdout, selectors.EVENT_READ, "read")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    deny("CHILD_TIMEOUT")
+                events = selector.select(remaining)
+                if not events:
+                    deny("CHILD_TIMEOUT")
+                for key, _ in events:
+                    if key.data == "write":
+                        try:
+                            size = os.write(
+                                proc.stdin.fileno(), payload[sent:sent+4096],
+                            )
+                        except BlockingIOError:
+                            continue
+                        except BrokenPipeError:
+                            selector.unregister(proc.stdin)
+                            proc.stdin.close()
+                            continue
+                        sent += size
+                        if sent == len(payload):
+                            selector.unregister(proc.stdin)
+                            proc.stdin.close()
+                    else:
+                        try:
+                            chunk = os.read(
+                                proc.stdout.fileno(),
+                                max_stdout + 1 - len(output),
+                            )
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(proc.stdout)
+                            proc.stdout.close()
+                        else:
+                            output.extend(chunk)
+                            if len(output) > max_stdout:
+                                deny("CHILD_OUTPUT_OVER_BUDGET")
+        try:
+            proc.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            deny("CHILD_TIMEOUT")
+        return bytes(output)
+    finally:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.close()
+        if proc.stdout is not None and not proc.stdout.closed:
+            proc.stdout.close()
+
+
 def _run_inside_sandbox(s1, root, fake_secret, fake_key, signed_request):
     """One single-use fake request; subprocess errors never echo user data."""
     if type(fake_key) is not bytes or len(fake_key) != KEY_LEN:
@@ -190,16 +262,13 @@ def _run_inside_sandbox(s1, root, fake_secret, fake_key, signed_request):
             deny("FAKE_KEY_TRANSFER_FAILED")
         os.close(write_fd)
         write_fd = -1
-        try:
-            stdout, _ = proc.communicate(signed_request + b"\n", timeout=FRAME_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            deny("CHILD_TIMEOUT")
+        stdout = _bounded_communicate(
+            proc, signed_request + b"\n",
+            max_stdout=MAX_REPLY + 1, timeout=FRAME_TIMEOUT,
+        )
         if proc.returncode != 0:
             deny("SANDBOX_CHILD_REFUSED")
-        if (len(stdout) < 2 or len(stdout) > MAX_REPLY + 1 or
-            not stdout.endswith(b"\n")):
+        if len(stdout) < 2 or not stdout.endswith(b"\n"):
             deny("SANDBOX_REPLY_INVALID")
         return stdout[:-1], proc.pid
     except Refused:
@@ -213,7 +282,10 @@ def _run_inside_sandbox(s1, root, fake_secret, fake_key, signed_request):
             os.close(write_fd)
         if proc is not None and proc.poll() is None:
             proc.kill()
-            proc.communicate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                deny("CHILD_REAP_TIMEOUT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +509,28 @@ class UnitTests(unittest.TestCase):
                 _run_inside_sandbox(s1, root, secret, b"A"*KEY_LEN, b"bad\nframe")
             with self.assertRaisesRegex(Refused, "FAKE_FRAME_INVALID"):
                 _run_inside_sandbox(s1, root, secret, b"A"*KEY_LEN, b"X"*15001)
+
+    def test_oversized_untrusted_stdout_is_rejected_before_collection(self):
+        # No Bubblewrap needed: isolate the host-side byte-budget guard.
+        script = (
+            "import sys; sys.stdin.buffer.readline(); "
+            "sys.stdout.buffer.write(b'X' * 8192); sys.stdout.buffer.flush()"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-B", "-c", script],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True,
+            env={"PYTHONDONTWRITEBYTECODE": "1"}, cwd="/",
+        )
+        try:
+            with self.assertRaisesRegex(Refused, "CHILD_OUTPUT_OVER_BUDGET"):
+                _bounded_communicate(
+                    proc, b"FAKE\n", max_stdout=MAX_REPLY + 1, timeout=5,
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
 
     def test_child_code_and_receipt_hold_production(self):
         self.assertIn("from px_s3_b38e_fake_process_ipc import child_main", CHILD_PROGRAM)
