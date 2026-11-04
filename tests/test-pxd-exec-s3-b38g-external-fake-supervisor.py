@@ -107,12 +107,12 @@ except OSError:
 # With S1's inherited-FD closure, only stdio should be present BEFORE the
 # child opens its own in-sandbox fake-key file.
 fds = set()
-for entry in p("/proc/self/fd").iterdir():
+for name in os.listdir("/proc/self/fd"):
     try:
-        os.readlink(str(entry))
+        os.readlink("/proc/self/fd/" + name)
     except OSError:
-        continue
-    fds.add(entry.name)
+        continue  # listdir's own temporary descriptor was already closed
+    fds.add(name)
 checks["only_stdio_before_key_open"] = fds.issubset({"0", "1", "2"})
 if set(checks) != {
     "net_namespace_differs", "pid_namespace_differs", "sandbox_local_pid",
