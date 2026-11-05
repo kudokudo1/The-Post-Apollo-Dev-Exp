@@ -1,0 +1,24 @@
+name: PX EXEC-S3 B36 H11.5 fake dispatch refusal
+
+on:
+  pull_request:
+    paths:
+      - 'tests/fixtures/pxd_b36_h115_fake_dispatch.py'
+      - 'tests/test-pxd-exec-s3-b36-h115-fake-dispatch.py'
+      - 'MODEL/contracts/exec-s3-b36-h11-fake-dispatch.md'
+      - '.github/workflows/px-exec-s3-b36-h115-fake-dispatch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fake-dispatch-refusal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fake-only refusal and counter tests (no providers)
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B tests/test-pxd-exec-s3-b36-h115-fake-dispatch.py
