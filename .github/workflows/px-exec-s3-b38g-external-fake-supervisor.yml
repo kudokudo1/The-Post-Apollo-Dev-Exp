@@ -1,0 +1,63 @@
+name: PX EXEC-S3 B38-G external supervisor to sandboxed fake child IPC
+
+on:
+  pull_request:
+    paths:
+      - 'tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py'
+      - 'MODEL/contracts/exec-s3-b38g-external-fake-supervisor.md'
+      - '.github/workflows/px-exec-s3-b38g-external-fake-supervisor.yml'
+      - 'bin/px_s3_b38e_fake_process_ipc.py'
+      - 'tests/test-pxd-exec-s1-isolation.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b38g-external-fake-supervisor:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm exact generated PR checkout provenance
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "B38G_EXECUTION_SHA=$(git rev-parse HEAD)"
+          echo "B38G_PR_HEAD_SHA=$PR_HEAD_SHA"
+          echo "B38G_PR_BASE_SHA=$PR_BASE_SHA"
+          git status --porcelain
+      - name: Trusted Bubblewrap installed only on disposable CI runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: B38-G offline unit tests and negative guardrails
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py --unit
+      - name: Actual outside-host supervisor to isolated B38-E synthetic sender
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py --smoke
+      - name: Regressions B38-F process boundary B38-E IPC and B37 authorization fixture
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38f-sandboxed-fake-child.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38f-sandboxed-fake-child.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38e-process-ipc.py
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38-policy-default-gate.py
+          python3 -B tests/test-pxd-exec-s3-b38-default-atomic-integration.py
+          python3 -B tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
+          python3 -B tests/test-pxd-exec-s3-b38c-transport-policy.py
+          python3 -B tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
+          python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+          python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+          python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
