@@ -19,7 +19,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from px_s3_b29_transport_ledger import canonical_binding
+from px_s3_b29_transport_ledger import canonical_binding, Refused as B29Refused
 from px_s3_b31_evidence_boundary import TestOnlyEvidenceIssuer
 from px_s3_b37b_sealed_handoff import SealedFixture
 from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture, Refused as B37CRefused
@@ -86,7 +86,7 @@ def fenced_fake_sandbox_exchange(atomic, sealed, *, current_binding, s1, root, f
         fence = atomic.begin_mock(
             sealed, current_binding=binding, offered_bytes=sealed.payload,
         )
-    except (B37CRefused, ValueError, KeyError, TypeError, sqlite3.Error):
+    except (B37CRefused, B29Refused, ValueError, KeyError, TypeError, sqlite3.Error):
         deny("DURABLE_FENCE_DENIED")
     if (type(fence) is not dict or
         fence.get("state") != "SUBMISSION_UNCONFIRMED" or
