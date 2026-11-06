@@ -96,6 +96,17 @@ def fenced_fake_sandbox_exchange(atomic, sealed, *, current_binding, s1, root, f
         fence.get("productionReady") is not False):
         # Already marked submission: never undo or resend based on a bad receipt.
         deny("DURABLE_RECEIPT_UNTRUSTED")
+    # Detect an already-committed cancellation/revocation before starting
+    # the fake process. This read is NOT a race-free production launch lease.
+    try:
+        latest = atomic.ledger.state(sealed.attempt_id)
+    except (B29Refused, sqlite3.Error):
+        deny("POST_FENCE_STATE_UNAVAILABLE_NO_SEND")
+    if (type(latest) is not dict or
+        latest.get("state") != "SUBMISSION_UNCONFIRMED" or
+        latest.get("clientRequestId") != sealed.client_request_id or
+        latest.get("retryAuthorized") is not False):
+        deny("POST_FENCE_STATE_CHANGED_NO_SEND")
     try:
         reply = G.external_supervisor_fake_exchange(
             s1, root, fake_secret, sealed, current_binding=binding,
@@ -285,6 +296,41 @@ class Harness(unittest.TestCase):
             with self.assertRaisesRegex(Refused, "DURABLE_FENCE_DENIED"):
                 self.invoke()
             retry.assert_not_called()
+
+    def test_cancel_after_atomic_mark_before_spawn_refuses(self):
+        self.register()
+        begin = self.atomic.begin_mock
+        def cancel_between(*args, **kwargs):
+            receipt = begin(*args, **kwargs)
+            self.atomic.cancel_mock(self.sealed.attempt_id)
+            return receipt
+        with mock.patch.object(self.atomic, "begin_mock",
+                               side_effect=cancel_between):
+            with mock.patch.object(G, "external_supervisor_fake_exchange") as send:
+                with self.assertRaisesRegex(Refused, "POST_FENCE_STATE_CHANGED_NO_SEND"):
+                    self.invoke()
+                send.assert_not_called()
+        self.assertEqual(self.state(), "CANCEL_PENDING")
+        self.assertEqual(self.atomic.ledger.budget("scopeB38H")["reserved_units"], 25)
+
+    def test_revoke_after_atomic_mark_before_spawn_refuses(self):
+        self.register()
+        begin = self.atomic.begin_mock
+        def revoke_between(*args, **kwargs):
+            receipt = begin(*args, **kwargs)
+            self.atomic.revoke_if_changed(
+                self.sealed.attempt_id,
+                {**self.binding, "generation": self.binding["generation"] + 1},
+            )
+            return receipt
+        with mock.patch.object(self.atomic, "begin_mock",
+                               side_effect=revoke_between):
+            with mock.patch.object(G, "external_supervisor_fake_exchange") as send:
+                with self.assertRaisesRegex(Refused, "POST_FENCE_STATE_CHANGED_NO_SEND"):
+                    self.invoke()
+                send.assert_not_called()
+        self.assertEqual(self.state(), "REVOKED_REMOTE_UNKNOWN")
+        self.assertEqual(self.atomic.ledger.budget("scopeB38H")["reserved_units"], 25)
 
     def test_ledger_issuer_and_fake_only_guards(self):
         self.register()
