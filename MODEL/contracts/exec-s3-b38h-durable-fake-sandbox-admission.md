@@ -36,7 +36,7 @@ B38-H adds a **new isolated harness**, not a modification to either owner:
   separately authenticated B33 observer/witness. On restart this
   uncertain state is quarantined and the fake budget remains held.
   The adapter never sends the same request again automatically.
-- Nine unit tests and one actual Bubblewrap smoke test are included.
+- Eleven unit tests and one actual Bubblewrap smoke test are included.
   Workflow also runs all B38-G/F/E/D and prior B37/B38 regression suites
   against GitHub's generated merge checkout.
 
@@ -90,6 +90,14 @@ HMAC key and signed answer; OS probes are not adversarial identity
 certification. A real integration must enforce the admission fence at
 the one true sender entrypoint and authenticate the transport-owned
 observer before accepting billable outcomes.
+
+The harness now reads B29's post-transition snapshot before spawning the
+fake model. If cancellation or generation revocation was already committed
+between B37-C's atomic mark and this snapshot, launch is refused and the
+existing ledger cancellation/revocation state and held budget remain.
+**This is only a deterministic negative guard, not an atomic send lease.**
+A concurrent cancellation *after* the snapshot can race the fake spawn.
+B37-C's owner must design the actual lease/fence before any real sender.
 
 The bridge's error classification deliberately reveals only fixed
 non-sensitive refusal codes. It does not infer that a sandbox exception
