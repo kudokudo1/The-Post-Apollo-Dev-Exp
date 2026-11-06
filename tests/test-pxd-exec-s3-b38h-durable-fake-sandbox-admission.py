@@ -314,7 +314,9 @@ def smoke():
                 sealed, scope="scopeB38H", units=25,
                 current_binding=binding,
             )
-            root, secret = G.prepare_disposable_root(td + "/sandbox")
+            sandbox_path = tmp / "sandbox"
+            sandbox_path.mkdir(mode=0o700)
+            root, secret = G.prepare_disposable_root(str(sandbox_path))
             receipt = fenced_fake_sandbox_exchange(
                 atomic, sealed, current_binding=binding,
                 s1=s1, root=root, fake_secret=secret,
