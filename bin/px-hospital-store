@@ -857,8 +857,8 @@ def session_attach_atomic(conn: sqlite3.Connection, args) -> dict:
     # Resolve outside the transaction; paths must already exist. An atomic DB
     # claim is not a cross-host or filesystem lock.
     bed_path = Path(bed_text).expanduser().resolve(strict=True)
-    if not bed_path.is_dir():
-        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed is not a directory")
+    if not bed_path.is_dir() or not Path(bed_text).is_absolute():
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed must be an absolute directory")
     if str(Path(bed_text).expanduser()) != bed_text:
         raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed path must be explicit")
 
@@ -908,8 +908,9 @@ def session_attach_atomic(conn: sqlite3.Connection, args) -> dict:
             """
             SELECT s.*, r.bed_path AS room_bed
             FROM sessions s JOIN rooms r ON r.room_id = s.room_id
-            WHERE s.ended_at IS NULL
-              AND s.status NOT IN ('COMPLETE', 'ENDED', 'FAILED')
+            WHERE (s.ended_at IS NULL
+                   AND s.status NOT IN ('COMPLETE', 'ENDED', 'FAILED'))
+               OR COALESCE(s.active_pid, 0) != 0
             """
         ).fetchall()
         for row in others:
