@@ -1,0 +1,70 @@
+name: PX EXEC-S3 B38-I durable fake launch claim
+
+on:
+  pull_request:
+    paths:
+      - 'bin/px_s3_b38i_fake_launch_claim.py'
+      - 'tests/test-pxd-exec-s3-b38i-durable-fake-launch-claim.py'
+      - 'MODEL/contracts/exec-s3-b38i-durable-fake-launch-claim.md'
+      - '.github/workflows/px-exec-s3-b38i-durable-fake-launch-claim.yml'
+      - 'bin/px_s3_b29_transport_ledger.py'
+      - 'bin/px_s3_b37c_atomic_recovery_fixture.py'
+      - 'tests/test-pxd-exec-s3-b38h-durable-fake-sandbox-admission.py'
+      - 'tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  b38i-fake-claim:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record checked-out merge SHA and exact PR provenance
+        env:
+          PR_HEAD_SHA: \${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: \${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "B38I_EXECUTION_SHA=$(git rev-parse HEAD)"
+          echo "B38I_PR_HEAD_SHA=$PR_HEAD_SHA"
+          echo "B38I_PR_BASE_SHA=$PR_BASE_SHA"
+          git status --porcelain
+      - name: Install Bubblewrap in disposable GitHub runner only
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Atomic fake claim and two-connection race units
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38i-durable-fake-launch-claim.py --unit
+      - name: Real fake sandbox exchange after durable claim plus restart quarantine
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38i-durable-fake-launch-claim.py --smoke
+      - name: B38-H/G/F/E/D and B37/B38 regressions and prior OS smoke
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38h-durable-fake-sandbox-admission.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38h-durable-fake-sandbox-admission.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38g-external-fake-supervisor.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38f-sandboxed-fake-child.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38f-sandboxed-fake-child.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38e-process-ipc.py
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38d-os-boundary.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38-policy-default-gate.py
+          python3 -B tests/test-pxd-exec-s3-b38-default-atomic-integration.py
+          python3 -B tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
+          python3 -B tests/test-pxd-exec-s3-b38c-transport-policy.py
+          python3 -B tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
+          python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+          python3 -B tests/test-pxd-exec-s3-b37b-sealed-handoff.py
+          python3 -B tests/test-pxd-exec-s3-b37a-tool-free-contract.py
