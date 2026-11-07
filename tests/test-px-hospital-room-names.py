@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -53,6 +54,23 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
             ("room-one", "T1", "feature/one", "/tmp/isolated-bed", "doctor-one"),
         )
         conn.commit()
+
+    # Simulate a crash between ALTER TABLE and schema_meta update in
+    # a second disposable copy of the v10 database.
+    recovery_dir = home / "interrupted-v11"
+    recovery_dir.mkdir(mode=0o700)
+    recovery_db = recovery_dir / "hospital.db"
+    shutil.copyfile(db_path, recovery_db)
+    with sqlite3.connect(recovery_db) as conn:
+        conn.execute(
+            "ALTER TABLE rooms ADD COLUMN "
+            "display_name TEXT NOT NULL DEFAULT ''"
+        )
+        conn.commit()
+    recovery_env = dict(env, PX_HOSPITAL_DATA_DIR=str(recovery_dir))
+    recovered = invoke(recovery_env, "status")
+    assert recovered["schema_version"] == 11, recovered
+    assert invoke(recovery_env, "room", "room-one")["id"] == "room-one"
 
     status = invoke(env, "status")
     assert status["schema_version"] == 11, status
