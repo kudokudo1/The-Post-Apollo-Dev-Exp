@@ -804,6 +804,20 @@ def room_record(conn: sqlite3.Connection, room_id: str) -> dict:
             p.repository AS repository,
             p.label AS patient_label,
             (
+                SELECT a.title
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_title,
+            (
+                SELECT a.status
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_status,
+            (
                 SELECT m.body_md
                 FROM messages m
                 WHERE m.room_id = r.room_id
@@ -841,6 +855,8 @@ def normalize_room(row: sqlite3.Row) -> dict:
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["current_assignment_id"] or ""),
+        "assignmentTitle": str(row["assignment_title"] or ""),
+        "assignmentStatus": str(row["assignment_status"] or ""),
         "createdAt": str(row["created_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
     }
@@ -853,6 +869,20 @@ def rooms_list(conn: sqlite3.Connection) -> list:
             r.*,
             p.repository AS repository,
             p.label AS patient_label,
+            (
+                SELECT a.title
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_title,
+            (
+                SELECT a.status
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_status,
             (
                 SELECT m.body_md
                 FROM messages m
