@@ -56,7 +56,22 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
 
     status = invoke(env, "status")
     assert status["schema_version"] == 11, status
+    # Keep Assignment title projection bound to the Room's real active contract.
+    with sqlite3.connect(db_path) as conn:
+        assignment_id = conn.execute(
+            "INSERT INTO assignments(room_id, title, goal_md, status) "
+            "VALUES(?, ?, ?, ?)",
+            ("room-one", "Integrate Company Map", "Map work", "ACTIVE"),
+        ).lastrowid
+        conn.execute(
+            "UPDATE rooms SET current_assignment_id=? WHERE room_id=?",
+            (str(assignment_id), "room-one"),
+        )
+        conn.commit()
     before = invoke(env, "room", "room-one")
+    assert before["assignmentTitle"] == "Integrate Company Map", before
+    assert before["assignmentStatus"] == "ACTIVE", before
+    assert before["assignmentId"] == str(assignment_id), before
     assert before["displayName"] == "", before
     assert before["displayNameInProfile"] == "T1", before
     assert before["doctorId"] == "doctor-one", before
@@ -77,6 +92,7 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
     assert rebound["displayName"] == "Company // Vector Map", rebound
     listed = invoke(env, "rooms")
     assert len(listed) == 1 and listed[0]["displayName"] == "Company // Vector Map"
+    assert listed[0]["assignmentTitle"] == "Integrate Company Map", listed
 
     for bad in ("N" * 97, "one\ntwo", "one\tother", "one\x7fother"):
         stderr = invoke(env, "room-name-set", "room-one", "--name", bad,
