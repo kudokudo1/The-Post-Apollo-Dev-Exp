@@ -105,9 +105,9 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     wrong_branch = list(args("room-main", aid, bed, "session-one"))
     wrong_branch[wrong_branch.index("--branch") + 1] = "wrong-branch"
     assert "branch" in command(env, *wrong_branch, ok=False).lower()
-    bad_session_id = list(args("room-main", aid, bed, "bad\\nid"))
-    assert "invalid Session ID" in command(
-        env, *bad_session_id, ok=False)
+    bad_session_id = list(args("room-main", aid, bed, "bad\nid"))
+    bad_id_error = command(env, *bad_session_id, ok=False)
+    assert "invalid Session ID" in bad_id_error, bad_id_error
 
     # Same physical Bed via symlink cannot be claimed by a second Room.
     alias = base / "bed-alias"
