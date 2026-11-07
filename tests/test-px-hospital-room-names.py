@@ -105,6 +105,29 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
     assert "unknown Hospital room" in stderr, stderr
     assert len(invoke(env, "rooms")) == 1
 
+    # Name writes must preserve existing Doctor role/status, including roles
+    # with no authorization implied by their titles.
+    doctor = invoke(env, "doctor-put", "doctor-one", "--name", "Original Doctor",
+                    "--role", "NURSE", "--status", "INACTIVE")
+    assert doctor["role"] == "NURSE" and doctor["status"] == "INACTIVE"
+    doctor_named = invoke(env, "doctor-name-set", "doctor-one",
+                          "--name", "Map Nurse")
+    assert doctor_named["name"] == "Map Nurse"
+    assert doctor_named["role"] == "NURSE" and doctor_named["status"] == "INACTIVE"
+    assert invoke(env, "doctor", "doctor-one")["name"] == "Map Nurse"
+
+    for invalid in ("X" * 97, "invalid\nname", "invalid\tname"):
+        stderr = invoke(env, "doctor-name-set", "doctor-one",
+                        "--name", invalid, successful=False)
+        assert "Doctor display name" in stderr, stderr
+        assert invoke(env, "doctor", "doctor-one")["name"] == "Map Nurse"
+    stderr = invoke(env, "doctor-name-set", "nonexistent",
+                    "--name", "Fake", successful=False)
+    assert "unknown Hospital doctor" in stderr
+    reset_doctor = invoke(env, "doctor-name-set", "doctor-one", "--name", "")
+    assert reset_doctor["name"] == "doctor-one"
+    assert reset_doctor["role"] == "NURSE" and reset_doctor["status"] == "INACTIVE"
+
     named96 = invoke(env, "room-name-set", "room-one", "--name", "X" * 96)
     assert len(named96["displayName"]) == 96
     cleared = invoke(env, "room-name-set", "room-one", "--name", "")
@@ -115,4 +138,4 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
         row = conn.execute("PRAGMA table_info(rooms)").fetchall()
         assert sum(col[1] == "display_name" for col in row) == 1
 
-print("HOSPITAL ROOM NAME V11 // PASS // legacy migration, identity, persistence, reset, invalid names")
+print("HOSPITAL NAMES V11 // PASS // legacy migration, Room/Doctor identity, persistence, reset, invalid names")
