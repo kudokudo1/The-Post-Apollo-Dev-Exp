@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -326,6 +326,11 @@ CREATE INDEX IF NOT EXISTS idx_assignments_patient
     ON assignments(patient_id, status, assignment_id DESC);
 """
 
+SCHEMA_V11 = """
+ALTER TABLE rooms
+    ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+"""
+
 def hospital_data_dir() -> Path:
     override = os.environ.get("PX_HOSPITAL_DATA_DIR", "").strip()
     if override:
@@ -472,6 +477,25 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.commit()
         version = 10
 
+    if version < 11:
+        # Recovery fence: if a process died after ADD COLUMN but before
+        # schema_meta advanced, do not attempt to add the column twice.
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(rooms)").fetchall()
+        }
+        if "display_name" not in columns:
+            conn.execute(
+                "ALTER TABLE rooms ADD COLUMN display_name "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            ("11",),
+        )
+        conn.commit()
+        version = 11
+
     return version
 
 def database_status(conn: sqlite3.Connection) -> dict:
@@ -563,6 +587,32 @@ def doctor_put(conn: sqlite3.Connection, args) -> dict:
     )
     conn.commit()
     return doctor_record(conn, args.doctor_id)
+
+
+def doctor_name_set(conn: sqlite3.Connection, args) -> dict:
+    """Change only the name, preserving concurrent Doctor role/status edits."""
+    doctor_id = str(args.doctor_id or "").strip()
+    name = str(args.name).strip()
+    if not doctor_id:
+        raise RuntimeError("Hospital Doctor name requires a Doctor ID")
+    if len(name) > 96:
+        raise RuntimeError("Hospital Doctor display name exceeds 96 characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise RuntimeError("Hospital Doctor display name contains control characters")
+    name = name or doctor_id
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE doctors
+            SET name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE doctor_id = ?
+            """,
+            (name, doctor_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"unknown Hospital doctor: {doctor_id}")
+    return doctor_record(conn, doctor_id)
 
 
 def doctor_record(conn: sqlite3.Connection, doctor_id: str) -> dict:
@@ -757,6 +807,31 @@ def room_put(conn: sqlite3.Connection, args) -> dict:
     return room_record(conn, args.room_id)
 
 
+def room_name_set(conn: sqlite3.Connection, args) -> dict:
+    """Change only the operator-facing label of an already registered Room."""
+    room_id = str(args.room_id or "").strip()
+    name = str(args.name).strip()
+    if not room_id:
+        raise RuntimeError("Hospital Room name requires a Room ID")
+    if len(name) > 96:
+        raise RuntimeError("Hospital Room display name exceeds 96 characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise RuntimeError("Hospital Room display name contains control characters")
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE rooms
+            SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE room_id = ?
+            """,
+            (name, room_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"unknown Hospital room: {room_id}")
+    return room_record(conn, room_id)
+
+
 def room_record(conn: sqlite3.Connection, room_id: str) -> dict:
     row = conn.execute(
         """
@@ -764,6 +839,20 @@ def room_record(conn: sqlite3.Connection, room_id: str) -> dict:
             r.*,
             p.repository AS repository,
             p.label AS patient_label,
+            (
+                SELECT a.title
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_title,
+            (
+                SELECT a.status
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_status,
             (
                 SELECT m.body_md
                 FROM messages m
@@ -786,9 +875,11 @@ def normalize_room(row: sqlite3.Row) -> dict:
     team = str(row["team"] or "")
     branch = str(row["branch"] or "")
     room_id = str(row["room_id"])
+    display_name = str(row["display_name"] or "")
     return {
         "id": room_id,
-        "displayNameInProfile": team or room_id,
+        "displayName": display_name,
+        "displayNameInProfile": display_name or team or room_id,
         "nickname": branch,
         "lastMessage": str(row["last_message"] or ""),
         "patientId": str(row["patient_id"] or ""),
@@ -800,6 +891,8 @@ def normalize_room(row: sqlite3.Row) -> dict:
         "doctorId": str(row["doctor_id"] or ""),
         "providerId": str(row["provider_id"] or ""),
         "assignmentId": str(row["current_assignment_id"] or ""),
+        "assignmentTitle": str(row["assignment_title"] or ""),
+        "assignmentStatus": str(row["assignment_status"] or ""),
         "createdAt": str(row["created_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
     }
@@ -812,6 +905,20 @@ def rooms_list(conn: sqlite3.Connection) -> list:
             r.*,
             p.repository AS repository,
             p.label AS patient_label,
+            (
+                SELECT a.title
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_title,
+            (
+                SELECT a.status
+                FROM assignments a
+                WHERE a.room_id = r.room_id
+                  AND CAST(a.assignment_id AS TEXT) = r.current_assignment_id
+                LIMIT 1
+            ) AS assignment_status,
             (
                 SELECT m.body_md
                 FROM messages m
@@ -2787,6 +2894,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true")
 
+    doctor_name = sub.add_parser("doctor-name-set")
+    doctor_name.add_argument("doctor_id")
+    doctor_name.add_argument("--name", required=True,
+                             help="Friendly Doctor name; empty resets to ID")
+    doctor_name.add_argument("--json", action="store_true")
+
     doctor_get = sub.add_parser("doctor")
     doctor_get.add_argument("doctor_id")
     doctor_get.add_argument("--json", action="store_true")
@@ -2824,6 +2937,12 @@ def build_parser() -> argparse.ArgumentParser:
     room.add_argument("--provider-id", default="")
     room.add_argument("--assignment-id", default=None)
     room.add_argument("--json", action="store_true")
+
+    room_name = sub.add_parser("room-name-set")
+    room_name.add_argument("room_id")
+    room_name.add_argument("--name", required=True,
+                           help="Friendly Room title; empty string clears override")
+    room_name.add_argument("--json", action="store_true")
 
     room_get = sub.add_parser("room")
     room_get.add_argument("room_id")
@@ -3192,6 +3311,8 @@ def main() -> int:
                 emit(database_status(conn), args.json)
             elif args.command == "doctor-put":
                 emit_data(doctor_put(conn, args), args.json)
+            elif args.command == "doctor-name-set":
+                emit_data(doctor_name_set(conn, args), args.json)
             elif args.command == "doctor":
                 emit_data(doctor_record(conn, args.doctor_id), args.json)
             elif args.command == "doctors":
@@ -3205,6 +3326,8 @@ def main() -> int:
                 emit_data(room_bind(conn, args), args.json)
             elif args.command == "room-put":
                 emit_data(room_put(conn, args), args.json)
+            elif args.command == "room-name-set":
+                emit_data(room_name_set(conn, args), args.json)
             elif args.command == "room":
                 emit_data(room_record(conn, args.room_id), args.json)
             elif args.command == "rooms":
