@@ -827,6 +827,165 @@ def rooms_list(conn: sqlite3.Connection) -> list:
     return [normalize_room(row) for row in rows]
 
 
+
+def session_attach_atomic(conn: sqlite3.Connection, args) -> dict:
+    """Admission-only attach. Same-DB Room/Bed check and INSERT are one write.
+
+    No model process is started. No existing Session is moved or overwritten.
+    Explicit --confirm represents a requested action, not caller authentication.
+    """
+    if not args.confirm:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // explicit confirmation required")
+    room_id = str(args.room_id or "").strip()
+    session_id = str(args.session_id or "").strip()
+    doctor_id = str(args.doctor_id or "").strip()
+    provider_id = str(args.provider_id or "").strip()
+    requested_assignment = str(args.assignment_id or "").strip()
+    repository = str(args.repository or "").strip()
+    branch = str(args.branch or "").strip()
+    bed_text = str(args.bed_path or "").strip()
+    if not all((room_id, session_id, doctor_id, provider_id,
+                requested_assignment, repository, branch, bed_text)):
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // missing required identity")
+    if not requested_assignment.isdecimal():
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // invalid Assignment ID")
+    if provider_id == "int1-fake":
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // fake-only provider")
+    if any(ch in session_id for ch in "\\r\\n\\t"):
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // invalid Session ID")
+
+    # Resolve outside the transaction; paths must already exist. An atomic DB
+    # claim is not a cross-host or filesystem lock.
+    bed_path = Path(bed_text).expanduser().resolve(strict=True)
+    if not bed_path.is_dir():
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed is not a directory")
+    if str(Path(bed_text).expanduser()) != bed_text:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed path must be explicit")
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        room = conn.execute(
+            """
+            SELECT r.*, p.repository AS repository
+            FROM rooms r
+            LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE r.room_id = ?
+            """, (room_id,),
+        ).fetchone()
+        if room is None:
+            raise RuntimeError("HOSPITAL ATTACH REFUSED // unknown Room")
+        if (not str(room["patient_id"] or "")
+                or str(room["repository"] or "") != repository
+                or str(room["branch"] or "") != branch
+                or str(room["bed_path"] or "") != bed_text):
+            raise RuntimeError("HOSPITAL ATTACH REFUSED // Room snapshot changed")
+        for field, selected, label in (
+            ("doctor_id", doctor_id, "Doctor"),
+            ("provider_id", provider_id, "Provider"),
+        ):
+            old = str(room[field] or "")
+            if old and old != selected:
+                raise RuntimeError("HOSPITAL ATTACH REFUSED // Room " + label + " mismatch")
+
+        doctor = conn.execute(
+            "SELECT status FROM doctors WHERE doctor_id = ?", (doctor_id,)
+        ).fetchone()
+        if doctor is None or str(doctor["status"] or "") != "ACTIVE":
+            raise RuntimeError("HOSPITAL ATTACH REFUSED // Doctor not ACTIVE")
+        assignment = conn.execute(
+            "SELECT room_id, patient_id, status FROM assignments WHERE assignment_id = ?",
+            (int(requested_assignment),),
+        ).fetchone()
+        if (assignment is None or str(assignment["room_id"] or "") != room_id
+                or str(assignment["patient_id"] or "") != str(room["patient_id"] or "")
+                or str(assignment["status"] or "") != "ACTIVE"
+                or str(room["current_assignment_id"] or "") != requested_assignment):
+            raise RuntimeError("HOSPITAL ATTACH REFUSED // Assignment not active and linked")
+
+        # Every nonterminal session counts, including WAITING / REVIEW / PAUSED.
+        # Check all Rooms while BEGIN IMMEDIATE holds the sole DB writer slot.
+        others = conn.execute(
+            """
+            SELECT s.*, r.bed_path AS room_bed
+            FROM sessions s JOIN rooms r ON r.room_id = s.room_id
+            WHERE s.ended_at IS NULL
+              AND s.status NOT IN ('COMPLETE', 'ENDED', 'FAILED')
+            """
+        ).fetchall()
+        for row in others:
+            other_id = str(row["session_id"] or "")
+            other_room_id = str(row["room_id"] or "")
+            if other_room_id == room_id:
+                if other_id != session_id:
+                    raise RuntimeError("HOSPITAL ATTACH REFUSED // Room already has open Session")
+                continue
+            candidate = str(row["room_bed"] or "")
+            if candidate and Path(candidate).expanduser().resolve() == bed_path:
+                raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed owned by another open Room")
+
+        existing = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if existing is not None:
+            if (str(existing["room_id"] or "") != room_id
+                    or str(existing["doctor_id"] or "") != doctor_id
+                    or str(existing["provider_id"] or "") != provider_id
+                    or str(existing["working_directory"] or "") != bed_text
+                    or str(existing["status"] or "") != "IDLE"
+                    or existing["ended_at"] is not None
+                    or int(existing["active_pid"] or 0) != 0):
+                raise RuntimeError(
+                    "HOSPITAL ATTACH REFUSED // existing Session identity or state differs"
+                )
+            created = False
+        else:
+            if args.mode == "reuse":
+                raise RuntimeError(
+                    "HOSPITAL ATTACH REFUSED // requested Session not found for reuse"
+                )
+            conn.execute(
+                """
+                INSERT INTO sessions(
+                    session_id, room_id, doctor_id, provider_id,
+                    status, working_directory
+                ) VALUES(?, ?, ?, ?, 'IDLE', ?)
+                """,
+                (session_id, room_id, doctor_id, provider_id, bed_text),
+            )
+            created = True
+
+        # Fill only blank Room staffing; never replace another worker/Provider.
+        if not str(room["doctor_id"] or "") or not str(room["provider_id"] or ""):
+            conn.execute(
+                """
+                UPDATE rooms SET
+                    doctor_id = CASE WHEN doctor_id = '' THEN ? ELSE doctor_id END,
+                    provider_id = CASE WHEN provider_id = '' THEN ? ELSE provider_id END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE room_id = ?
+                """,
+                (doctor_id, provider_id, room_id),
+            )
+        result = {
+            "roomId": room_id,
+            "sessionId": session_id,
+            "doctorId": doctor_id,
+            "providerId": provider_id,
+            "assignmentId": requested_assignment,
+            "mode": "CREATED" if created else "REUSED",
+            "created": created,
+            "providerLaunched": False,
+            "browserChatConnected": False,
+            "authorityVerified": False,
+            "session": session_record(conn, session_id),
+        }
+        conn.commit()
+        return result
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
 def session_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
 
@@ -2832,6 +2991,19 @@ def build_parser() -> argparse.ArgumentParser:
     rooms = sub.add_parser("rooms")
     rooms.add_argument("--json", action="store_true")
 
+    attach = sub.add_parser("session-attach-atomic")
+    attach.add_argument("--room-id", required=True)
+    attach.add_argument("--session-id", required=True)
+    attach.add_argument("--assignment-id", required=True)
+    attach.add_argument("--doctor-id", required=True)
+    attach.add_argument("--provider-id", required=True)
+    attach.add_argument("--repository", required=True)
+    attach.add_argument("--branch", required=True)
+    attach.add_argument("--bed-path", required=True)
+    attach.add_argument("--mode", choices=("create", "reuse"), required=True)
+    attach.add_argument("--confirm", action="store_true")
+    attach.add_argument("--json", action="store_true")
+
     session = sub.add_parser("session-put")
     session.add_argument("session_id")
     session.add_argument("--room-id", required=True)
@@ -3209,6 +3381,8 @@ def main() -> int:
                 emit_data(room_record(conn, args.room_id), args.json)
             elif args.command == "rooms":
                 emit_data(rooms_list(conn), args.json)
+            elif args.command == "session-attach-atomic":
+                emit_data(session_attach_atomic(conn, args), args.json)
             elif args.command == "session-put":
                 emit_data(session_put(conn, args), args.json)
             elif args.command == "sessions":
