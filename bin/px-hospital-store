@@ -851,7 +851,7 @@ def session_attach_atomic(conn: sqlite3.Connection, args) -> dict:
         raise RuntimeError("HOSPITAL ATTACH REFUSED // invalid Assignment ID")
     if provider_id == "int1-fake":
         raise RuntimeError("HOSPITAL ATTACH REFUSED // fake-only provider")
-    if any(ch in session_id for ch in "\\r\\n\\t"):
+    if any(ch in session_id for ch in "\r\n\t"):
         raise RuntimeError("HOSPITAL ATTACH REFUSED // invalid Session ID")
 
     # Resolve outside the transaction; paths must already exist. An atomic DB
