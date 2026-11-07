@@ -141,9 +141,37 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     assert race_rows[0]["id"] in ("race-1", "race-2")
     assert len(command(env, "hospital", "sessions", "--json")) == 2
 
+    # Force a failure AFTER the Session INSERT but during Room staffing
+    # update. BEGIN IMMEDIATE + rollback must leave no partial registration.
+    rollback_bed = base / "rollback-bed"
+    make_bed(rollback_bed)
+    rollback_assignment = setup_room(env, "room-rollback", rollback_bed)
+    with sqlite3.connect(base / "db" / "hospital.db") as conn:
+        conn.executescript("""
+            CREATE TRIGGER reject_room_staffing
+            BEFORE UPDATE ON rooms
+            WHEN NEW.room_id = 'room-rollback'
+            BEGIN SELECT RAISE(ABORT, 'synthetic Room write refusal'); END;
+        """)
+    rollback_error = command(
+        env, *args("room-rollback", rollback_assignment,
+                   rollback_bed, "rollback-id"), ok=False)
+    assert "synthetic Room write refusal" in rollback_error, rollback_error
+    assert not command(env, "hospital", "sessions",
+                       "--room-id", "room-rollback", "--json")
+    rollback_room = command(env, "hospital", "room", "room-rollback", "--json")
+    assert rollback_room["providerId"] == ""
+    with sqlite3.connect(base / "db" / "hospital.db") as conn:
+        conn.execute("DROP TRIGGER reject_room_staffing")
+        conn.commit()
+    success_after_rollback = command(
+        env, *args("room-rollback", rollback_assignment,
+                   rollback_bed, "rollback-id"))
+    assert success_after_rollback["mode"] == "CREATED"
+
     # Failed requests did not create duplicate Sessions or change ownership.
     with sqlite3.connect(base / "db" / "hospital.db") as conn:
         ids = conn.execute("SELECT session_id FROM sessions").fetchall()
-        assert len(ids) == 2 and len(set(ids)) == 2
+        assert len(ids) == 3 and len(set(ids)) == 3
 
 print("HOSPITAL ATOMIC ATTACH // PASS // intent, exact identity, idempotence, Bed alias, concurrent CLI admission, no launch")
