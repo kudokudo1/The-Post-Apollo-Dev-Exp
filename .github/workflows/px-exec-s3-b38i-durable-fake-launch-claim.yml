@@ -26,8 +26,8 @@ jobs:
           persist-credentials: false
       - name: Record checked-out merge SHA and exact PR provenance
         env:
-          PR_HEAD_SHA: \${{ github.event.pull_request.head.sha }}
-          PR_BASE_SHA: \${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           echo "B38I_EXECUTION_SHA=$(git rev-parse HEAD)"
           echo "B38I_PR_HEAD_SHA=$PR_HEAD_SHA"
