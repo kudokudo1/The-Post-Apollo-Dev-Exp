@@ -1,0 +1,36 @@
+name: Hospital Atomic Session Attachment
+
+on:
+  pull_request:
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/px-agent"
+      - "tests/test-px-hospital-atomic-attach.py"
+      - ".github/workflows/hospital-atomic-attach.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/px-agent"
+      - "tests/test-px-hospital-atomic-attach.py"
+      - ".github/workflows/hospital-atomic-attach.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check PX CLI
+        run: |
+          python3 -m py_compile bin/px-hospital-store bin/px-agent
+      - name: Disposable atomic attachment, replay and collision tests
+        run: |
+          python3 tests/test-px-hospital-atomic-attach.py
+      - name: Existing PX Hospital store regression
+        run: |
+          bash tests/test-px-hospital-store.sh
