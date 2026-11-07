@@ -417,6 +417,44 @@ def providers_payload() -> list[dict]:
     return rows
 
 
+def attach_session_atomic(args) -> dict:
+    """Validate the provider and live Git Bed before atomic PX DB admission.
+
+    This only registers an IDLE Session; it never launches a model, grants
+    Assignment authority or attaches an existing browser ChatGPT tab.
+    """
+    if not args.confirm:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // operator confirmation required")
+    record = provider_record(args.provider_id)
+    if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // fake-only Provider")
+    resolve_command(str(record.get("command") or ""))
+    bed = Path(args.working_directory).expanduser().resolve(strict=True)
+    if not bed.is_dir():
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed is not a directory")
+    result = subprocess.run(
+        ["git", "-C", str(bed), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or result.stdout.strip() != args.branch:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // live Git Bed branch does not match")
+    # PX Store owns the SQLite BEGIN IMMEDIATE reservation. No split
+    # session-put/session-runtime sequence or direct provider invocation.
+    return px_hospital(
+        "session-attach-atomic",
+        "--room-id", args.room_id,
+        "--session-id", args.session_id,
+        "--assignment-id", args.assignment_id,
+        "--doctor-id", args.doctor_id,
+        "--provider-id", args.provider_id,
+        "--repository", args.repository,
+        "--branch", args.branch,
+        "--bed-path", str(Path(args.working_directory).expanduser()),
+        "--mode", args.mode,
+        "--confirm",
+    )
+
+
 def create_session(args) -> dict:
     record = provider_record(args.provider_id)
     if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
@@ -2965,6 +3003,19 @@ def build_parser():
     providers = sub.add_parser("providers")
     providers.add_argument("--json", action="store_true")
 
+    attach = sub.add_parser("session-attach")
+    attach.add_argument("--room-id", required=True)
+    attach.add_argument("--session-id", required=True)
+    attach.add_argument("--assignment-id", required=True)
+    attach.add_argument("--doctor-id", required=True)
+    attach.add_argument("--provider-id", required=True)
+    attach.add_argument("--repository", required=True)
+    attach.add_argument("--branch", required=True)
+    attach.add_argument("--working-directory", required=True)
+    attach.add_argument("--mode", choices=("create", "reuse"), required=True)
+    attach.add_argument("--confirm", action="store_true")
+    attach.add_argument("--json", action="store_true")
+
     create = sub.add_parser("session-create")
     create.add_argument("--room-id", required=True)
     create.add_argument("--doctor-id", required=True)
@@ -3050,6 +3101,8 @@ def main() -> int:
     try:
         if args.command == "providers":
             emit(providers_payload(), args.json)
+        elif args.command == "session-attach":
+            emit(attach_session_atomic(args), args.json)
         elif args.command == "session-create":
             emit(create_session(args), args.json)
         elif args.command == "turn":
