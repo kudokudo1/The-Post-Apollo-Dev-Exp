@@ -93,18 +93,21 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     assert not reuse["created"]
     assert "already has open Session" in command(
         env, *args("room-main", aid, bed, "different-id"), ok=False)
-    assert "requested Session not found" in command(
+    assert "open Session" in command(
         env, *args("room-main", aid, bed, "nonexistent",
-                   mode="reuse"), ok=False) or True  # active Room fence may run first
+                   mode="reuse"), ok=False)
     assert "mismatch" in command(
         env, *args("room-main", aid, bed, "session-one", doctor="doc-2"),
         ok=False).lower()
     assert "unknown agent provider" in command(
         env, *args("room-main", aid, bed, "session-one",
                    provider="unregistered"), ok=False)
-    assert "branch" in command(
-        env, *list(args("room-main", aid, bed, "session-one"))[:-1][:-1],
-        ok=False).lower() if False else True
+    wrong_branch = list(args("room-main", aid, bed, "session-one"))
+    wrong_branch[wrong_branch.index("--branch") + 1] = "wrong-branch"
+    assert "branch" in command(env, *wrong_branch, ok=False).lower()
+    bad_session_id = list(args("room-main", aid, bed, "bad\\nid"))
+    assert "invalid Session ID" in command(
+        env, *bad_session_id, ok=False)
 
     # Same physical Bed via symlink cannot be claimed by a second Room.
     alias = base / "bed-alias"
@@ -119,11 +122,6 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     make_bed(race_bed)
     race_aid = setup_room(env, "room-race", race_bed)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(command, env, *args(
-                "room-race", race_aid, race_bed, f"race-{n}"), ok=False)
-            for n in ()
-        ]
         # Submit raw subprocesses since one of two must succeed.
         futures = [
             pool.submit(subprocess.run,
