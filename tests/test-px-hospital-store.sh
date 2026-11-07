@@ -258,7 +258,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("10",), version
+    assert version == ("11",), version
 
     tables = {
         row[0]
