@@ -579,6 +579,32 @@ def doctor_put(conn: sqlite3.Connection, args) -> dict:
     return doctor_record(conn, args.doctor_id)
 
 
+def doctor_name_set(conn: sqlite3.Connection, args) -> dict:
+    """Change only the name, preserving concurrent Doctor role/status edits."""
+    doctor_id = str(args.doctor_id or "").strip()
+    name = str(args.name).strip()
+    if not doctor_id:
+        raise RuntimeError("Hospital Doctor name requires a Doctor ID")
+    if len(name) > 96:
+        raise RuntimeError("Hospital Doctor display name exceeds 96 characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise RuntimeError("Hospital Doctor display name contains control characters")
+    name = name or doctor_id
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE doctors
+            SET name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE doctor_id = ?
+            """,
+            (name, doctor_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"unknown Hospital doctor: {doctor_id}")
+    return doctor_record(conn, doctor_id)
+
+
 def doctor_record(conn: sqlite3.Connection, doctor_id: str) -> dict:
     row = conn.execute(
         "SELECT * FROM doctors WHERE doctor_id = ?",
@@ -2858,6 +2884,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true")
 
+    doctor_name = sub.add_parser("doctor-name-set")
+    doctor_name.add_argument("doctor_id")
+    doctor_name.add_argument("--name", required=True,
+                             help="Friendly Doctor name; empty resets to ID")
+    doctor_name.add_argument("--json", action="store_true")
+
     doctor_get = sub.add_parser("doctor")
     doctor_get.add_argument("doctor_id")
     doctor_get.add_argument("--json", action="store_true")
@@ -3269,6 +3301,8 @@ def main() -> int:
                 emit(database_status(conn), args.json)
             elif args.command == "doctor-put":
                 emit_data(doctor_put(conn, args), args.json)
+            elif args.command == "doctor-name-set":
+                emit_data(doctor_name_set(conn, args), args.json)
             elif args.command == "doctor":
                 emit_data(doctor_record(conn, args.doctor_id), args.json)
             elif args.command == "doctors":
