@@ -169,6 +169,31 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
                    rollback_bed, "rollback-id"))
     assert success_after_rollback["mode"] == "CREATED"
 
+    # An ended/FAILED record with a still-active recorded PID is not a
+    # released Bed. Refuse the second Room until its PID is cleared.
+    pid_env = dict(env, PX_HOSPITAL_DATA_DIR=str(base / "pid-db"))
+    pid_bed = base / "pid-bed"
+    make_bed(pid_bed)
+    command(pid_env, "hospital", "init", "--json")
+    setup_room(pid_env, "pid-owner", pid_bed)
+    pid_assignment = setup_room(pid_env, "pid-waiter", pid_bed)
+    command(pid_env, "hospital", "session-put", "pid-old",
+            "--room-id", "pid-owner", "--doctor-id", "doc-1",
+            "--provider-id", "mock", "--status", "FAILED", "--json")
+    command(pid_env, "hospital", "session-runtime", "pid-old",
+            "--active-pid", "12345", "--ended", "--json")
+    pid_refusal = command(
+        pid_env, *args("pid-waiter", pid_assignment, pid_bed,
+                       "pid-new"), ok=False)
+    assert "Bed owned" in pid_refusal, pid_refusal
+    assert not command(pid_env, "hospital", "sessions",
+                       "--room-id", "pid-waiter", "--json")
+    command(pid_env, "hospital", "session-runtime", "pid-old",
+            "--clear-active-pid", "--json")
+    pid_ok = command(pid_env, *args(
+        "pid-waiter", pid_assignment, pid_bed, "pid-new"))
+    assert pid_ok["mode"] == "CREATED"
+
     # Failed requests did not create duplicate Sessions or change ownership.
     with sqlite3.connect(base / "db" / "hospital.db") as conn:
         ids = conn.execute("SELECT session_id FROM sessions").fetchall()
