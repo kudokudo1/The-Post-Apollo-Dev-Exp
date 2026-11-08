@@ -23,11 +23,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from px_s3_b29_transport_ledger import canonical_binding
+from px_s3_b29_transport_ledger import canonical_binding, Refused as B29Refused
 from px_s3_b31_evidence_boundary import TestOnlyEvidenceIssuer
 from px_s3_b37c_atomic_recovery_fixture import AtomicOfflineFixture
 from px_s3_b38i_fake_launch_claim import AtomicFakeLaunchClaim, Refused as B38IRefused
-from px_s3_b37b_sealed_handoff import SealedFixture
+from px_s3_b37b_sealed_handoff import SealedFixture, verify_fixture, Refused as B37BRefused
 
 def load_g():
     name = "b38k_existing_g_fake"
@@ -95,17 +95,21 @@ def launch_running_fake(atomic, claimant, sealed, *, current_binding, s1, root):
     if not hasattr(s1, "build_command") or not hasattr(s1, "trusted_bwrap_binary"):
         deny("S1_MISSING")
     try:
+        bound = canonical_binding(current_binding)
+        verify_fixture(sealed, current_binding=json.loads(bound))
+        row = atomic.ledger._attempt(sealed.attempt_id)
         record = atomic.ledger.state(sealed.attempt_id)
         if (record["state"] != "SUBMISSION_UNCONFIRMED" or
             record["clientRequestId"] != sealed.client_request_id or
             record["retryAuthorized"] is not False or
             not claimant.claim_recorded(sealed.attempt_id) or
-            record["turnId"] != current_binding["turnId"] or
-            json.loads(canonical_binding(current_binding))["generation"] < 1):
+            row["binding_json"] != bound or
+            row["b37c_payload_sha256"] != sealed.payload_sha256):
             deny("CLAIM_OR_CANCEL_STATE_INVALID")
         if s1.trusted_bwrap_binary() != "/usr/bin/bwrap":
             deny("TRUSTED_S1_UNAVAILABLE")
-    except (B38IRefused, sqlite3.Error, KeyError, ValueError) as exc:
+    except (B38IRefused, B37BRefused, B29Refused, sqlite3.Error,
+            KeyError, TypeError, ValueError):
         deny("FAKE_LEDGER_UNAVAILABLE")
     nonce = secrets.token_hex(16)
     script = "NONCE = " + repr(nonce) + "\n" + CHILD
@@ -262,6 +266,29 @@ class Tests(unittest.TestCase):
         with mock.patch("subprocess.Popen") as spawned:
             with self.assertRaises(Refused):
                 self.start()
+            spawned.assert_not_called()
+
+    def test_stale_generation_fails_before_spawn(self):
+        self.claimed()
+        with mock.patch("subprocess.Popen") as spawned:
+            with self.assertRaises(Refused):
+                launch_running_fake(
+                    self.atomic, self.claimant, self.sealed,
+                    current_binding={**self.binding,
+                                     "generation": self.binding["generation"] + 1},
+                    s1=self.s1, root=self.sandbox,
+                )
+            spawned.assert_not_called()
+
+    def test_wrong_room_fails_before_spawn(self):
+        self.claimed()
+        with mock.patch("subprocess.Popen") as spawned:
+            with self.assertRaises(Refused):
+                launch_running_fake(
+                    self.atomic, self.claimant, self.sealed,
+                    current_binding={**self.binding, "room": "wrongRoom"},
+                    s1=self.s1, root=self.sandbox,
+                )
             spawned.assert_not_called()
 
     def test_real_running_fake_child_cancel_signal_reap(self):
