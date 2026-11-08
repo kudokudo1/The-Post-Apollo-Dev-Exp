@@ -159,7 +159,7 @@ def observed_fake_worker(db, command, *, timeout=WORKER_TIMEOUT):
     A child's framed line is not an independently authenticated B33 event.
     The worker runs in its own process group, terminated as a group on errors.
     """
-    if type(db) is not Path or not db.is_file() or db.is_symlink():
+    if not isinstance(db, Path) or not db.is_file() or db.is_symlink():
         deny("DISPOSABLE_DB_INVALID")
     if command not in ("LAUNCH", "CANCEL", "CRASH", "INVALID"):
         deny("COMMAND_NOT_FAKE")
