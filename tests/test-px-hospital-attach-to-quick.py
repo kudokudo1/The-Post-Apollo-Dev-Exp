@@ -146,9 +146,29 @@ with tempfile.TemporaryDirectory(prefix="hospital-attach-e2e-") as name:
     assert final["activePid"] == 0 and not final["operating"]
     assert final["session"]["providerSessionId"] == "mock-provider-session"
 
+    # Inject a local mock Provider resume-ID mismatch. PX must report FAILED,
+    # retain the original Provider Session identity and publish a failure
+    # event without claiming a successful assistant response.
+    refused = invoke(
+        env, "agent", "turn", "session-fixture",
+        "--prompt", "FORCE_SESSION_MISMATCH", "--timeout", "20",
+        "--json", ok=False)
+    assert "provider resumed with a different session id" in refused, refused
+    failed = invoke(env, "agent", "status", "session-fixture", "--json")
+    assert failed["status"] == "FAILED", failed
+    assert failed["activePid"] == 0 and not failed["operating"]
+    assert "different session id" in failed["session"]["lastError"]
+    assert failed["session"]["providerSessionId"] == "mock-provider-session"
+    failure_events = invoke(env, "hospital", "events", "session-fixture",
+                            "--limit", "200", "--json")
+    assert any(e["type"] == "turn.failed" for e in failure_events)
+    assert not any(m["body"].startswith("MOCK: FORCE_SESSION_MISMATCH")
+                   for m in invoke(env, "hospital", "messages", "room-e2e",
+                                   "--json"))
+
     # Paused, review-held, failed or otherwise unknown Sessions must refuse
     # a new provider turn even if there is no recorded PID.
-    before = len(messages)
+    before = len(invoke(env, "hospital", "messages", "room-e2e", "--json"))
     for state in ("PAUSED", "REVIEW", "FAILED", "THINKING"):
         invoke(env, "hospital", "session-runtime", "session-fixture",
                "--status", state, "--clear-active-pid", "--json")
