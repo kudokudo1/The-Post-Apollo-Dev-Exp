@@ -176,7 +176,9 @@ with tempfile.TemporaryDirectory(prefix="px-succession-atomic-") as temp:
     again = call(env, *success_args)
     assert again["mode"] == "REUSED" and not again["created"]
     assert len(call(env, "hospital", "events", "session-new", "--json")) == 1
-    assert "Room Session already occupies work" in call(
+    # After succession the old staffing guard fails closed before the
+    # competing-open-Session guard: either way no third Session is created.
+    assert "old Room staffing changed" in call(
         env, *args("room-main", old, "different-new", aid, bed), accept=False)
     assert "not exact idle replay" in call(
         env, *args("room-main", old, "session-new", aid, bed,
