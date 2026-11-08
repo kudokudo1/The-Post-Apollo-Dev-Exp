@@ -187,15 +187,18 @@ with tempfile.TemporaryDirectory(prefix="px-succession-atomic-") as temp:
     # A second terminal Room can have only one winner from two simultaneous
     # operator attempts. The losing request must preserve the original state.
     bed2, aid2, old2 = setup(env, base, "room-race")
+    call(env, "hospital", "doctor-put", "doc-race", "--name", "Race successor",
+         "--status", "ACTIVE", "--json")
     call(env, "hospital", "session-runtime", old2, "--status", "FAILED",
          "--ended", "--json")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(raw, env, *args("room-race", old2,
-                            "race-" + str(n), aid2, bed2)) for n in (1,2)]
+                            "race-" + str(n), aid2, bed2,
+                            doctor="doc-race")) for n in (1,2)]
         race = [f.result() for f in futures]
     assert sum(proc.returncode == 0 for proc in race) == 1, race
     assert sum(proc.returncode != 0 for proc in race) == 1, race
     assert len(call(env,"hospital","sessions","--room-id","room-race","--json")) == 2
-    assert call(env,"hospital","room","room-race","--json")["doctorId"] == "doc-new"
+    assert call(env,"hospital","room","room-race","--json")["doctorId"] == "doc-race"
 
 print("HOSPITAL DOCTOR SUCCESSION // PASS // exact ownership, released prior Session, atomic rollback, replay, collision, preserved Assignment and successor context")
