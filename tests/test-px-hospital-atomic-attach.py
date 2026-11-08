@@ -63,6 +63,17 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
                      "dialect": "hermes-stream-json", "startArgs": []},
         }
     }), encoding="utf-8")
+    # This exact read-only help contract is what the Hospital UI checks
+    # before it ever enables REVIEW or CONFIRM.
+    help_result = subprocess.run(
+        [str(PX), "agent", "session-attach", "--help"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    for flag in ("px agent session-attach", "--assignment-id", "--doctor-id",
+                 "--provider-id", "--working-directory", "--mode", "--confirm"):
+        assert flag in help_result.stdout, flag
+
     bed = base / "main-bed"
     make_bed(bed)
     command(env, "hospital", "init", "--json")
