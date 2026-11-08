@@ -1790,6 +1790,17 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError(
             "Hospital Doctor is already operating in this persistent session"
         )
+    # PX writes WAITING after a successful Provider response, which is
+    # eligible for the next *explicit* operator turn. Deliberate PAUSED,
+    # REVIEW, terminal and unknown states must never relaunch a Provider.
+    if session_status not in ("IDLE", "WAITING"):
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // " + (session_status or "UNSET")
+        )
+    if str(session.get("lastError") or "").strip():
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // unresolved recorded failure"
+        )
 
     provider_id = str(session.get("providerId") or "").strip()
     if not provider_id:
