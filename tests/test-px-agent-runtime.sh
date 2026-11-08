@@ -523,6 +523,18 @@ esac
 wait "$t6_turn_pid"
 
 quick_pause_json="$("$ROOT/bin/px" agent quick session-t6-agent PAUSE --json)"
+# A paused Session is now a real hold. A new Quick turn must be refused
+# until an explicit supervisory reset of the disposable PX record.
+set +e
+paused_continue_output="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json 2>&1)"
+paused_continue_status=$?
+set -e
+if [[ "$paused_continue_status" -eq 0 || "$paused_continue_output" != *"SESSION NOT DISPATCHABLE // PAUSED"* ]]; then
+    printf 'unexpected PAUSED Session continuation: %s\n' "$paused_continue_output" >&2
+    exit 1
+fi
+"$ROOT/bin/px" hospital session-runtime session-t6-agent \
+    --status IDLE --clear-active-pid --clear-error --json >/dev/null
 quick_continue_json="$("$ROOT/bin/px" agent quick session-t6-agent CONTINUE --timeout 30 --json)"
 quick_checkpoints_json="$("$ROOT/bin/px" hospital checkpoints T6 --limit 50 --json)"
 quick_room_reports_json="$("$ROOT/bin/px" hospital room-reports T6 --limit 50 --json)"
