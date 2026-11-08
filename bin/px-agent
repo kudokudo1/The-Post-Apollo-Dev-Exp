@@ -1801,6 +1801,10 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError(
             "HOSPITAL SESSION NOT DISPATCHABLE // unresolved recorded failure"
         )
+    if session_status == "WAITING" and str(session.get("lastExitCode")) != "0":
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // WAITING outcome unverified"
+        )
 
     provider_id = str(session.get("providerId") or "").strip()
     if not provider_id:
