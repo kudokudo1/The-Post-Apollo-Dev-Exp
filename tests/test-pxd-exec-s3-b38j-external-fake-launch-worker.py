@@ -181,7 +181,7 @@ def observed_fake_worker(db, command, *, timeout=WORKER_TIMEOUT):
         )
         payload = (command + "\n").encode("ascii")
         output = G._bounded_communicate(
-            proc, payload, max_stdout=MAX_OUTPUT, timeout=timeout,
+            proc, payload, max_stdout=min(MAX_OUTPUT, G.MAX_REPLY + 1), timeout=timeout,
         )
         exit_code = proc.returncode
         lines = output.splitlines()
