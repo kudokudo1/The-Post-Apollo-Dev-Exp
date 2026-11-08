@@ -488,6 +488,57 @@ def attach_session_atomic(args) -> dict:
     )
 
 
+
+def succeed_session_atomic(args) -> dict:
+    """Require explicit local operator action and real provider/Bed preflight.
+
+    PX Store atomically changes Room staffing and inserts an IDLE successor.
+    This is not remote caller authentication or a Provider launch.
+    """
+    if not args.confirm:
+        raise RuntimeError(
+            "HOSPITAL SUCCESSION REFUSED // explicit operator confirmation required"
+        )
+    if args.previous_doctor_id == args.successor_doctor_id:
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // distinct Doctor required")
+    record = provider_record(args.successor_provider_id)
+    if (args.successor_provider_id == "int1-fake"
+            or record.get("executionProfile") == "EXEC_S3_FAKE_ONLY"):
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // fake-only Provider")
+    resolve_command(str(record.get("command") or ""))
+    bed = Path(args.working_directory).expanduser().resolve(strict=True)
+    if not bed.is_dir() or not Path(args.working_directory).expanduser().is_absolute():
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // absolute existing Bed required")
+    branch_result = subprocess.run(
+        ["git", "-C", str(bed), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    if branch_result.returncode != 0 or branch_result.stdout.strip() != args.branch:
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // Git Bed branch mismatch")
+    origin_result = subprocess.run(
+        ["git", "-C", str(bed), "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=False,
+    )
+    slug = github_remote_slug(origin_result.stdout.strip()) if origin_result.returncode == 0 else ""
+    if not slug or slug != str(args.repository).strip().lower():
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // Git Bed Patient origin mismatch")
+
+    return px_hospital(
+        "session-succeed-atomic",
+        "--room-id", args.room_id,
+        "--previous-session-id", args.previous_session_id,
+        "--new-session-id", args.new_session_id,
+        "--previous-doctor-id", args.previous_doctor_id,
+        "--previous-provider-id", args.previous_provider_id,
+        "--successor-doctor-id", args.successor_doctor_id,
+        "--successor-provider-id", args.successor_provider_id,
+        "--assignment-id", args.assignment_id,
+        "--repository", args.repository,
+        "--branch", args.branch,
+        "--bed-path", str(Path(args.working_directory).expanduser()),
+        "--confirm",
+    )
+
 def create_session(args) -> dict:
     record = provider_record(args.provider_id)
     if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
@@ -3064,6 +3115,21 @@ def build_parser():
     attach.add_argument("--confirm", action="store_true")
     attach.add_argument("--json", action="store_true")
 
+    succeed = sub.add_parser("session-succeed")
+    succeed.add_argument("--room-id", required=True)
+    succeed.add_argument("--previous-session-id", required=True)
+    succeed.add_argument("--new-session-id", required=True)
+    succeed.add_argument("--previous-doctor-id", required=True)
+    succeed.add_argument("--previous-provider-id", required=True)
+    succeed.add_argument("--successor-doctor-id", required=True)
+    succeed.add_argument("--successor-provider-id", required=True)
+    succeed.add_argument("--assignment-id", required=True)
+    succeed.add_argument("--repository", required=True)
+    succeed.add_argument("--branch", required=True)
+    succeed.add_argument("--working-directory", required=True)
+    succeed.add_argument("--confirm", action="store_true")
+    succeed.add_argument("--json", action="store_true")
+
     create = sub.add_parser("session-create")
     create.add_argument("--room-id", required=True)
     create.add_argument("--doctor-id", required=True)
@@ -3151,6 +3217,8 @@ def main() -> int:
             emit(providers_payload(), args.json)
         elif args.command == "session-attach":
             emit(attach_session_atomic(args), args.json)
+        elif args.command == "session-succeed":
+            emit(succeed_session_atomic(args), args.json)
         elif args.command == "session-create":
             emit(create_session(args), args.json)
         elif args.command == "turn":
