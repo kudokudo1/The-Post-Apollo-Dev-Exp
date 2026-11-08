@@ -146,6 +146,16 @@ with tempfile.TemporaryDirectory(prefix="hospital-attach-e2e-") as name:
     assert final["activePid"] == 0 and not final["operating"]
     assert final["session"]["providerSessionId"] == "mock-provider-session"
 
+    # A WAITING row with a failed/unknown outcome is not a successful turn.
+    # The operator must reconcile the saved record, not blindly restart it.
+    invoke(env, "hospital", "session-runtime", "session-fixture",
+           "--last-exit-code", "9", "--json")
+    incomplete = invoke(env, "agent", "quick", "session-fixture", "CONTINUE",
+                        "--timeout", "20", "--json", ok=False)
+    assert "WAITING outcome unverified" in incomplete, incomplete
+    invoke(env, "hospital", "session-runtime", "session-fixture",
+           "--last-exit-code", "0", "--json")
+
     # Inject a local mock Provider resume-ID mismatch. PX must report FAILED,
     # retain the original Provider Session identity and publish a failure
     # event without claiming a successful assistant response.
