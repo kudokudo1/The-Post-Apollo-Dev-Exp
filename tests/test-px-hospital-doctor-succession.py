@@ -201,4 +201,65 @@ with tempfile.TemporaryDirectory(prefix="px-succession-atomic-") as temp:
     assert len(call(env,"hospital","sessions","--room-id","room-race","--json")) == 2
     assert call(env,"hospital","room","room-race","--json")["doctorId"] == "doc-race"
 
+    # A Doctor already owning another open Room cannot be admitted twice.
+    bed_busy, aid_busy, old_busy = setup(env, base, "room-busy-doctor")
+    call(env, "hospital", "session-runtime", old_busy, "--status", "FAILED",
+         "--ended", "--json")
+    blocked_doctor = call(env, *args("room-busy-doctor", old_busy,
+        "busy-successor", aid_busy, bed_busy, doctor="doc-new"), accept=False)
+    assert "successor Doctor busy in another Room" in blocked_doctor, blocked_doctor
+
+    call(env, "hospital", "doctor-put", "doc-free", "--name", "Available successor",
+         "--status", "ACTIVE", "--json")
+    bed_missing, aid_missing, old_missing = setup(
+        env, base, "room-missing-evidence", with_handoff=False)
+    call(env, "hospital", "session-runtime", old_missing, "--status", "FAILED",
+         "--ended", "--json")
+    with sqlite3.connect(database) as conn:
+        conn.execute("DELETE FROM room_checkpoints WHERE room_id = ?",
+                     ("room-missing-evidence",))
+        conn.commit()
+    missing = call(env, *args("room-missing-evidence", old_missing,
+        "missing-successor", aid_missing, bed_missing,
+        doctor="doc-free"), accept=False)
+    assert "no durable HANDOFF or checkpoint" in missing, missing
+
+    # Rebinding a Room to another Bed after its predecessor worked elsewhere
+    # does not silently carry over that predecessor's history.
+    original_bed, aid_shared, old_shared = setup(env, base, "room-shared-bed")
+    call(env, "hospital", "session-runtime", old_shared, "--status", "FAILED",
+         "--ended", "--json")
+    call(env, "hospital", "room-bind", "room-shared-bed",
+         "--repository", "org/project", "--patient-id", "patient-fixture",
+         "--doctor-id", "doc-old", "--provider-id", "mock-old",
+         "--team", "backend", "--branch", "feature/succession",
+         "--bed-path", bed, "--json")
+    shared_args = args("room-shared-bed", old_shared, "shared-successor",
+                       aid_shared, bed, doctor="doc-free")
+    assert "previous Session Bed differs" in call(
+        env, *shared_args, accept=False)
+    call(env, "hospital", "session-runtime", old_shared,
+         "--working-directory", bed, "--json")
+    assert "Bed occupied by another Room" in call(
+        env, *shared_args, accept=False)
+
+    # A later terminated historical Session supersedes an older source ID.
+    bed_stale, aid_stale, old_stale = setup(env, base, "room-stale")
+    call(env, "hospital", "session-runtime", old_stale, "--status", "FAILED",
+         "--ended", "--json")
+    call(env, "hospital", "session-put", "later-terminated",
+         "--room-id", "room-stale", "--doctor-id", "doc-old",
+         "--provider-id", "mock-old", "--status", "FAILED", "--json")
+    call(env, "hospital", "session-runtime", "later-terminated",
+         "--working-directory", bed_stale, "--ended", "--json")
+    assert "stale previous Session" in call(env,
+         *args("room-stale", old_stale, "stale-successor", aid_stale,
+               bed_stale, doctor="doc-free"), accept=False)
+
+    # Every rejected attempt must leave the previous Room staffing unchanged.
+    for unchanged in ("room-busy-doctor", "room-missing-evidence",
+                      "room-shared-bed", "room-stale"):
+        room_record = call(env, "hospital", "room", unchanged, "--json")
+        assert room_record["doctorId"] == "doc-old", unchanged
+
 print("HOSPITAL DOCTOR SUCCESSION // PASS // exact ownership, released prior Session, atomic rollback, replay, collision, preserved Assignment and successor context")
