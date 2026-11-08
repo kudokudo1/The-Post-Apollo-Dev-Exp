@@ -1088,6 +1088,14 @@ def session_succeed_atomic(conn: sqlite3.Connection, args) -> dict:
                 raise RuntimeError(
                     "HOSPITAL SUCCESSION REFUSED // new Session is not exact idle replay"
                 )
+            newest = conn.execute(
+                "SELECT session_id FROM sessions WHERE room_id = ? "
+                "ORDER BY rowid DESC LIMIT 1", (room_id,)
+            ).fetchone()
+            if newest is None or str(newest["session_id"] or "") != next_session_id:
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // successor replay is no longer latest"
+                )
             repeat = True
         else:
             if (str(room["doctor_id"] or "") != old_doctor
@@ -1131,7 +1139,7 @@ def session_succeed_atomic(conn: sqlite3.Connection, args) -> dict:
 
         handoff = conn.execute("""
             SELECT report_id FROM room_reports
-            WHERE room_id = ? AND report_kind = 'HANDOFF'
+            WHERE room_id = ? AND UPPER(TRIM(report_kind)) = 'HANDOFF'
             ORDER BY report_id DESC LIMIT 1
         """, (room_id,)).fetchone()
         checkpoint = conn.execute("""
