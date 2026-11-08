@@ -987,6 +987,223 @@ def session_attach_atomic(conn: sqlite3.Connection, args) -> dict:
             conn.rollback()
         raise
 
+
+def session_succeed_atomic(conn: sqlite3.Connection, args) -> dict:
+    """Move registered Doctor staffing and admit a NEW idle Session atomically.
+
+    A terminated prior Session is historical evidence, not a heartbeat.
+    No Doctor/Provider process is launched and no permission is granted.
+    One local SQLite database provides the transaction boundary; another
+    machine or unsynchronized database is outside this guarantee.
+    """
+    if not args.confirm:
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // explicit confirmation required")
+    room_id = str(args.room_id or "").strip()
+    old_session_id = str(args.previous_session_id or "").strip()
+    next_session_id = str(args.new_session_id or "").strip()
+    old_doctor = str(args.previous_doctor_id or "").strip()
+    old_provider = str(args.previous_provider_id or "").strip()
+    next_doctor = str(args.successor_doctor_id or "").strip()
+    next_provider = str(args.successor_provider_id or "").strip()
+    assignment_id = str(args.assignment_id or "").strip()
+    repository = str(args.repository or "").strip()
+    branch = str(args.branch or "").strip()
+    bed_text = str(args.bed_path or "").strip()
+    if not all((room_id, old_session_id, next_session_id,
+                old_doctor, old_provider, next_doctor, next_provider,
+                assignment_id, repository, branch, bed_text)):
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // missing pinned identity")
+    if old_doctor == next_doctor or old_session_id == next_session_id:
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // successor must be distinct")
+    if not assignment_id.isdecimal():
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // invalid Assignment ID")
+    if next_provider == "int1-fake":
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // fake-only Provider")
+    if any(c in name for name in (room_id, old_session_id, next_session_id,
+                                    old_doctor, next_doctor) for c in "\r\n\t"):
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // invalid identity")
+    bed = Path(bed_text).expanduser()
+    if not bed.is_absolute() or not bed.is_dir():
+        raise RuntimeError("HOSPITAL SUCCESSION REFUSED // absolute existing Bed required")
+    canonical_bed = bed.resolve(strict=True)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        room = conn.execute("""
+            SELECT r.*, p.repository AS repository
+            FROM rooms r LEFT JOIN patients p ON p.patient_id = r.patient_id
+            WHERE r.room_id = ?
+        """, (room_id,)).fetchone()
+        if room is None:
+            raise RuntimeError("HOSPITAL SUCCESSION REFUSED // Room not found")
+        if (not str(room["patient_id"] or "")
+                or str(room["repository"] or "") != repository
+                or str(room["branch"] or "") != branch
+                or str(room["bed_path"] or "") != bed_text):
+            raise RuntimeError("HOSPITAL SUCCESSION REFUSED // Room identity changed")
+
+        assignment = conn.execute("""
+            SELECT room_id, patient_id, status FROM assignments
+            WHERE assignment_id = ?
+        """, (int(assignment_id),)).fetchone()
+        if (assignment is None
+                or str(assignment["room_id"] or "") != room_id
+                or str(assignment["patient_id"] or "") != str(room["patient_id"] or "")
+                or str(assignment["status"] or "") != "ACTIVE"
+                or str(room["current_assignment_id"] or "") != assignment_id):
+            raise RuntimeError("HOSPITAL SUCCESSION REFUSED // linked ACTIVE Assignment changed")
+
+        successor = conn.execute(
+            "SELECT status FROM doctors WHERE doctor_id = ?", (next_doctor,)
+        ).fetchone()
+        if successor is None or str(successor["status"] or "") != "ACTIVE":
+            raise RuntimeError("HOSPITAL SUCCESSION REFUSED // successor Doctor not ACTIVE")
+
+        previous = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (old_session_id,)
+        ).fetchone()
+        if (previous is None or str(previous["room_id"] or "") != room_id
+                or str(previous["doctor_id"] or "") != old_doctor
+                or str(previous["provider_id"] or "") != old_provider):
+            raise RuntimeError("HOSPITAL SUCCESSION REFUSED // previous Session mismatch")
+        if str(previous["working_directory"] or "") != bed_text:
+            raise RuntimeError(
+                "HOSPITAL SUCCESSION REFUSED // previous Session Bed differs from Room"
+            )
+        if (str(previous["status"] or "") not in ("COMPLETE", "ENDED", "FAILED")
+                or previous["ended_at"] is None
+                or int(previous["active_pid"] or 0) != 0):
+            raise RuntimeError(
+                "HOSPITAL SUCCESSION REFUSED // previous Session not explicitly released"
+            )
+
+        existing_next = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (next_session_id,)
+        ).fetchone()
+        if existing_next is not None:
+            if (str(room["doctor_id"] or "") != next_doctor
+                    or str(room["provider_id"] or "") != next_provider
+                    or str(existing_next["room_id"] or "") != room_id
+                    or str(existing_next["doctor_id"] or "") != next_doctor
+                    or str(existing_next["provider_id"] or "") != next_provider
+                    or str(existing_next["working_directory"] or "") != bed_text
+                    or str(existing_next["status"] or "") != "IDLE"
+                    or existing_next["ended_at"] is not None
+                    or int(existing_next["active_pid"] or 0) != 0):
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // new Session is not exact idle replay"
+                )
+            newest = conn.execute(
+                "SELECT session_id FROM sessions WHERE room_id = ? "
+                "ORDER BY rowid DESC LIMIT 1", (room_id,)
+            ).fetchone()
+            if newest is None or str(newest["session_id"] or "") != next_session_id:
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // successor replay is no longer latest"
+                )
+            repeat = True
+        else:
+            if (str(room["doctor_id"] or "") != old_doctor
+                    or str(room["provider_id"] or "") != old_provider):
+                raise RuntimeError("HOSPITAL SUCCESSION REFUSED // old Room staffing changed")
+            newest = conn.execute(
+                "SELECT session_id FROM sessions WHERE room_id = ? "
+                "ORDER BY rowid DESC LIMIT 1", (room_id,)
+            ).fetchone()
+            if newest is None or str(newest["session_id"] or "") != old_session_id:
+                raise RuntimeError("HOSPITAL SUCCESSION REFUSED // stale previous Session")
+            repeat = False
+
+        # No competing registered Session in Room or same canonical Bed.
+        # Check even terminal rows whose recorded process PID remains nonzero.
+        all_sessions = conn.execute("""
+            SELECT s.*, r.bed_path AS occupied_bed
+            FROM sessions s JOIN rooms r ON r.room_id = s.room_id
+            WHERE (s.ended_at IS NULL
+                   AND s.status NOT IN ('COMPLETE', 'ENDED', 'FAILED'))
+                OR COALESCE(s.active_pid, 0) != 0
+        """).fetchall()
+        for session in all_sessions:
+            sid = str(session["session_id"] or "")
+            other_room = str(session["room_id"] or "")
+            if other_room == room_id:
+                if repeat and sid == next_session_id:
+                    continue
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // Room Session already occupies work"
+                )
+            if str(session["doctor_id"] or "") == next_doctor:
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // successor Doctor busy in another Room"
+                )
+            other_bed = str(session["occupied_bed"] or "")
+            if other_bed and Path(other_bed).expanduser().resolve() == canonical_bed:
+                raise RuntimeError(
+                    "HOSPITAL SUCCESSION REFUSED // Bed occupied by another Room"
+                )
+
+        handoff = conn.execute("""
+            SELECT report_id FROM room_reports
+            WHERE room_id = ? AND UPPER(TRIM(report_kind)) = 'HANDOFF'
+            ORDER BY report_id DESC LIMIT 1
+        """, (room_id,)).fetchone()
+        checkpoint = conn.execute("""
+            SELECT checkpoint_id FROM room_checkpoints
+            WHERE room_id = ? ORDER BY checkpoint_id DESC LIMIT 1
+        """, (room_id,)).fetchone()
+        if handoff is None and checkpoint is None:
+            raise RuntimeError(
+                "HOSPITAL SUCCESSION REFUSED // no durable HANDOFF or checkpoint"
+            )
+
+        if not repeat:
+            # The old Session remains byte-for-byte historical. The Room's
+            # identity and Assignment are never rewritten or recreated.
+            conn.execute("""
+                UPDATE rooms
+                SET doctor_id = ?, provider_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE room_id = ?
+            """, (next_doctor, next_provider, room_id))
+            conn.execute("""
+                INSERT INTO sessions(
+                    session_id, room_id, doctor_id, provider_id,
+                    status, working_directory
+                ) VALUES(?, ?, ?, ?, 'IDLE', ?)
+            """, (next_session_id, room_id, next_doctor, next_provider, bed_text))
+            conn.execute("""
+                INSERT INTO session_events(session_id, event_type, payload_json)
+                VALUES(?, 'room.succession.admitted', ?)
+            """, (next_session_id, json.dumps({
+                "roomId": room_id,
+                "previousSessionId": old_session_id,
+                "previousDoctorId": old_doctor,
+                "successorDoctorId": next_doctor,
+                "assignmentId": assignment_id,
+                "handoffId": handoff["report_id"] if handoff is not None else None,
+                "checkpointId": checkpoint["checkpoint_id"] if checkpoint is not None else None,
+            }, sort_keys=True)))
+
+        result = {
+            "roomId": room_id, "previousSessionId": old_session_id,
+            "previousDoctorId": old_doctor, "previousProviderId": old_provider,
+            "sessionId": next_session_id, "doctorId": next_doctor,
+            "providerId": next_provider, "assignmentId": assignment_id,
+            "mode": "REUSED" if repeat else "CREATED",
+            "created": not repeat,
+            "handoffId": handoff["report_id"] if handoff is not None else None,
+            "checkpointId": checkpoint["checkpoint_id"] if checkpoint is not None else None,
+            "room": room_record(conn, room_id),
+            "session": session_record(conn, next_session_id),
+            "providerLaunched": False, "browserChatConnected": False,
+            "authorityVerified": False, "contextDelivered": False,
+            "atomicWithinOneDatabase": True,
+        }
+        conn.commit()
+        return result
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
 def session_put(conn: sqlite3.Connection, args) -> dict:
     ensure_doctor(conn, args.doctor_id)
 
@@ -3005,6 +3222,21 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--confirm", action="store_true")
     attach.add_argument("--json", action="store_true")
 
+    succeed = sub.add_parser("session-succeed-atomic")
+    succeed.add_argument("--room-id", required=True)
+    succeed.add_argument("--previous-session-id", required=True)
+    succeed.add_argument("--new-session-id", required=True)
+    succeed.add_argument("--previous-doctor-id", required=True)
+    succeed.add_argument("--previous-provider-id", required=True)
+    succeed.add_argument("--successor-doctor-id", required=True)
+    succeed.add_argument("--successor-provider-id", required=True)
+    succeed.add_argument("--assignment-id", required=True)
+    succeed.add_argument("--repository", required=True)
+    succeed.add_argument("--branch", required=True)
+    succeed.add_argument("--bed-path", required=True)
+    succeed.add_argument("--confirm", action="store_true")
+    succeed.add_argument("--json", action="store_true")
+
     session = sub.add_parser("session-put")
     session.add_argument("session_id")
     session.add_argument("--room-id", required=True)
@@ -3384,6 +3616,8 @@ def main() -> int:
                 emit_data(rooms_list(conn), args.json)
             elif args.command == "session-attach-atomic":
                 emit_data(session_attach_atomic(conn, args), args.json)
+            elif args.command == "session-succeed-atomic":
+                emit_data(session_succeed_atomic(conn, args), args.json)
             elif args.command == "session-put":
                 emit_data(session_put(conn, args), args.json)
             elif args.command == "sessions":

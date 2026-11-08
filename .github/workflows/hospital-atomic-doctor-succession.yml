@@ -1,0 +1,35 @@
+name: Hospital Atomic Doctor Succession
+
+on:
+  pull_request:
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/px-agent"
+      - "tests/test-px-hospital-doctor-succession.py"
+      - ".github/workflows/hospital-atomic-doctor-succession.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/px-agent"
+      - "tests/test-px-hospital-doctor-succession.py"
+      - ".github/workflows/hospital-atomic-doctor-succession.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  disposable-succession:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify successor CLI syntax
+        run: python3 -m py_compile bin/px-agent bin/px-hospital-store
+      - name: Replaced Doctor, old Room and new context
+        run: python3 tests/test-px-hospital-doctor-succession.py
+      - name: Preserve parent atomic attachment
+        run: python3 tests/test-px-hospital-atomic-attach.py
+      - name: Preserve PX Hospital data and runtime checks
+        run: bash tests/test-px-hospital-store.sh
