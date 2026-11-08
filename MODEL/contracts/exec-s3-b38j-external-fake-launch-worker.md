@@ -63,6 +63,9 @@ Tests cover a real separate worker process and the following:
 - A non-claimed attempt refuses fake child launch.
 - A valid one-use B38-I claim reaches the B38-G fake child inside
   S1 Bubblewrap and returns only bounded synthetic fixed data.
+- A **real worker process** writes READY and stays alive; the harness
+  commits B29 cancellation on a separate connection **before sending**
+  LAUNCH, then checks the host-observed refusal/exit and held budget.
 - Cancel/revoke committed **before the worker's command dispatch**
   refuses launching the fake child.
 - A worker CANCEL produces a host-observed process exit and a
