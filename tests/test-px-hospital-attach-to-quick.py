@@ -149,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix="hospital-attach-e2e-") as name:
     # Paused, review-held, failed or otherwise unknown Sessions must refuse
     # a new provider turn even if there is no recorded PID.
     before = len(messages)
-    for state in ("PAUSED", "REVIEW", "FAILED", "UNKNOWN"):
+    for state in ("PAUSED", "REVIEW", "FAILED", "THINKING"):
         invoke(env, "hospital", "session-runtime", "session-fixture",
                "--status", state, "--clear-active-pid", "--json")
         error = invoke(env, "agent", "quick", "session-fixture", "CONTINUE",
