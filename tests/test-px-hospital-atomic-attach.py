@@ -85,6 +85,28 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     room = command(env, "hospital", "room", "room-main", "--json")
     assert room["doctorId"] == "doc-1" and room["providerId"] == "mock"
 
+    # The existing STATUS path must read the new exact Session without
+    # starting a Provider turn or appending messages/events.
+    initial_events = command(
+        env, "hospital", "events", "session-one", "--json")
+    initial_messages = command(
+        env, "hospital", "messages", "room-main", "--json")
+    assert initial_events == []
+    assert initial_messages == []
+    px_status = command(env, "agent", "status", "session-one", "--json")
+    assert px_status["status"] == "IDLE"
+    assert px_status["session"]["id"] == "session-one"
+    assert px_status["session"]["roomId"] == "room-main"
+    assert px_status["session"]["providerId"] == "mock"
+    assert px_status["activePid"] == 0 and not px_status["operating"]
+    quick_status = command(
+        env, "agent", "quick", "session-one", "STATUS", "--json")
+    assert quick_status["command"] == "STATUS"
+    assert quick_status["status"]["session"]["id"] == "session-one"
+    assert quick_status["status"]["status"] == "IDLE"
+    assert command(env, "hospital", "events", "session-one", "--json") == []
+    assert command(env, "hospital", "messages", "room-main", "--json") == []
+
     # Repeated operator click/retry does not reset timestamps or overwrite.
     again = command(env, *args("room-main", aid, bed, "session-one"))
     assert again["mode"] == "REUSED" and not again["created"]
