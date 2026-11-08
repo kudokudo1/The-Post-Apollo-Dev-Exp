@@ -303,6 +303,66 @@ class FakeLaunchWorkerTests(unittest.TestCase):
         self.assertEqual(self.state(), "CANCEL_PENDING")
         self.assertEqual(self.atomic.ledger.budget("b38jScope")["reserved_units"], 25)
 
+    def test_cancel_after_worker_ready_before_launch_command(self):
+        """Interleave a real worker READY with a durable B29 cancellation."""
+        import select
+        self.mark_claim()
+        nonce = secrets.token_hex(16)
+        env = {
+            "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "B38J_FAKE_WORKER_ONLY": "1",
+        }
+        proc = subprocess.Popen(
+            [sys.executable, "-B", str(Path(__file__).resolve()),
+             "--worker", "--db", str(self.db.resolve(strict=True)),
+             "--nonce", nonce],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True,
+            start_new_session=True, env=env,
+        )
+        try:
+            ready, _, _ = select.select([proc.stdout], [], [], 8)
+            self.assertTrue(ready, "Worker did not become READY")
+            ready_bytes = proc.stdout.readline(1025)
+            self.assertLessEqual(len(ready_bytes), 1024)
+            first = json.loads(ready_bytes)
+            self.assertEqual(first["schema"], PROTOCOL)
+            self.assertEqual(first["stage"], READY)
+            self.assertEqual(first["nonce"], nonce)
+            self.assertEqual(first["workerPid"], proc.pid)
+            self.assertIsNone(proc.poll(), "Worker exited before cancellation")
+
+            # Cancellation is committed while the worker is alive but has
+            # NOT received the fixed LAUNCH command.
+            self.atomic.cancel_mock(self.sealed.attempt_id)
+            self.assertEqual(self.state(), "CANCEL_PENDING")
+            output = G._bounded_communicate(
+                proc, b"LAUNCH\n",
+                max_stdout=min(MAX_OUTPUT, G.MAX_REPLY + 1),
+                timeout=WORKER_TIMEOUT,
+            )
+            frames = output.splitlines()
+            self.assertEqual(len(frames), 1)
+            last = json.loads(frames[0])
+            self.assertEqual(last["schema"], PROTOCOL)
+            self.assertEqual(last["nonce"], nonce)
+            self.assertEqual(last["workerPid"], proc.pid)
+            self.assertEqual(last["stage"], REFUSED)
+            self.assertEqual(last["reason"], "CLAIM_OR_STATE_INVALID")
+            self.assertEqual(proc.returncode, 3)
+            self.assertEqual(self.state(), "CANCEL_PENDING")
+            self.assertEqual(
+                self.atomic.ledger.budget("b38jScope")["reserved_units"], 25,
+            )
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            proc.wait(timeout=5)
+
     def test_revoke_before_worker_command_refuses_fake_child(self):
         self.mark_claim()
         self.atomic.revoke_if_changed(
