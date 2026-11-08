@@ -41,6 +41,8 @@ def make_bed(path):
     subprocess.run(["git", "init", "-q", str(path)], check=True)
     subprocess.run(["git", "-C", str(path), "checkout", "-qb", "feature/map"],
                    check=True)
+    subprocess.run(["git", "-C", str(path), "remote", "add", "origin",
+                    "https://github.com/org/project.git"], check=True)
 
 
 def args(room, assignment, bed, session, doctor="doc-1", provider="mock", mode="create"):
@@ -93,6 +95,14 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-atomic-") as tmp:
     assert not result["browserChatConnected"]
     assert result["session"]["workingDirectory"] == str(bed)
     assert result["session"]["status"] == "IDLE"
+    # Same Git branch under another origin must be refused.
+    subprocess.run(["git", "-C", str(bed), "remote", "set-url", "origin",
+                    "https://github.com/other/repo.git"], check=True)
+    wrong_origin = command(
+        env, *args("room-main", aid, bed, "session-one"), ok=False)
+    assert "origin does not match Patient" in wrong_origin, wrong_origin
+    subprocess.run(["git", "-C", str(bed), "remote", "set-url", "origin",
+                    "git@github.com:org/project.git"], check=True)
     room = command(env, "hospital", "room", "room-main", "--json")
     assert room["doctorId"] == "doc-1" and room["providerId"] == "mock"
 
