@@ -417,6 +417,29 @@ def providers_payload() -> list[dict]:
     return rows
 
 
+def github_remote_slug(remote_url: str) -> str:
+    """Conservatively normalize an origin on github.com; never fetch a remote."""
+    url = str(remote_url or "").strip()
+    prefixes = (
+        "https://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+    )
+    body = ""
+    for prefix in prefixes:
+        if url.startswith(prefix):
+            body = url[len(prefix):]
+            break
+    if body.endswith(".git"):
+        body = body[:-4]
+    body = body.strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", body):
+        return ""
+    if ".." in body or body.startswith("-"):
+        return ""
+    return body.lower()
+
+
 def attach_session_atomic(args) -> dict:
     """Validate the provider and live Git Bed before atomic PX DB admission.
 
@@ -438,6 +461,16 @@ def attach_session_atomic(args) -> dict:
     )
     if result.returncode != 0 or result.stdout.strip() != args.branch:
         raise RuntimeError("HOSPITAL ATTACH REFUSED // live Git Bed branch does not match")
+    remote = subprocess.run(
+        ["git", "-C", str(bed), "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=False,
+    )
+    actual_slug = github_remote_slug(remote.stdout.strip()) if remote.returncode == 0 else ""
+    expected_slug = str(args.repository or "").strip().lower()
+    if not actual_slug or actual_slug != expected_slug:
+        raise RuntimeError(
+            "HOSPITAL ATTACH REFUSED // live Git Bed origin does not match Patient repository"
+        )
     # PX Store owns the SQLite BEGIN IMMEDIATE reservation. No split
     # session-put/session-runtime sequence or direct provider invocation.
     return px_hospital(
