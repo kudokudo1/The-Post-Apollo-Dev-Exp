@@ -1065,6 +1065,10 @@ def session_succeed_atomic(conn: sqlite3.Connection, args) -> dict:
                 or str(previous["doctor_id"] or "") != old_doctor
                 or str(previous["provider_id"] or "") != old_provider):
             raise RuntimeError("HOSPITAL SUCCESSION REFUSED // previous Session mismatch")
+        if str(previous["working_directory"] or "") != bed_text:
+            raise RuntimeError(
+                "HOSPITAL SUCCESSION REFUSED // previous Session Bed differs from Room"
+            )
         if (str(previous["status"] or "") not in ("COMPLETE", "ENDED", "FAILED")
                 or previous["ended_at"] is None
                 or int(previous["active_pid"] or 0) != 0):
