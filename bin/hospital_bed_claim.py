@@ -131,7 +131,7 @@ def claim_first_bed(conn, args, record_fn):
                 "SELECT room_id, bed_path FROM rooms WHERE room_id != ?"
                 " AND bed_path != ''", (room_id,)).fetchall():
             previous = str(other["bed_path"] or "").strip()
-            if previous and Path(previous).expanduser().resolve() == evidence["path"]:
+            if previous and str(Path(previous).expanduser().resolve()) == evidence["path"]:
                 raise RuntimeError("HOSPITAL BED HOLD // Bed claimed by another Room")
         assigned_id = str(row["current_assignment_id"] or "").strip()
         if assigned_id:
