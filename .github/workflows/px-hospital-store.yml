@@ -6,6 +6,8 @@ on:
     paths:
       - bin/px
       - bin/px-hospital-store
+      - bin/hospital_bed_claim.py
+      - tests/test-px-hospital-first-bed-claim.py
       - tests/test-px-hospital-store.sh
       - .github/workflows/px-hospital-store.yml
   push:
@@ -14,6 +16,8 @@ on:
     paths:
       - bin/px
       - bin/px-hospital-store
+      - bin/hospital_bed_claim.py
+      - tests/test-px-hospital-first-bed-claim.py
       - tests/test-px-hospital-store.sh
       - .github/workflows/px-hospital-store.yml
 
@@ -32,7 +36,9 @@ jobs:
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store
+          python3 -m py_compile bin/px-hospital-store bin/hospital_bed_claim.py tests/test-px-hospital-first-bed-claim.py
 
       - name: Test Hospital durable state store
         run: bash ./tests/test-px-hospital-store.sh
+      - name: Test synthetic-only first Git Bed claim
+        run: python3 tests/test-px-hospital-first-bed-claim.py
