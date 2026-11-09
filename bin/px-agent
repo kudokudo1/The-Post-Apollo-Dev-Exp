@@ -417,6 +417,77 @@ def providers_payload() -> list[dict]:
     return rows
 
 
+def github_remote_slug(remote_url: str) -> str:
+    """Conservatively normalize an origin on github.com; never fetch a remote."""
+    url = str(remote_url or "").strip()
+    prefixes = (
+        "https://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+    )
+    body = ""
+    for prefix in prefixes:
+        if url.startswith(prefix):
+            body = url[len(prefix):]
+            break
+    if body.endswith(".git"):
+        body = body[:-4]
+    body = body.strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", body):
+        return ""
+    if ".." in body or body.startswith("-"):
+        return ""
+    return body.lower()
+
+
+def attach_session_atomic(args) -> dict:
+    """Validate the provider and live Git Bed before atomic PX DB admission.
+
+    This only registers an IDLE Session; it never launches a model, grants
+    Assignment authority or attaches an existing browser ChatGPT tab.
+    """
+    if not args.confirm:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // operator confirmation required")
+    record = provider_record(args.provider_id)
+    if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // fake-only Provider")
+    resolve_command(str(record.get("command") or ""))
+    bed = Path(args.working_directory).expanduser().resolve(strict=True)
+    if not bed.is_dir():
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed is not a directory")
+    result = subprocess.run(
+        ["git", "-C", str(bed), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or result.stdout.strip() != args.branch:
+        raise RuntimeError("HOSPITAL ATTACH REFUSED // live Git Bed branch does not match")
+    remote = subprocess.run(
+        ["git", "-C", str(bed), "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=False,
+    )
+    actual_slug = github_remote_slug(remote.stdout.strip()) if remote.returncode == 0 else ""
+    expected_slug = str(args.repository or "").strip().lower()
+    if not actual_slug or actual_slug != expected_slug:
+        raise RuntimeError(
+            "HOSPITAL ATTACH REFUSED // live Git Bed origin does not match Patient repository"
+        )
+    # PX Store owns the SQLite BEGIN IMMEDIATE reservation. No split
+    # session-put/session-runtime sequence or direct provider invocation.
+    return px_hospital(
+        "session-attach-atomic",
+        "--room-id", args.room_id,
+        "--session-id", args.session_id,
+        "--assignment-id", args.assignment_id,
+        "--doctor-id", args.doctor_id,
+        "--provider-id", args.provider_id,
+        "--repository", args.repository,
+        "--branch", args.branch,
+        "--bed-path", str(Path(args.working_directory).expanduser()),
+        "--mode", args.mode,
+        "--confirm",
+    )
+
+
 def create_session(args) -> dict:
     record = provider_record(args.provider_id)
     if record.get("executionProfile") == "EXEC_S3_FAKE_ONLY" or args.provider_id == "int1-fake":
@@ -1719,6 +1790,21 @@ def _run_turn_unlocked(args) -> dict:
         raise RuntimeError(
             "Hospital Doctor is already operating in this persistent session"
         )
+    # PX writes WAITING after a successful Provider response, which is
+    # eligible for the next *explicit* operator turn. Deliberate PAUSED,
+    # REVIEW, terminal and unknown states must never relaunch a Provider.
+    if session_status not in ("IDLE", "WAITING"):
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // " + (session_status or "UNSET")
+        )
+    if str(session.get("lastError") or "").strip():
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // unresolved recorded failure"
+        )
+    if session_status == "WAITING" and str(session.get("lastExitCode")) != "0":
+        raise RuntimeError(
+            "HOSPITAL SESSION NOT DISPATCHABLE // WAITING outcome unverified"
+        )
 
     provider_id = str(session.get("providerId") or "").strip()
     if not provider_id:
@@ -2965,6 +3051,19 @@ def build_parser():
     providers = sub.add_parser("providers")
     providers.add_argument("--json", action="store_true")
 
+    attach = sub.add_parser("session-attach")
+    attach.add_argument("--room-id", required=True)
+    attach.add_argument("--session-id", required=True)
+    attach.add_argument("--assignment-id", required=True)
+    attach.add_argument("--doctor-id", required=True)
+    attach.add_argument("--provider-id", required=True)
+    attach.add_argument("--repository", required=True)
+    attach.add_argument("--branch", required=True)
+    attach.add_argument("--working-directory", required=True)
+    attach.add_argument("--mode", choices=("create", "reuse"), required=True)
+    attach.add_argument("--confirm", action="store_true")
+    attach.add_argument("--json", action="store_true")
+
     create = sub.add_parser("session-create")
     create.add_argument("--room-id", required=True)
     create.add_argument("--doctor-id", required=True)
@@ -3050,6 +3149,8 @@ def main() -> int:
     try:
         if args.command == "providers":
             emit(providers_payload(), args.json)
+        elif args.command == "session-attach":
+            emit(attach_session_atomic(args), args.json)
         elif args.command == "session-create":
             emit(create_session(args), args.json)
         elif args.command == "turn":
