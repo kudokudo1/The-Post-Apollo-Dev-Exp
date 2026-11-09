@@ -5,7 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from hospital_bed_claim import claim_first_bed
+from hospital_bed_claim import claim_first_bed, claim_first_bed_signed
 
 SCHEMA_VERSION = 10
 
@@ -2825,6 +2825,15 @@ def build_parser() -> argparse.ArgumentParser:
     first_bed.add_argument("--confirm", action="store_true")
     first_bed.add_argument("--json", action="store_true")
 
+    signed_bed = sub.add_parser("room-bed-claim-signed-atomic")
+    signed_bed.add_argument("--room-id", required=True)
+    signed_bed.add_argument("--repository", required=True)
+    signed_bed.add_argument("--branch", required=True)
+    signed_bed.add_argument("--bed-path", required=True)
+    signed_bed.add_argument("--signed-intent-file", required=True)
+    signed_bed.add_argument("--confirm", action="store_true")
+    signed_bed.add_argument("--json", action="store_true")
+
     room = sub.add_parser("room-put")
     room.add_argument("room_id")
     room.add_argument("--patient-id", default="")
@@ -3216,6 +3225,8 @@ def main() -> int:
                 emit_data(room_bind(conn, args), args.json)
             elif args.command == "room-bed-claim-atomic":
                 emit_data(claim_first_bed(conn, args, room_record), args.json)
+            elif args.command == "room-bed-claim-signed-atomic":
+                emit_data(claim_first_bed_signed(conn, args, room_record), args.json)
             elif args.command == "room-put":
                 emit_data(room_put(conn, args), args.json)
             elif args.command == "room":

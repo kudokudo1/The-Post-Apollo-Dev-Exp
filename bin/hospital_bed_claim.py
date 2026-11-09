@@ -97,7 +97,7 @@ def _fixture_gate():
         raise RuntimeError("HOSPITAL BED HOLD // disposable DB path required")
 
 
-def claim_first_bed(conn, args, record_fn):
+def claim_first_bed(conn, args, record_fn, *, signed_intent=None):
     if not args.confirm:
         raise RuntimeError("HOSPITAL BED HOLD // explicit confirmation missing")
     _fixture_gate()
@@ -146,6 +146,14 @@ def claim_first_bed(conn, args, record_fn):
         fresh = verify_bed(bed_text, repository, branch)
         if fresh != evidence:
             raise RuntimeError("HOSPITAL BED HOLD // Git evidence changed before commit")
+        if signed_intent is not None:
+            signed_intent.consume(
+                conn, row, fresh,
+                expected_room=room_id,
+                expected_repository=_repository(repository),
+                expected_branch=branch,
+                expected_bed=evidence["path"],
+            )
         written = conn.execute("""
             UPDATE rooms
             SET branch = ?, bed_path = ?, updated_at = CURRENT_TIMESTAMP
@@ -158,8 +166,17 @@ def claim_first_bed(conn, args, record_fn):
         conn.commit()
         return {"room": room, "git": fresh, "recorded": True,
                 "providerLaunched": False, "sessionCreated": False,
-                "operatorAuthenticated": False, "testOnly": True}
+                "operatorAuthenticated": False, "testOnly": True,
+                "signedIntentVerified": signed_intent is not None}
     except BaseException:
         if conn.in_transaction:
             conn.rollback()
         raise
+
+
+def claim_first_bed_signed(conn, args, record_fn):
+    """Strict signed-intent variant, never enabled on production stores."""
+    _fixture_gate()
+    from hospital_bed_signed_intent import verify_signed_intent
+    signed = verify_signed_intent(args.signed_intent_file)
+    return claim_first_bed(conn, args, record_fn, signed_intent=signed)
