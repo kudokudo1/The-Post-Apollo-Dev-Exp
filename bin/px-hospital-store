@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from hospital_bed_claim import claim_first_bed
 
 SCHEMA_VERSION = 10
 
@@ -2814,6 +2815,16 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--assignment-id", default=None)
     bind.add_argument("--json", action="store_true")
 
+    # Synthetic-only first Git Bed claim. No worker or Provider execution;
+    # the backend transaction refuses all production DB locations.
+    first_bed = sub.add_parser("room-bed-claim-atomic")
+    first_bed.add_argument("--room-id", required=True)
+    first_bed.add_argument("--repository", required=True)
+    first_bed.add_argument("--branch", required=True)
+    first_bed.add_argument("--bed-path", required=True)
+    first_bed.add_argument("--confirm", action="store_true")
+    first_bed.add_argument("--json", action="store_true")
+
     room = sub.add_parser("room-put")
     room.add_argument("room_id")
     room.add_argument("--patient-id", default="")
@@ -3203,6 +3214,8 @@ def main() -> int:
                 emit_data(patient_put(conn, args), args.json)
             elif args.command == "room-bind":
                 emit_data(room_bind(conn, args), args.json)
+            elif args.command == "room-bed-claim-atomic":
+                emit_data(claim_first_bed(conn, args, room_record), args.json)
             elif args.command == "room-put":
                 emit_data(room_put(conn, args), args.json)
             elif args.command == "room":
