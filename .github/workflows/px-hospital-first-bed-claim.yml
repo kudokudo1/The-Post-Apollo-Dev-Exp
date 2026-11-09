@@ -1,0 +1,35 @@
+name: PX / Hospital First Git Bed Claim (Synthetic)
+
+on:
+  pull_request:
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/hospital_bed_claim.py"
+      - "tests/test-px-hospital-first-bed-claim.py"
+      - ".github/workflows/px-hospital-first-bed-claim.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "bin/px-hospital-store"
+      - "bin/hospital_bed_claim.py"
+      - "tests/test-px-hospital-first-bed-claim.py"
+      - ".github/workflows/px-hospital-first-bed-claim.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-bed-claim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and CLI registration
+        run: |
+          python3 -m py_compile bin/hospital_bed_claim.py bin/px-hospital-store tests/test-px-hospital-first-bed-claim.py
+          python3 bin/px-hospital-store room-bed-claim-atomic --help
+      - name: Disposable Git fixture and atomic Room ownership tests
+        run: python3 tests/test-px-hospital-first-bed-claim.py
+      - name: Preserve existing Hospital store contracts
+        run: bash tests/test-px-hospital-store.sh
