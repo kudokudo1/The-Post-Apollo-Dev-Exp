@@ -1,0 +1,48 @@
+name: PX / Hospital Signed First Bed Intent (Synthetic)
+
+on:
+  pull_request:
+    paths:
+      - "bin/hospital_bed_signed_intent.py"
+      - "bin/hospital_bed_claim.py"
+      - "bin/px-hospital-store"
+      - "tests/test-px-hospital-signed-bed-intent.py"
+      - "tests/test-px-hospital-first-bed-claim.py"
+      - ".github/workflows/px-hospital-signed-bed-intent.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "bin/hospital_bed_signed_intent.py"
+      - "bin/hospital_bed_claim.py"
+      - "bin/px-hospital-store"
+      - "tests/test-px-hospital-signed-bed-intent.py"
+      - "tests/test-px-hospital-first-bed-claim.py"
+      - ".github/workflows/px-hospital-signed-bed-intent.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signed-first-bed-intent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install cryptography used by the existing Identity Center tests (CI only)
+        run: python3 -m pip install cryptography==46.0.4
+      - name: Compile new signed intent and original PX Bed claim
+        run: |
+          python3 -m py_compile bin/hospital_bed_signed_intent.py
+          python3 -m py_compile bin/hospital_bed_claim.py
+          python3 -m py_compile bin/px-hospital-store
+          python3 -m py_compile tests/test-px-hospital-signed-bed-intent.py
+      - name: Real Ed25519 signed Bed claim, replay and authority refusal
+        run: python3 tests/test-px-hospital-signed-bed-intent.py
+      - name: Preserve previous unsigned synthetic-only Bed claim contract
+        run: python3 tests/test-px-hospital-first-bed-claim.py
+      - name: Preserve original durable Hospital store
+        run: bash tests/test-px-hospital-store.sh
