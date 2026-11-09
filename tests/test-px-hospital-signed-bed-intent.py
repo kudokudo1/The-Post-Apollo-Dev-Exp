@@ -134,11 +134,7 @@ def main():
         def refused_body(change, needle):
             changed=copy.deepcopy(original)
             changed.update(change)
-            try:
-                file=signed_file(t, signer, changed, "refusal.json")
-            except Exception:
-                # Invalid body is intentionally not signable by the helper.
-                return
+            file=signed_file(t, signer, changed, "refusal.json")
             claim(env,"fixture-room-one",bed,file,
                   success=False,refused=needle)
             ensure_blank(env,"fixture-room-one")
@@ -173,12 +169,19 @@ def main():
         refused_body(dict(bedPath="/tmp/other"), "signed bedPath no longer matches")
         refused_body(dict(head="a"*40), "signed head no longer matches")
         refused_body(dict(roomUpdatedAt="2000-01-01"), "signed roomUpdatedAt no longer matches")
-        refused_body(dict(issuedAt=int(time.time())-200,expiresAt=int(time.time())-100),
+        refused_body(dict(issuedAt=int(time.time())-150,expiresAt=int(time.time())-90),
                      "receipt expired")
         refused_body(dict(issuedAt=int(time.time())+20,expiresAt=int(time.time())+60),
                      "receipt issued in the future")
-        refused_body(dict(issuedAt=int(time.time()),expiresAt=int(time.time())+180),
-                     "receipt lifetime must not exceed 90 seconds")
+        # An overlong lifetime is rejected even by the isolated test signer.
+        overlong=copy.deepcopy(original)
+        overlong.update(issuedAt=int(time.time()),expiresAt=int(time.time())+180)
+        try:
+            seal_fixture(signer,overlong)
+        except Exception as e:
+            assert "lifetime must not exceed 90" in str(e)
+        else:
+            raise AssertionError("Signer accepted a long-lived authority receipt")
         ensure_blank(env,"fixture-room-one")
 
         accepted=claim(env,"fixture-room-one",bed,valid)
