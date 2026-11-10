@@ -108,7 +108,7 @@ def main():
         runtime = t / "socket"
         runtime.mkdir(mode=0o700)
         gate = {"peer": False, "seat": True, "approve": False, "calls": 0,
-                "seen_peer": None, "target": None}
+                "seen_peer": None, "target": None, "revoke": ""}
 
         def trust(peer):
             gate["seen_peer"] = peer
@@ -123,6 +123,12 @@ def main():
             if not gate["approve"] or action != OPERATION:
                 return None
             gate["approve"] = False
+            if gate["revoke"] == "seat":
+                gate["seat"] = False
+            elif gate["revoke"] == "peer":
+                gate["peer"] = False
+            elif gate["revoke"] == "exception":
+                raise RuntimeError("synthetic consent verifier crashed")
             return "fixture-operator"
 
         try:
@@ -167,6 +173,16 @@ def main():
                 assert gate["calls"] == 1
                 assert px(env, "room", "gateway-room")["bedPath"] == ""
 
+                # Revoking seat/caller DURING a gesture cannot sign a receipt.
+                for lost in ("seat", "peer", "exception"):
+                    gate["approve"] = True
+                    gate["revoke"] = lost
+                    assert send(sock, request(bed)) == {"status":"DENIED"}
+                    assert px(env, "room", "gateway-room")["bedPath"] == ""
+                    gate["seat"] = True
+                    gate["peer"] = True
+                assert gate["calls"] == 4
+                gate["revoke"] = ""
                 gate["approve"] = True
                 chosen = request(bed)
                 signed = send(sock, chosen)
@@ -176,7 +192,7 @@ def main():
                 assert signed["body"]["head"] == chosen["head"]
                 assert signed["body"]["roomUpdatedAt"] == before["updatedAt"]
                 assert gate["target"]["bedPath"] == str(bed)
-                assert gate["calls"] == 2
+                assert gate["calls"] == 5
                 assert px(env, "room", "gateway-room")["bedPath"] == ""
                 assert px(env, "sessions", "--room-id", "gateway-room") == []
 
@@ -200,7 +216,7 @@ def main():
 
                 gate["approve"] = True
                 assert send(sock, chosen) == {"status":"DENIED"}
-                assert gate["calls"] == 2
+                assert gate["calls"] == 5
                 replay = px(env, "room-bed-claim-signed-atomic",
                             "--room-id", "gateway-room",
                             "--repository", REPOSITORY, "--branch", BRANCH,
