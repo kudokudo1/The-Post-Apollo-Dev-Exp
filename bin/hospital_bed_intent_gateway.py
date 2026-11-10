@@ -267,7 +267,10 @@ class NativeBedIntentGateway:
                 if not self._checks(peer) or len(signed) > _MAX_REPLY:
                     return None
                 return signed + b"\n"
-            except (ValueError, RuntimeError, OSError, sqlite3.Error):
+            except Exception:
+                # Trusted native callbacks can fail mid-gesture or vanish
+                # during a compositor/seat transition. Never leak an internal
+                # error or mint an intent after failed authorization.
                 return None
 
     class _Handler(socketserver.BaseRequestHandler):
