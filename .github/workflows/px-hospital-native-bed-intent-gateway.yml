@@ -1,0 +1,50 @@
+name: PX / Hospital Native Bed Intent Gateway (Synthetic)
+
+on:
+  pull_request:
+    paths:
+      - "bin/hospital_bed_intent_gateway.py"
+      - "bin/hospital_bed_signed_intent.py"
+      - "bin/hospital_bed_claim.py"
+      - "bin/px-hospital-store"
+      - "tests/test-px-hospital-bed-intent-gateway.py"
+      - ".github/workflows/px-hospital-native-bed-intent-gateway.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "bin/hospital_bed_intent_gateway.py"
+      - "bin/hospital_bed_signed_intent.py"
+      - "bin/hospital_bed_claim.py"
+      - "bin/px-hospital-store"
+      - "tests/test-px-hospital-bed-intent-gateway.py"
+      - ".github/workflows/px-hospital-native-bed-intent-gateway.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  native-gateway-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install existing pinned CI-only Ed25519 primitive
+        run: python3 -m pip install cryptography==46.0.4
+      - name: Compile bounded host and test
+        run: |
+          python3 -m py_compile bin/hospital_bed_intent_gateway.py
+          python3 -m py_compile bin/hospital_bed_signed_intent.py
+          python3 -m py_compile bin/hospital_bed_claim.py
+          python3 -m py_compile tests/test-px-hospital-bed-intent-gateway.py
+      - name: Real Linux AF_UNIX and PX atomic signed receipt integration
+        run: python3 tests/test-px-hospital-bed-intent-gateway.py
+      - name: Previous signed-intent and atomic Bed claims
+        run: |
+          python3 tests/test-px-hospital-signed-bed-intent.py
+          python3 tests/test-px-hospital-first-bed-claim.py
+      - name: Original durable Hospital database contracts
+        run: bash tests/test-px-hospital-store.sh
