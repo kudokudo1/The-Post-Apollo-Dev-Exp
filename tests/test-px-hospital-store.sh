@@ -114,7 +114,7 @@ older = json.loads(sys.argv[29])
 
 for payload in (init, status):
     assert payload["status"] == "READY", payload
-    assert payload["schema_version"] == 10, payload
+    assert payload["schema_version"] == 11, payload
     assert payload["counts"] == {
         "patients": 0,
         "rooms": 0,
@@ -258,7 +258,7 @@ try:
     version = conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version == ("10",), version
+    assert version == ("11",), version
 
     tables = {
         row[0]
