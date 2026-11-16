@@ -1,0 +1,46 @@
+name: PX / B37-C B38 Cross-Lane Offline Compatibility Evidence
+
+on:
+  pull_request:
+    paths:
+      - 'tests/test-pxd-exec-s3-b37c-b38-compat-evidence.py'
+      - 'MODEL/contracts/exec-s3-b37c-b38-compat-evidence.md'
+      - '.github/workflows/px-exec-s3-b37c-b38-compat-evidence.yml'
+      - 'bin/px_s3_b37c_atomic_recovery_fixture.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-fake-compatibility:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact PR merge tree without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout immutable B38-B dependency (includes B38-A)
+        uses: actions/checkout@v4
+        with:
+          ref: '40844e2fb5dd9c4800450060a7d3e3b8a318cdc8'
+          path: b38-pinned
+          persist-credentials: false
+      - name: Verify exact pinned dependency and independent PR tree
+        run: |
+          test "$(git -C b38-pinned rev-parse HEAD)" = "40844e2fb5dd9c4800450060a7d3e3b8a318cdc8"
+          echo "B37C_B38_EXECUTION_SHA=$(git rev-parse HEAD)"
+          echo "B38_B_PINNED_SHA=$(git -C b38-pinned rev-parse HEAD)"
+      - name: Cross-lane expected gap and guarded mock compatibility tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37c-b38-compat-evidence.py
+      - name: Merged B37-C atomic recovery regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test-pxd-exec-s3-b37c-atomic-recovery.py
+      - name: Pinned B38-B sender regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B b38-pinned/tests/test-pxd-exec-s3-b38b-trusted-sender-mock.py
+      - name: Pinned B38-A model-only mock client regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B b38-pinned/tests/test-pxd-exec-s3-b38a-model-only-mock-client.py
