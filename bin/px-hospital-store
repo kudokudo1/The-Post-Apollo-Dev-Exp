@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import px_hospital_room_lifecycle as room_lifecycle
+import px_hospital_room_authority as room_authority
 
 SCHEMA_VERSION = 12
 
@@ -2987,6 +2988,8 @@ def build_parser() -> argparse.ArgumentParser:
         operation.add_argument("--expected-revision", type=int, required=True)
         operation.add_argument("--expected-digest", required=True)
         operation.add_argument("--confirm-room-id", required=True)
+        operation.add_argument("--signed-authorization-file", required=True,
+                               help="Externally signed, root-pinned one-use grant")
         operation.add_argument("--json", action="store_true")
 
     session = sub.add_parser("session-put")
@@ -3383,7 +3386,10 @@ def main() -> int:
                     room_lifecycle.transition(
                         conn, args.room_id, target_action,
                         args.expected_revision, args.expected_digest,
-                        args.confirm_room_id
+                        args.confirm_room_id,
+                        authorization=room_authority.verify_file(
+                            args.signed_authorization_file
+                        ),
                     ), args.json
                 )
             elif args.command == "session-put":
