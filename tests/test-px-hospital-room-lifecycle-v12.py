@@ -88,6 +88,14 @@ with tempfile.TemporaryDirectory(prefix="px-room-lifecycle-v12-") as tmp:
                    "VALUES('ROOM','other','cross','DEPENDENCY')")
         db.commit()
     assert invoke(env,"status")["schema_version"]==12
+    # The new signing package must never become a hard dependency for
+    # ordinary read-only Hospital/Room listing before host install.
+    no_site = subprocess.run(
+        [sys.executable, "-S", str(STORE), "rooms", "--json"],
+        env=env, text=True, capture_output=True, timeout=15,
+    )
+    assert no_site.returncode == 0, (no_site.stdout, no_site.stderr)
+    assert len(json.loads(no_site.stdout)) == 6
     def conn():
         db=sqlite3.connect(database,isolation_level=None,timeout=5)
         db.execute("PRAGMA foreign_keys=ON")
