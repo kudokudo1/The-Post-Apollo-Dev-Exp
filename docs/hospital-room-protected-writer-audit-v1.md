@@ -21,6 +21,13 @@ An untrusted peer running under the same desktop UID can open the user-writable 
 
 A signed request alone, SQLite triggers alone, `chmod 0600` on a file owned by the desktop UID, and `SO_PEERCRED` on a service sharing that same UID are not complete malicious-same-user protection.
 
+## DISPOSABLE OS BOUNDARY PROBE // Candidate, NOT host implementation
+
+`tests/test-px-hospital-protected-dac-fixture.py` uses a Linux CI runner to **model** the future writer as one unprivileged UID and the desktop client as the separate built-in `nobody` UID. It initializes the real PX v12 Hospital SQLite schema in a private 0700 directory, reads/writes one fixture Room via `bin/px-hospital-store`, and creates a recoverable SQLite backup as the writer identity.
+
+The peer executes under the second UID using `sudo -n -u nobody` in ephemeral CI only, attempts directory enumeration, direct database read/write, SQLite read-only/read-write connections, backup read, file mode changes, and deletion. Each must fail under Linux DAC, while the owner can still use PX and `PRAGMA integrity_check`. No host user, systemd unit, production key or real Hospital DB is modified. This is a **filesystem separation proof**, *not* an authenticated RPC or installed service. A different UID is necessary for this model; using a daemon with the desktop UID would reproduce the original bypass.
+
+
 ## COORDINATION // Shared file and branch collisions
 
 The v11 prerequisite PX #121 changes `bin/px-hospital-store` and the Hospital workflow. PX #123 (Session admission), #125 (Doctor succession), #127 (first Bed), and #128 (signed Bed) also change the store. PX #129 adds a Bed intent gateway on its own nested branch. Do not overwrite these heads or infer that a merged nested feature equals mainline delivery. Their writer operations must be ported or mediated through the final owner-owned service before native activation.
@@ -57,6 +64,7 @@ An untrusted same-UID process may modify file permissions or triggers if it owns
 - [x] Current direct-writer call graph inventoried
 - [x] Parallel PX ownership/collision map captured
 - [x] Disposable same-UID bypass reproduced in CI fixture (negative evidence)
+- [x] Isolated distinct-UID OS permissions fixture added (not native acceptance)
 - [ ] Protected storage/writer service design approved
 - [ ] Protected-service implementation and all-writer migration
 - [ ] Hospital-specific installed issuer and caller/seat consent
