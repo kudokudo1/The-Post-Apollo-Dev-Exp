@@ -214,14 +214,18 @@ class ProtectedRoomWriter:
             try:
                 conn.settimeout(1.5)
                 _pid, uid, _gid = kernel_peer(conn)
-                if uid != self.server.owner.client_uid:
-                    raise WriterHold("UNTRUSTED_PEER")
                 raw = bytearray()
+                # Receive one bounded frame through EOF before responding.
+                # An immediate close with unread peer bytes can cause Linux
+                # to reset the connection and discard the refusal reply.
+                # No request is parsed, trusted or executed before UID check.
                 while len(raw) <= _MAX_REQUEST:
                     packet = conn.recv(min(2048, _MAX_REQUEST + 1 - len(raw)))
                     if not packet:
                         break
                     raw.extend(packet)
+                if uid != self.server.owner.client_uid:
+                    raise WriterHold("UNTRUSTED_PEER")
                 request = parse_request(bytes(raw))
                 data = self.server.owner.process(request)
                 result = {"ok": True, "data": data}
