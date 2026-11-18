@@ -4,9 +4,9 @@ This module is owned by PX. Room rows and all dependent evidence remain in the
 same SQLite database. A Trash/Restore operation changes a lifecycle marker
 transactionally and stores a minimal receipt; Burn is deliberately unsupported.
 
-CAUTION: The plain CLI confirmation is an *operator intention*, NOT verified
-operator identity or a signed capability. No production deployment/permission
-grant should be inferred from this module or its tests.
+CAUTION: An independently issued, pinned Ed25519 one-use grant is mandatory.
+The native operator/seat/retention signer is external and NOT supplied here;
+no production deployment approval may be inferred from unit tests.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import px_hospital_room_authority as room_authority
 
 ROOM_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -74,8 +75,23 @@ def _tables(conn):
             revision_before INTEGER NOT NULL,
             revision_after INTEGER NOT NULL,
             graph_digest TEXT NOT NULL,
+            grant_digest TEXT NOT NULL,
+            operator_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(room_id, revision_after)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS room_lifecycle_authorizations (
+            nonce TEXT PRIMARY KEY,
+            grant_digest TEXT NOT NULL UNIQUE,
+            approval_id TEXT NOT NULL UNIQUE,
+            room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE RESTRICT,
+            operator_id TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('TRASH', 'RESTORE')),
+            revision_before INTEGER NOT NULL,
+            graph_digest TEXT NOT NULL,
+            consumed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.execute(
@@ -262,7 +278,7 @@ def trashed_rooms(conn):
 
 
 def transition(conn, room_id, action, expected_revision, expected_digest,
-               confirm_room_id):
+               confirm_room_id, *, authorization=None):
     """Exactly one Room, one revision, one transaction. No original DELETE."""
     room_id = _identity(room_id)
     if action not in ("TRASH", "RESTORE"):
@@ -276,6 +292,8 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
     # An explicit operator gesture, NOT independent identity/seat proof.
     if confirm_room_id != room_id:
         raise RoomLifecycleRefused("EXACT_ROOM_CONFIRMATION_REQUIRED")
+    if not isinstance(authorization, room_authority.VerifiedGrant):
+        raise RoomLifecycleRefused("SIGNED_ROOM_AUTHORIZATION_REQUIRED")
     if conn.in_transaction:
         raise RoomLifecycleRefused("OPEN_TRANSACTION_REFUSED")
     try:
@@ -291,6 +309,19 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
                 raise RoomLifecycleRefused("ROOM_NOT_ELIGIBLE_FOR_TRASH")
         elif not source["canRestore"]:
             raise RoomLifecycleRefused("ROOM_NOT_ELIGIBLE_FOR_RESTORE")
+        room_identity = conn.execute("""
+            SELECT r.patient_id, p.repository
+            FROM rooms r JOIN patients p ON p.patient_id = r.patient_id
+            WHERE r.room_id=?
+        """, (room_id,)).fetchone()
+        if room_identity is None:
+            raise RoomLifecycleRefused("ROOM_PATIENT_IDENTITY_UNVERIFIED")
+        operator_id, grant_digest = authorization.consume(
+            conn, room_id=room_id,
+            patient_id=str(room_identity["patient_id"] or ""),
+            repository=str(room_identity["repository"] or ""),
+            action=action, revision=source["revision"], digest=source["digest"]
+        )
         revision = expected_revision + 1
         if expected_revision == 0:
             conn.execute(
@@ -315,9 +346,11 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
                 raise RoomLifecycleRefused("ROOM_LIFECYCLE_CAS_FAILED")
         conn.execute(
             """INSERT INTO room_lifecycle_receipts
-               (room_id,action,revision_before,revision_after,graph_digest)
-               VALUES(?,?,?,?,?)""",
-            (room_id, action, expected_revision, revision, source["digest"])
+               (room_id,action,revision_before,revision_after,graph_digest,
+                grant_digest,operator_id)
+               VALUES(?,?,?,?,?,?,?)""",
+            (room_id, action, expected_revision, revision, source["digest"],
+             grant_digest, operator_id)
         )
         conn.commit()
     except BaseException:
@@ -330,5 +363,7 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
         "receiptRecorded": True,
         "originalPreserved": True,
         "burnAllowed": False,
-        "operatorAuthenticated": False,
+        "operatorAuthenticated": True,
+        "authorizationVerified": True,
+        "requiresOwnerReview": False,
     }
