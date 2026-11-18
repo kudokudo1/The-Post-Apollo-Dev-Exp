@@ -12,6 +12,7 @@ on:
       - tests/test-px-hospital-room-names.py
       - tests/test-px-hospital-room-lifecycle-v12.py
       - tests/test-px-hospital-unprotected-writer-witness.py
+      - tests/test-px-hospital-protected-dac-fixture.py
       - .github/workflows/px-hospital-store.yml
   push:
     branches:
@@ -23,6 +24,7 @@ on:
       - tests/test-px-hospital-room-names.py
       - tests/test-px-hospital-room-lifecycle-v12.py
       - tests/test-px-hospital-unprotected-writer-witness.py
+      - tests/test-px-hospital-protected-dac-fixture.py
       - .github/workflows/px-hospital-store.yml
 
 permissions:
@@ -43,7 +45,7 @@ jobs:
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py
+          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py
 
       - name: Test Hospital durable state store
         run: |
@@ -52,3 +54,5 @@ jobs:
           python3 tests/test-px-hospital-room-lifecycle-v12.py
       - name: Record unprotected same-UID SQLite bypass on disposable fixture (negative security evidence)
         run: python3 tests/test-px-hospital-unprotected-writer-witness.py
+      - name: Exercise distinct UID PX database/backup isolation in disposable Linux fixture
+        run: python3 tests/test-px-hospital-protected-dac-fixture.py
