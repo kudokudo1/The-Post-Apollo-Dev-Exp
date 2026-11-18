@@ -250,7 +250,8 @@ class ProtectedRoomWriter:
             raise WriterHold("ALREADY_STARTED")
         self._check_storage()
         with closing(self._connect()) as connection:
-            assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                raise WriterHold("SQLITE_FOREIGN_KEYS_NOT_ENFORCED")
         if os.path.lexists(self.socket_path):
             raise WriterHold("EXISTING_SOCKET_REFUSED")
         old_umask = os.umask(0o077)
