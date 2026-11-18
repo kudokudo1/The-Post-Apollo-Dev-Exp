@@ -6,6 +6,7 @@ No installation, production activation, provider launch or Burn operation.
 """
 import json
 import os
+import runpy
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -44,10 +45,8 @@ with tempfile.TemporaryDirectory(prefix="px-room-lifecycle-v12-") as tmp:
 
     # A real pre-existing v11 database must migrate without losing records.
     # The v11 code is stacked from PR #121; seed using its exact SQL.
-    schema_namespace = {"__file__": str(STORE), "__name__": "px_store_test"}
-    source = STORE.read_text()
-    exec(compile(source.split("def hospital_data_dir()")[0],str(STORE),"exec"),
-         schema_namespace)
+    sys.path.insert(0, str(ROOT / "bin"))
+    schema_namespace = runpy.run_path(str(STORE), run_name="px_store_schema_test")
     with sqlite3.connect(db_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         for n in range(1, 11):
@@ -82,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix="px-room-lifecycle-v12-") as tmp:
         )
         db.execute(
             "INSERT INTO chart_entries(scope_type,room_id,source_room_id,body_md) "
-            "VALUES('ROOM','empty','cross','DEPENDENCY')"
+            "VALUES('ROOM','other','cross','DEPENDENCY')"
         )
         db.commit()
 
