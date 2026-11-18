@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="px-room-lifecycle-v12-") as tmp:
         db.execute("ALTER TABLE rooms ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         db.execute("INSERT INTO schema_meta(key,value) VALUES('schema_version','11')")
         db.execute("INSERT INTO patients(patient_id,repository) VALUES('p','example/repo')")
-        for room in ("empty", "history", "busy", "contract", "cross"):
+        for room in ("empty", "history", "busy", "contract", "cross", "other"):
             db.execute("INSERT INTO rooms(room_id,patient_id) VALUES(?,'p')",(room,))
         db.execute(
             "INSERT INTO sessions(session_id,room_id,status,ended_at) "
