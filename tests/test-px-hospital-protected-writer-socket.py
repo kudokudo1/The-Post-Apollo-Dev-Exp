@@ -294,10 +294,50 @@ def main():
             assert database.exists()
         assert not writer.socket_path.exists()
 
+        # Restart the service on the SAME owner-controlled DB. No signed
+        # grant is injected for this read-only recovery check.
+        with ProtectedRoomWriter(
+            state_directory=private, socket_directory=runtime,
+            client_uid=peer.pw_uid,
+        ) as restarted:
+            restarted.socket_path.chmod(0o666)
+            after_restart = send(
+                restarted.socket_path,
+                request("review", roomId=room), peer.pw_name,
+            )
+            assert after_restart["ok"] and after_restart["data"]["state"] == "ACTIVE"
+            assert after_restart["data"]["revision"] == 2
+
+        # Backup through SQLite's online backup API, not filesystem copying
+        # a live WAL. Verify a *separate* recovered DB still has the exact
+        # Room and both durable grant receipts after service restart.
+        recovered = private / "restored-from-online-backup.db"
+        with sqlite3.connect(database) as source:
+            with sqlite3.connect(recovered) as target:
+                source.backup(target)
+                assert target.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert target.execute(
+                    "SELECT state, revision FROM room_lifecycle WHERE room_id=?",
+                    (room,),
+                ).fetchone() == ("ACTIVE", 2)
+                assert target.execute(
+                    "SELECT COUNT(*) FROM room_lifecycle_receipts WHERE room_id=?",
+                    (room,),
+                ).fetchone()[0] == 2
+                assert target.execute(
+                    "SELECT COUNT(*) FROM room_lifecycle_authorizations WHERE room_id=?",
+                    (room,),
+                ).fetchone()[0] == 2
+                assert target.execute(
+                    "SELECT COUNT(*) FROM rooms WHERE room_id=?", (room,),
+                ).fetchone()[0] == 1
+        assert recovered.stat().st_mode & 0o777 == 0o600
+
     print(
         "PX PROTECTED ROOM SOCKET PASS // separate-UID peer, direct SQLite "
         "denial, pinned signed TRASH/RESTORE atomic fixture, replay, "
-        "Burn/raw-SQL denial, no production issuer or native install"
+        "Burn/raw-SQL denial, service restart and WAL-aware backup recovery, "
+        "no production issuer or native install"
     )
 
 
