@@ -8,6 +8,7 @@ on:
       - bin/px-hospital-store
       - tests/test-px-hospital-store.sh
       - tests/test-px-hospital-room-names.py
+      - tests/test-px-hospital-room-lifecycle-v12.py
       - .github/workflows/px-hospital-store.yml
   push:
     branches:
@@ -17,6 +18,7 @@ on:
       - bin/px-hospital-store
       - tests/test-px-hospital-store.sh
       - tests/test-px-hospital-room-names.py
+      - tests/test-px-hospital-room-lifecycle-v12.py
       - .github/workflows/px-hospital-store.yml
 
 permissions:
@@ -34,9 +36,10 @@ jobs:
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store tests/test-px-hospital-room-names.py
+          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py
 
       - name: Test Hospital durable state store
         run: |
           bash ./tests/test-px-hospital-store.sh
           python3 tests/test-px-hospital-room-names.py
+          python3 tests/test-px-hospital-room-lifecycle-v12.py
