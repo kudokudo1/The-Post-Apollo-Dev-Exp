@@ -96,7 +96,7 @@ plan pass independent review.
 
 ## PX WRITER SECURITY CHECKPOINT // 2026-11-18
 
-The verified user-relative `bin/px-hospital-store` connection and direct SQL bypass are an open production blocker. A recommended candidate is a dedicated, non-desktop-UID native database service, OS-private WAL/SHM/backup storage, allowlisted RPC and authenticated peer credentials. This architecture requires service identity/SELinux/install and all-writer migration review before it can be claimed implemented. The existing signed source-side transaction alone cannot enforce a malicious same-UID boundary.
+The verified user-relative `bin/px-hospital-store` connection and direct SQL bypass are an open production blocker. The separate-UID Linux DAC fixture (`tests/test-px-hospital-protected-dac-fixture.py`) now proves, on a **disposable real PX v12 DB plus backup**, that an unprivileged desktop-UID analogue cannot directly open or mutate data stored under another UID's 0700 directory, while the owning process can use PX normally. The test does **not** install or implement the production writer service, caller authentication, signed-issuer transport, SELinux rules or privileged backup custody. A recommended candidate is a dedicated, non-desktop-UID native database service, OS-private WAL/SHM/backup storage, allowlisted RPC and authenticated peer credentials. This architecture requires service identity/SELinux/install and all-writer migration review before it can be claimed implemented. The existing signed source-side transaction alone cannot enforce a malicious same-UID boundary.
 
 ## NEXT // OWNER HANDOFF / DECISIONS
 
