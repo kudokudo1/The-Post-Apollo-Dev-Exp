@@ -12,6 +12,7 @@ or host storage migration is provided by this module.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -193,7 +194,7 @@ class ProtectedRoomWriter:
 
     def process(self, request):
         action = request["operation"]
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             if action == "review":
                 return lifecycle.review(db, request["roomId"])
             if action == "bin":
@@ -244,7 +245,7 @@ class ProtectedRoomWriter:
         if self._server is not None:
             raise WriterHold("ALREADY_STARTED")
         self._check_storage()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         if os.path.lexists(self.socket_path):
             raise WriterHold("EXISTING_SOCKET_REFUSED")
