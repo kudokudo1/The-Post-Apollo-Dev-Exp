@@ -64,6 +64,9 @@ for label, attempt in (
 ):
     try:
         handle = attempt()
+    except sqlite3.OperationalError as exc:
+        if "unable to open database file" not in str(exc).lower():
+            raise
     except OSError:
         continue
     else:
@@ -231,10 +234,7 @@ def main():
                 auth, "installed_host_binding",
                 return_value="native-host-fixture",
             ):
-                wrong_key = auth.canonical({
-                    "body": json.loads(grant(other_key, snap, "TRASH"))["body"],
-                    "signature": json.loads(grant(other_key, snap, "TRASH"))["signature"],
-                }).decode("ascii")
+                wrong_key = grant(other_key, snap, "TRASH")
                 assert send(
                     writer.socket_path, mutate("trash", snap, wrong_key),
                     peer.pw_name,
