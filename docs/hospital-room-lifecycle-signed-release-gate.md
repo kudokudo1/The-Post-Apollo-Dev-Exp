@@ -98,6 +98,12 @@ plan pass independent review.
 
 The verified user-relative `bin/px-hospital-store` connection and direct SQL bypass are an open production blocker. The separate-UID Linux DAC fixture (`tests/test-px-hospital-protected-dac-fixture.py`) now proves, on a **disposable real PX v12 DB plus backup**, that an unprivileged desktop-UID analogue cannot directly open or mutate data stored under another UID's 0700 directory, while the owning process can use PX normally. The test does **not** install or implement the production writer service, caller authentication, signed-issuer transport, SELinux rules or privileged backup custody. A recommended candidate is a dedicated, non-desktop-UID native database service, OS-private WAL/SHM/backup storage, allowlisted RPC and authenticated peer credentials. This architecture requires service identity/SELinux/install and all-writer migration review before it can be claimed implemented. The existing signed source-side transaction alone cannot enforce a malicious same-UID boundary.
 
+## PROTECTED ROOM SOCKET SOURCE CHECKPOINT // 2026-11-18
+
+PX #130 now includes an **actual source-level separate-UID Unix socket writer** (`bin/px_hospital_room_writer.py`) with `SO_PEERCRED` UID admission, fixed owner-only v12 SQLite, read-only Room review/bin, and the existing root-pinned, host-bound Ed25519 TRASH/RESTORE transaction. Its root-configuration-pinned pre-install entrypoint (`bin/px-hospital-room-writerd`) rejects all caller config, DB or key overrides. See [the complete service, trust and CI contract](./hospital-room-protected-writer-service-v1.md).
+
+Disposable Linux CI now exercises a second UID connecting over the real socket while its direct SQLite access is denied, signed fixture Trash/Restore and replay refusal, service restart, and SQLite-online-backup recovery. **This is a pre-install subset, not deployed production security**: ordinary Hospital Room/Session/Assignment/Bed/Chart writers are still on legacy direct SQLite paths; a true C5 native issuer, seat/consent validation, trusted RPC admission, SELinux/service installation and operator-approved native migration remain absent. Keep the application locked and Burn unavailable.
+
 ## NEXT // OWNER HANDOFF / DECISIONS
 
 - PX owner: review source gate, DB write ownership and v11/v12 migration.
