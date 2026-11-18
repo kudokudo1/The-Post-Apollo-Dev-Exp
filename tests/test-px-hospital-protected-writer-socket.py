@@ -312,25 +312,29 @@ def main():
         # a live WAL. Verify a *separate* recovered DB still has the exact
         # Room and both durable grant receipts after service restart.
         recovered = private / "restored-from-online-backup.db"
-        with sqlite3.connect(database) as source:
-            with sqlite3.connect(recovered) as target:
-                source.backup(target)
-                assert target.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-                assert target.execute(
-                    "SELECT state, revision FROM room_lifecycle WHERE room_id=?",
-                    (room,),
-                ).fetchone() == ("ACTIVE", 2)
-                assert target.execute(
-                    "SELECT COUNT(*) FROM room_lifecycle_receipts WHERE room_id=?",
-                    (room,),
-                ).fetchone()[0] == 2
-                assert target.execute(
-                    "SELECT COUNT(*) FROM room_lifecycle_authorizations WHERE room_id=?",
-                    (room,),
-                ).fetchone()[0] == 2
-                assert target.execute(
-                    "SELECT COUNT(*) FROM rooms WHERE room_id=?", (room,),
-                ).fetchone()[0] == 1
+        old_umask = os.umask(0o077)
+        try:
+            with sqlite3.connect(database) as source:
+                with sqlite3.connect(recovered) as target:
+                    source.backup(target)
+                    assert target.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                    assert target.execute(
+                        "SELECT state, revision FROM room_lifecycle WHERE room_id=?",
+                        (room,),
+                    ).fetchone() == ("ACTIVE", 2)
+                    assert target.execute(
+                        "SELECT COUNT(*) FROM room_lifecycle_receipts WHERE room_id=?",
+                        (room,),
+                    ).fetchone()[0] == 2
+                    assert target.execute(
+                        "SELECT COUNT(*) FROM room_lifecycle_authorizations WHERE room_id=?",
+                        (room,),
+                    ).fetchone()[0] == 2
+                    assert target.execute(
+                        "SELECT COUNT(*) FROM rooms WHERE room_id=?", (room,),
+                    ).fetchone()[0] == 1
+        finally:
+            os.umask(old_umask)
         assert recovered.stat().st_mode & 0o777 == 0o600
 
     print(
