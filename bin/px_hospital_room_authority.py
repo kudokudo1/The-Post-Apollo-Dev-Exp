@@ -158,6 +158,33 @@ def trusted_public_key():
     except (OSError, ValueError) as exc:
         raise GrantRefused("HOSPITAL ROOM GRANT HOLD // TRUSTED_ISSUER_UNAVAILABLE") from exc
 
+def installed_host_binding():
+    """Public host identity witness, not a secret or operator grant.
+
+    The independently installed native signer must bind to the same current
+    machine ID. A signed grant from another host cannot be replayed here even
+    if both machines trust the same issuer key.
+    """
+    p = Path("/etc/machine-id")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(str(p), flags)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                    or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or info.st_size > 128):
+                _stop("HOST_IDENTITY_UNPROTECTED")
+            raw = os.read(fd, 129).strip()
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise GrantRefused("HOSPITAL ROOM GRANT HOLD // HOST_IDENTITY_UNAVAILABLE") from exc
+    if len(raw) != 32 or re.fullmatch(rb"[0-9a-f]{32}", raw) is None:
+        _stop("HOST_IDENTITY_INVALID")
+    return hashlib.sha256(DOMAIN + bytes.fromhex(raw.decode("ascii"))).hexdigest()
+
+
 def _verify_bytes(raw, public_key, *, now=None):
     """For test-verified signature parsing; CLI NEVER supplies a key."""
     if not isinstance(public_key, Ed25519PublicKey):
@@ -190,7 +217,10 @@ def verify_file(grant_file):
             os.close(fd)
     except OSError as exc:
         raise GrantRefused("HOSPITAL ROOM GRANT HOLD // GRANT_FILE_UNAVAILABLE") from exc
-    return _verify_bytes(raw, trusted_public_key())
+    verified = _verify_bytes(raw, trusted_public_key())
+    if verified.body["hostId"] != installed_host_binding():
+        _stop("SIGNED_HOST_IDENTITY_MISMATCH")
+    return verified
 
 class VerifiedGrant:
     __slots__ = ("body", "digest")
