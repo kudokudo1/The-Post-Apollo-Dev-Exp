@@ -181,7 +181,8 @@ with tempfile.TemporaryDirectory(prefix="px-room-lifecycle-v12-") as tmp:
         except life.RoomLifecycleRefused:
             pass
     committed=perform("history","TRASH",snap=snap,verified=verified)
-    assert committed["state"]=="TRASHED" and committed["operatorAuthenticated"]
+    assert committed["state"]=="TRASHED" and committed["grantSignatureVerified"]
+    assert committed["operatorAuthenticated"] is False
     assert "history" not in [x["id"] for x in invoke(env,"rooms")]
     bin_rows=invoke(env,"room-lifecycle-bin")
     assert len(bin_rows)==1 and bin_rows[0]["roomId"]=="history"
