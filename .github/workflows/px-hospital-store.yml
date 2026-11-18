@@ -13,6 +13,8 @@ on:
       - tests/test-px-hospital-room-lifecycle-v12.py
       - tests/test-px-hospital-unprotected-writer-witness.py
       - tests/test-px-hospital-protected-dac-fixture.py
+      - bin/px_hospital_room_writer.py
+      - tests/test-px-hospital-protected-writer-socket.py
       - .github/workflows/px-hospital-store.yml
   push:
     branches:
@@ -25,6 +27,8 @@ on:
       - tests/test-px-hospital-room-lifecycle-v12.py
       - tests/test-px-hospital-unprotected-writer-witness.py
       - tests/test-px-hospital-protected-dac-fixture.py
+      - bin/px_hospital_room_writer.py
+      - tests/test-px-hospital-protected-writer-socket.py
       - .github/workflows/px-hospital-store.yml
 
 permissions:
@@ -45,7 +49,7 @@ jobs:
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py
+          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py bin/px_hospital_room_writer.py tests/test-px-hospital-protected-writer-socket.py
 
       - name: Test Hospital durable state store
         run: |
@@ -56,3 +60,5 @@ jobs:
         run: python3 tests/test-px-hospital-unprotected-writer-witness.py
       - name: Exercise distinct UID PX database/backup isolation in disposable Linux fixture
         run: python3 tests/test-px-hospital-protected-dac-fixture.py
+      - name: Prove protected Room socket rejects unsigned/direct SQL and accepts fixture-signed one-use transitions
+        run: python3 tests/test-px-hospital-protected-writer-socket.py
