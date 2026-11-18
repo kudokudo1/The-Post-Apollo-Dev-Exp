@@ -22,8 +22,15 @@ import sqlite3
 import stat
 import time
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+# Read-only PX commands must remain usable until the signed runtime
+# dependency has been installed. Mutations still fail closed without it.
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+except ImportError:
+    Ed25519PublicKey = None
+    class InvalidSignature(Exception):
+        pass
 
 DOMAIN = b"post-apollo.hospital.room-lifecycle-grant.v1\x00"
 SCHEMA = "post-apollo.hospital.room-lifecycle-grant.v1"
@@ -154,6 +161,8 @@ def trusted_public_key():
             os.close(fd)
         if len(value) != 32:
             _stop("PINNED_KEY_INVALID")
+        if Ed25519PublicKey is None:
+            _stop("CRYPTO_VERIFIER_UNAVAILABLE")
         return Ed25519PublicKey.from_public_bytes(value)
     except (OSError, ValueError) as exc:
         raise GrantRefused("HOSPITAL ROOM GRANT HOLD // TRUSTED_ISSUER_UNAVAILABLE") from exc
@@ -187,8 +196,8 @@ def installed_host_binding():
 
 def _verify_bytes(raw, public_key, *, now=None):
     """For test-verified signature parsing; CLI NEVER supplies a key."""
-    if not isinstance(public_key, Ed25519PublicKey):
-        _stop("VERIFIER_KEY_INVALID")
+    if Ed25519PublicKey is None or not isinstance(public_key, Ed25519PublicKey):
+        _stop("VERIFIER_KEY_UNAVAILABLE")
     frame = parse(raw)
     body = _body(frame["body"], now)
     encoded = frame["signature"]
