@@ -1,0 +1,50 @@
+name: PX EXEC-S3 B38-L fake pidfd crash custody
+on:
+  pull_request:
+    paths:
+      - 'tests/test-pxd-exec-s3-b38l-pidfd-crash-custody.py'
+      - 'MODEL/contracts/exec-s3-b38l-pidfd-crash-custody.md'
+      - '.github/workflows/px-exec-s3-b38l-pidfd-crash-custody.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  b38l-pidfd-custody:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record tested PR merge checkout
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "B38L_EXECUTION_SHA=$(git rev-parse HEAD)"
+          echo "B38L_PR_HEAD_SHA=$PR_HEAD_SHA"
+          echo "B38L_PR_BASE_SHA=$PR_BASE_SHA"
+      - name: Kernel fake pidfd owner, crash and stop tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38l-pidfd-crash-custody.py --unit
+      - name: Repeat real kernel pidfd supervisor crash observation
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B tests/test-pxd-exec-s3-b38l-pidfd-crash-custody.py --smoke
+      - name: Existing B38-K/J/I/H fake OS regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          python3 -B tests/test-pxd-exec-s3-b38k-running-fake-child-stop.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38k-running-fake-child-stop.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38j-external-fake-launch-worker.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38j-external-fake-launch-worker.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38i-durable-fake-launch-claim.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38i-durable-fake-launch-claim.py --smoke
+          python3 -B tests/test-pxd-exec-s3-b38h-durable-fake-sandbox-admission.py --unit
+          python3 -B tests/test-pxd-exec-s3-b38h-durable-fake-sandbox-admission.py --smoke
