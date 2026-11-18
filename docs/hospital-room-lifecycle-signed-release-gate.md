@@ -58,7 +58,7 @@ key. CI fixture signatures are not operator approvals or installable keys.
    authenticated signer with Linux caller/process and active-seat evidence,
    explicit per-Room operator approval, trusted retention/hold decision,
    correct host binding and protected signing-key custody.
-2. **Current PX database is writable by its desktop user.** Signed CLI
+2. **Current PX database is writable by its desktop user.** The exact writer inventory, concurrent branch collisions, and a disposable same-UID direct-SQL bypass witness are preserved in [hospital-room-protected-writer-audit-v1.md](./hospital-room-protected-writer-audit-v1.md). `tests/test-px-hospital-unprotected-writer-witness.py` passing is explicit **negative security evidence** and is NOT release acceptance. Signed CLI
    checks do not stop that same UID from changing SQLite with another
    program. Before security acceptance, PX owner must decide the protected
    storage/service-writer boundary, or clearly limit claims to accident
@@ -93,6 +93,10 @@ one-use signed approval and PX consumes it atomically. There is no safe
 production command to issue such an approval in the current repository.
 No local steps are offered until the actual host and documented install
 plan pass independent review.
+
+## PX WRITER SECURITY CHECKPOINT // 2026-11-18
+
+The verified user-relative `bin/px-hospital-store` connection and direct SQL bypass are an open production blocker. A recommended candidate is a dedicated, non-desktop-UID native database service, OS-private WAL/SHM/backup storage, allowlisted RPC and authenticated peer credentials. This architecture requires service identity/SELinux/install and all-writer migration review before it can be claimed implemented. The existing signed source-side transaction alone cannot enforce a malicious same-UID boundary.
 
 ## NEXT // OWNER HANDOFF / DECISIONS
 
