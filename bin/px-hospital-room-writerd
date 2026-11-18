@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Pre-install PX protected Hospital Room writer daemon entrypoint.
+
+This launcher cannot accept a CLI-selected config, DB, socket, UID or key.
+Its root-owned config must be independently installed and reviewed.
+NO install unit or production permission grant is included by this source.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import signal
+import stat
+import sys
+import threading
+
+from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
+
+CONFIG_PATH = Path("/etc/post-apollo/hospital/room-writer.json")
+CONFIG_SCHEMA = "post-apollo.hospital.protected-room-writer-host.v1"
+_CONFIG_FIELDS = frozenset((
+    "schema", "writerUid", "clientUid", "stateDirectory",
+    "socketDirectory",
+))
+
+
+def _unique(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise WriterHold("DUPLICATE_HOST_CONFIG_FIELD")
+        obj[key] = value
+    return obj
+
+
+def _reject_constant(_value):
+    raise WriterHold("INVALID_HOST_CONFIG_NUMBER")
+
+
+def _trusted_parents(path: Path, uid: int, *, config: bool):
+    for parent in path.parents:
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in ((0,) if config else (0, uid))
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise WriterHold("UNTRUSTED_NATIVE_PARENT")
+
+
+def read_host_config():
+    # A native service manager must pin the *executable* and own this config.
+    # Never accept environment, argv, QML or IPC config/key substitutions.
+    _trusted_parents(CONFIG_PATH, os.geteuid(), config=True)
+    flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        fd = os.open(CONFIG_PATH, flags)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                    or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or not 1 <= info.st_size <= 4096):
+                raise WriterHold("UNTRUSTED_NATIVE_CONFIG")
+            raw = os.read(fd, 4097)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise WriterHold("NATIVE_HOST_CONFIG_UNAVAILABLE") from exc
+    try:
+        cfg = json.loads(
+            raw.decode("utf-8", "strict"),
+            object_pairs_hook=_unique,
+            parse_constant=_reject_constant,
+        )
+    except (ValueError, UnicodeError, TypeError) as exc:
+        raise WriterHold("INVALID_NATIVE_CONFIG_JSON") from exc
+    if (type(cfg) is not dict or set(cfg) != _CONFIG_FIELDS
+            or cfg["schema"] != CONFIG_SCHEMA
+            or type(cfg["writerUid"]) is not int
+            or cfg["writerUid"] != os.geteuid()
+            or cfg["writerUid"] in (0, cfg["clientUid"])
+            or type(cfg["clientUid"]) is not int
+            or cfg["clientUid"] <= 0
+            or os.getuid() != os.geteuid()
+            or any(k in os.environ for k in (
+                "PX_HOSPITAL_DB", "PX_HOSPITAL_DATA_DIR"))):
+        raise WriterHold("UNTRUSTED_NATIVE_OWNER_OR_OVERRIDE")
+    values = []
+    for key in ("stateDirectory", "socketDirectory"):
+        raw_value = cfg[key]
+        if (type(raw_value) is not str
+                or not 1 <= len(raw_value) <= 256
+                or "\x00" in raw_value):
+            raise WriterHold("INVALID_NATIVE_DIRECTORY")
+        candidate = Path(raw_value)
+        if not candidate.is_absolute() or ".." in candidate.parts:
+            raise WriterHold("NATIVE_DIRECTORY_MUST_BE_FIXED")
+        _trusted_parents(candidate, cfg["writerUid"], config=False)
+        values.append(candidate)
+    if values[0] == values[1]:
+        raise WriterHold("PRIVATE_DB_AND_PUBLIC_SOCKET_MUST_DIFFER")
+    return cfg["clientUid"], values[0], values[1]
+
+
+def main():
+    if len(sys.argv) != 1:
+        raise WriterHold("NO_ARGUMENTS_ALLOWED")
+    client_uid, state_dir, socket_dir = read_host_config()
+    stop = threading.Event()
+
+    def terminate(_signum, _frame):
+        stop.set()
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    # Startup fails if the protected v12 DB or exact directories are missing.
+    # There is no implicit migration, database creation or permission repair.
+    with ProtectedRoomWriter(
+        client_uid=client_uid,
+        state_directory=state_dir,
+        socket_directory=socket_dir,
+    ) as writer:
+        while not stop.wait(0.3):
+            if not writer._thread.is_alive():
+                raise WriterHold("PROTECTED_WRITER_STOPPED_UNEXPECTEDLY")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (WriterHold, OSError, ValueError) as exc:
+        print("PX PROTECTED ROOM WRITER HOLD // " + str(exc), file=sys.stderr)
+        raise SystemExit(2)
