@@ -43,7 +43,10 @@ attempts = {
 for name, action in attempts.items():
     try:
         result = action()
-    except (OSError, PermissionError):
+    except sqlite3.OperationalError as exc:
+        if "unable to open database file" not in str(exc).lower():
+            raise
+    except OSError:
         pass
     else:
         if isinstance(result, sqlite3.Connection):
