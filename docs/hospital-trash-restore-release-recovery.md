@@ -759,3 +759,88 @@ all old writers, and verify WAL recovery before release.
 PR #133 remains draft/unmerged. No live Hospital DB, service,
 local host state, production key, unrelated owner branch or
 permanent Hospital Burn was modified.
+
+
+## 2026-11-19 // Package 1 Linux kernel issuer identity evidence
+
+**Milestone:** source-only native caller packet evidence verified in
+disposable Linux GitHub Actions. This is NOT an installed staffing
+issuer or permission to activate Session/Doctor commands.
+
+### IMPLEMENTATION
+
+- Added bin/px_hospital_staffing_native_peer.py, a read-only
+  kernel-credential witness with no listener, socket binding,
+  database opener, private key, native service, or general command
+  dispatch. It is modelled on the existing protected Connections
+  issuer's SO_PEERCRED and per-packet SCM_CREDENTIALS checks.
+- The production-shaped receive_root_issuer_packet() insists on
+  UID 0, an already-connected AF_UNIX SOCK_SEQPACKET descriptor,
+  the exact same kernel (PID, UID, GID) identity for the connection
+  and message, and matching process start ticks before/after
+  receipt. It obtains and retains a Linux pidfd until inspection
+  finishes, refuses exited processes, and closes the kernel handle.
+  The bounded packet is delivered only with a separate read-only
+  KernelPeerEvidence observation. It is NOT an authorization token.
+- Production-shaped authorize_staffing_from_packet() remains
+  an unconditional refusal; the existing protected writer and
+  original Session/Doctor dispatcher are NOT connected to this
+  module. User JSON cannot select a UID or override a kernel
+  packet identity.
+- The private source test helper takes an expected UID chosen by
+  the GitHub test; production's exposed entrypoint pins UID 0.
+  The separately installed native service must own the socket
+  and invoke the root-only entrypoint, never expose test helper
+  parameters to a caller or UI.
+- Receiving SO_PASSCRED must be configured BEFORE clients can queue
+  message bytes. GitHub CI initially caught packets queued before
+  enabling credential receipt; tests now configure the socket
+  before sending, without weakening refusal of unauthenticated
+  frames. This ordering is an installer/socket activation condition.
+
+### VERIFY
+
+- tests/test-px-hospital-staffing-native-peer.py uses real Linux
+  socketpair, SO_PEERCRED, SO_PASSCRED, SCM_CREDENTIALS, and pidfd
+  calls in GitHub Actions (no live Hospital service). It confirms
+  same-process kernel evidence, refusal of mismatched user IDs,
+  strict AF_UNIX SOCK_SEQPACKET admission, oversized/empty packets,
+  process birth ticks changing during receipt and refused writes.
+- An inherited socket is sent from a forked child; the child's
+  actual SCM_CREDENTIALS PID differs from its inherited
+  SO_PEERCRED origin and is rejected. This is real kernel evidence,
+  not just a mocked PID integer.
+- At exact implementation head
+  309cd8373c83503924ecedcda2c4f9cc41c1d33b, GitHub workflows
+  Hospital / Universal Connections Signed Trash Restore,
+  PX / HOSPITAL STORE, and Meta Apollo Grammar: 3/3 PASS.
+
+### WATCH OUT FOR
+
+A matching native PID/UID/GID and process start time does NOT
+prove the executable's signed release identity, an approved
+operator seat, actual user presence, Polkit permission, or
+an authorized native signer/key. pidfd custody covers this
+short observation; the witness is not a durable Doctor
+Assignment or Session authority. The protected staffing
+PREPARE/COMMIT coordinator remains CI-only and source v13
+approval ledger remains a candidate; no native service,
+old-writer fence, real backup/rollback, or acceptance exists.
+Bed admission and Hospital Burn remain out of scope.
+
+### NEXT
+
+Coordinate with the independently owned Connections native
+issuer and PX Session/Doctor workers on trust roots, signed
+executable and active-seat identity, systemd socket ordering
+and root caller identity. After owner security review, design
+the specific authenticated protected Session/Doctor socket
+operation; keep the former source-only service and candidate
+v13 migration disabled until backup/restore and release
+approvals are obtained.
+
+### DECISIONS
+
+PR #133 remains draft and unmerged. No neighboring owner
+branch, native machine settings, local binaries, production
+keys, Hospital records or permanent Burn were changed.
