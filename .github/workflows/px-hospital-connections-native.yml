@@ -7,6 +7,8 @@ on:
       - "bin/px-hospital-consent-writerd"
       - "bin/px_hospital_room_lifecycle.py"
       - "tests/test-px-hospital-connections-consent.py"
+      - "tests/test-px-hospital-release-cutover-v1.py"
+      - "bin/px_hospital_release_preflight.py"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
     branches: [main]
@@ -51,3 +53,7 @@ jobs:
 
       - name: Full signed PREPARE / COMMIT Room Trash, Bin and Restore
         run: python3 tests/test-px-hospital-connections-consent.py
+      - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
+        run: |
+          python3 -m py_compile bin/px_hospital_release_preflight.py tests/test-px-hospital-release-cutover-v1.py
+          python3 tests/test-px-hospital-release-cutover-v1.py
