@@ -135,7 +135,8 @@ def main():
     assert sys.platform == "linux" and os.geteuid() not in (0, 65534)
     assert shutil.which("sudo")
     peer = pwd.getpwnam("nobody")
-    assert peer.pw_uid != os.geteuid()
+    runtime_peer = pwd.getpwnam("daemon")
+    assert len({peer.pw_uid, runtime_peer.pw_uid, os.geteuid(), 0}) == 4
 
     with tempfile.TemporaryDirectory(prefix="px-hospital-writer-socket-") as tmp:
         parent = Path(tmp)
@@ -163,6 +164,7 @@ def main():
         with ProtectedRoomWriter(
             state_directory=private, socket_directory=runtime,
             client_uid=peer.pw_uid,
+            runtime_uid=runtime_peer.pw_uid,
         ) as writer:
             assert writer.socket_path.stat().st_mode & 0o777 == 0o600
             # Only the disposable runner opens access for test's foreign UID.
@@ -180,6 +182,38 @@ def main():
             )
             assert direct.returncode == 0, (direct.stdout, direct.stderr)
             assert "SEPARATE_UID_DIRECT_SQL_DENIED" in direct.stdout
+
+            # A desktop UID is not the trusted PX runtime service identity.
+            assert send(writer.socket_path, request(
+                "store-command", argv=["room", room],
+            ), peer.pw_name) == {"ok": False, "error": "DENIED"}
+            assert send(writer.socket_path, request(
+                "store-command", argv=["room", room],
+            ), runtime_peer.pw_name)["data"]["id"] == room
+            for blocked_argv in (
+                ["init"],
+                ["room-lifecycle-trash", room],
+                ["room-lifecycle-restore", room],
+                ["sql", "UPDATE rooms SET branch='bad'"],
+                ["message-append", "--room-id", room,
+                 "--author-role", "DOCTOR", "--direction", "outgoing",
+                 "--body-stdin"],
+                ["room-name-set", room, "--name", "test",
+                 "--signed-authorization-file", "/tmp/bogus"],
+            ):
+                assert send(writer.socket_path, request(
+                    "store-command", argv=blocked_argv,
+                ), runtime_peer.pw_name) == {
+                    "ok": False, "error": "DENIED",
+                }
+            assert send(writer.socket_path, request(
+                "store-command", argv=["room-name-set", room,
+                                      "--name", "Protected fixture Room"],
+            ), runtime_peer.pw_name)["ok"]
+            assert send(writer.socket_path, request(
+                "store-command", argv=["doctor-put", "fixture-doctor",
+                                      "--name", "Fixture Doctor"],
+            ), runtime_peer.pw_name)["ok"]
 
             review_call = request("review", roomId=room)
             reviewed = send(writer.socket_path, review_call, peer.pw_name)
@@ -266,6 +300,18 @@ def main():
                 assert bin_result["ok"] and len(bin_result["data"]) == 1
                 assert bin_result["data"][0]["roomId"] == room
                 assert bin_result["data"][0]["state"] == "TRASHED"
+                # The PX runtime route must still obey v12 SQLite hold
+                # triggers; moving a writer must NOT bypass trashed state.
+                denied_trashed_write = send(
+                    writer.socket_path, request("store-command", argv=[
+                        "message-append", "--room-id", room,
+                        "--author-role", "DOCTOR", "--direction", "outgoing",
+                        "--body", "must not appear in trashed Room",
+                    ]), runtime_peer.pw_name,
+                )
+                assert denied_trashed_write == {
+                    "ok": False, "error": "DENIED",
+                }
                 restored_review = send(
                     writer.socket_path, review_call, peer.pw_name,
                 )["data"]
@@ -280,6 +326,45 @@ def main():
                 assert send(
                     writer.socket_path, request("bin"), peer.pw_name,
                 )["data"] == []
+
+            # Existing store semantics are now available to the isolated
+            # PX runtime identity, never to the ordinary desktop UID.
+            runtime_writes = [
+                ["session-put", "fixture-session", "--room-id", room],
+                ["event-append", "--session-id", "fixture-session",
+                 "--event-type", "TEST", "--payload", "{}"],
+                ["message-append", "--room-id", room,
+                 "--author-role", "DOCTOR", "--direction", "outgoing",
+                 "--body", "fixture message"],
+                ["checkpoint-append", "--room-id", room,
+                 "--body", "fixture checkpoint"],
+                ["room-report-append", "--room-id", room,
+                 "--body", "fixture report"],
+                ["assignment-create", "--room-id", room,
+                 "--goal", "synthetic trusted runtime migration"],
+                ["chart-entry-add", "--scope", "ROOM", "--room-id", room,
+                 "--title", "Synthetic chart", "--body", "fixture note"],
+            ]
+            for argv in runtime_writes:
+                result = send(writer.socket_path, request(
+                    "store-command", argv=argv,
+                ), runtime_peer.pw_name)
+                assert result["ok"], (argv, result)
+            runtime_reads = [
+                ["session", "fixture-session"],
+                ["sessions", "--room-id", room],
+                ["events", "fixture-session"],
+                ["messages", room],
+                ["checkpoints", room],
+                ["room-reports", room],
+                ["assignments", "--room-id", room],
+                ["chart-entries", "--scope", "ROOM", "--room-id", room],
+            ]
+            for argv in runtime_reads:
+                result = send(writer.socket_path, request(
+                    "store-command", argv=argv,
+                ), runtime_peer.pw_name)
+                assert result["ok"] and result["data"], (argv, result)
 
             # Owner sees both consumed approvals/receipts. No physical
             # deletion was attempted.
@@ -299,6 +384,7 @@ def main():
         with ProtectedRoomWriter(
             state_directory=private, socket_directory=runtime,
             client_uid=peer.pw_uid,
+            runtime_uid=runtime_peer.pw_uid,
         ) as restarted:
             restarted.socket_path.chmod(0o666)
             after_restart = send(
@@ -340,8 +426,9 @@ def main():
     print(
         "PX PROTECTED ROOM SOCKET PASS // separate-UID peer, direct SQLite "
         "denial, pinned signed TRASH/RESTORE atomic fixture, replay, "
-        "Burn/raw-SQL denial, service restart and WAL-aware backup recovery, "
-        "no production issuer or native install"
+        "Burn/raw-SQL denial, distinct runtime UID legacy writers/reads, "
+        "trashed-Room trigger enforcement, service restart and WAL-aware "
+        "backup recovery, no production issuer or native install"
     )
 
 
