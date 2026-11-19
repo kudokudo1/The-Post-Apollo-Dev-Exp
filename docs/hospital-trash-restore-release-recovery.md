@@ -412,3 +412,109 @@ operator, release a live Doctor, or establish Bed owner authority.
 
 This is an **implementation checkpoint**, not a certification,
 merge decision, native installation, or final operator acceptance.
+
+
+## 2026-11-19 // Package 1 independent signed Session/Doctor permission boundary
+
+**Source-only checkpoint, no installed/native permission granted.** The
+existing #133 protected Room Trash/Restore integration remains separate
+from Session attachment and Doctor succession. The new staff actions do
+NOT reuse the Room Trash/Restore issuer key, signing domain, retention
+permission, operator decision, or socket command.
+
+### IMPLEMENTATION
+
+- `bin/px_hospital_staffing_grants.py` defines two exact native staff
+  intent scopes, `SESSION_ATTACH` and `DOCTOR_SUCCEED`, in their own
+  Ed25519 domain. Signed bytes bind the exact Room, Patient, repository,
+  Git Bed, branch, ACTIVE Assignment, old/new Session and Doctor/Provider,
+  operation, source Room revision and complete v12 graph digest,
+  operator/seat/host, distinct approval ID, 32-byte nonce, and
+  <=30-second lifetime. No client-selected key, raw SQL, private signer,
+  QML approval, or test-key CLI exists.
+- The *future* trusted verifier path is pinned to a separate root-owned
+  `/etc/post-apollo/hospital/staffing-issuer.pub`. The root-pinned
+  entrypoint separately checks machine binding. Verification with an
+  arbitrary fixture public key is intentionally **not** native authority;
+  a source-level `native_verified` witness is set only after the trusted
+  entrypoint checks the root key and installed machine ID.
+- `VerifiedStaffingGrant.consume()` requires an open SQLite transaction
+  and independently rechecks the source Room state, current Room graph,
+  Patient, linked ACTIVE Assignment, Doctor and Room/Bed identity.
+  It records a unique approval/nonce/digest under the SAME write
+  transaction that must include the original staffing change. A
+  changed signature/body, stale Room, expired grant, replay or missing
+  ledger refuses, without issuing a positive authorization.
+- The per-action ledger schema is deliberately **NOT** installed by the
+  current v12 migration and is never auto-created by an untrusted
+  request. The schema and source runtime wiring require a separately
+  reviewed versioned migration.
+- `bin/px_hospital_staffing_admission.py` now contains narrow optional
+  native-grant consumption hooks immediately after each original atomic
+  `BEGIN IMMEDIATE`, with exact Session/Doctor command fields checked
+  against the signed scope. Its owner-function source parity check
+  strips ONLY these two explicitly reviewed hook insertions and
+  the injected reader arguments before comparing against the exact
+  #123/#125 original source bodies.
+- **Release surface remains CLOSED:** `dispatch_native_staffing()`
+  unconditionally refuses; `px_hospital_room_writer.py` never
+  imports staffing grant handlers; the protected bridge still supports
+  21 existing writes and 19 reads but **not** either new staffing
+  command; direct `--confirm` has no native authority. Experimental
+  Bed #127/#128/#129 remains unexposed and independently owned.
+
+### VERIFY // Disposable CI only
+
+- `tests/test-px-hospital-staffing-grants-v1.py` verifies real
+  Ed25519 signatures, separate signing domains, exact field and ID
+  validation, wrong signer/tamper/expiry, atomic nonce/replay,
+  stale graph, mutation after verification, uninstalled ledger refusal,
+  and preservation of historical records.
+- `tests/test-px-hospital-staffing-atomic-consent.py` tests isolated
+  native-verifier simulation through test-interpreter-only `unittest.mock`
+  patches: an unattested fixture signature is refused as native;
+  matched staff grants admit original staged Session and Doctor
+  functions; a forced SQLite Session INSERT failure rolls back both the
+  Session and the consumed approval, and retry of that specific signed
+  grant is successful after the failure is removed. Earlier
+  HANDOFF, Session history and messages remain intact.
+- `tests/test-px-hospital-cross-owner-v12-compatibility.py` still
+  verifies pinned original upstream function parity, including
+  precisely the new optional native authorization hooks.
+- GitHub workflow `Hospital / Universal Connections Signed Trash Restore`
+  runs the new tests with ephemeral keys and disposable v12 database.
+  This source-level witness is not a real signed operator grant or native
+  deployed Fedora / Silverblue test.
+
+### WATCH OUT FOR // Missing native admission, not hidden as done
+
+1. No installed staffing-specific signer, independently authenticated
+   executable/start identity, active human seat/Polkit review or
+   operator-approved per-action native consent exists.
+2. No production staffing-ledger migration, root key provision,
+   key rotation/revocation/anti-rollback protocol or signed staff
+   issuer enrollment has been accepted.
+3. No protected socket endpoint for these two new commands is enabled.
+   The old CLI and native PX agent front doors are not switched over.
+   Production remains **HOSPITAL BACKEND NOT READY** for this lane.
+4. PX #123 and #125 remain independently owned, open drafts and must
+   preserve their merge/source order. Bed work remains separate.
+5. No actual Hospital database backup/migration/old-writer fence or
+   native acceptance has been performed, and Hospital Burn remains
+   explicitly unsupported.
+
+### NEXT
+
+Review the root-pinned staffing issuer and exact operator/seat consent
+contract with the Connections and Hospital owners. Reconcile the
+transaction-bound staff grant with the separately owned original
+functions and versioned ledger migration, then provide a narrowly typed
+native protected service endpoint under verified source identity.
+Only then proceed to old-writer admission fencing, backup/recovery,
+independent security review and operator-authorized native release.
+
+### DECISIONS
+
+All changes stay inside existing draft PX #133. No source-owner branch
+edit, merge, live local-machine write, production privilege or
+Hospital Burn is authorized by the passing tests.
