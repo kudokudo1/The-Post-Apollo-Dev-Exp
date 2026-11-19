@@ -26,6 +26,18 @@ DB_NAMES={"hospital.db","hospital.db-wal","hospital.db-shm"}
 PROC=Path("/proc")
 MAX_PROC=250000
 
+# Source-level pending commands from the separately owned, unmerged
+# Session/Doctor/Bed branches. This list is release evidence, NOT a native
+# command allowlist and NOT authority to run their SQL. Do not make a
+# compatibility claim before each owner contract, permission boundary,
+# installed source hash and all-writer cutover have been reviewed.
+UNRECONCILED_NATIVE_COMMANDS = frozenset((
+    "session-attach-atomic",
+    "session-succeed-atomic",
+    "room-bed-claim-atomic",
+    "room-bed-claim-signed-atomic",
+))
+
 class AuditHold(RuntimeError):
     pass
 
@@ -224,6 +236,8 @@ def assess_writers(config,descriptors,unknown,checked):
         "verifiedBackupAndRollback":False,
         "nativeApprovalInstalledAndReviewed":False,
         "operatorAcceptedCutover":False,
+        "allWriterCompatibilityVerified":False,
+        "unreconciledHospitalCommands":sorted(UNRECONCILED_NATIVE_COMMANDS),
         "releaseApproved":False,
     }
 
