@@ -2,11 +2,11 @@
 
 This is an actual AF_UNIX, SO_PEERCRED-checked RPC to a separately owned
 SQLite database, but NOT an installed or activated production service.
-Client peers cannot select a database, key, SQL command or grant verifier.
+Client peers cannot select a database, key, SQL command or grant verifier.\nA separately pinned runtime service UID can invoke a reviewed allowlist of\nexisting PX Hospital store commands, preserving their source validators.
 Read-only Room review and bin are exposed; the ONLY mutations are the
 existing signed/atomic Room TRASH and RESTORE transitions.
 
-Other Hospital store writers remain unmigrated. No service unit, sudo,
+Ordinary desktop writers remain unmigrated until approved runtime cutover. No service unit, sudo,
 setuid, operator approval, signing key, environment-selected trust anchor
 or host storage migration is provided by this module.
 """
@@ -26,9 +26,10 @@ from urllib.parse import quote
 
 import px_hospital_room_authority as authority
 import px_hospital_room_lifecycle as lifecycle
+import px_hospital_protected_store_bridge as store_bridge
 
 SCHEMA = "post-apollo.hospital.protected-room-writer.v1"
-_MAX_REQUEST = 8192
+_MAX_REQUEST = 65536
 _MAX_RESPONSE = 1048576
 _ALLOWED_READ = frozenset(("review", "bin"))
 _ALLOWED_WRITE = frozenset(("trash", "restore"))
@@ -70,6 +71,8 @@ def parse_request(frame: bytes):
         expected = {"schema", "operation", "roomId"}
     elif action == "bin":
         expected = {"schema", "operation"}
+    elif action == "store-command":
+        expected = {"schema", "operation", "argv"}
     elif action in _ALLOWED_WRITE:
         expected = {
             "schema", "operation", "roomId", "expectedRevision",
@@ -119,15 +122,17 @@ class ProtectedRoomWriter:
 
     The trusted native service manager must choose owner-only paths and the
     desktop UID; a client request never supplies or changes those settings.
-    The socket is 0600 by default. Installers must separately approve a
+    The socket is 0600 by default. Both client and runtime UIDs must be\n    distinct from the service owner and from each other.\n    Installers must separately approve a
     restricted per-client ACL/owner-owned socket activation policy.
     """
 
     def __init__(self, *, state_directory: Path, socket_directory: Path,
-                 client_uid: int):
+                 client_uid: int, runtime_uid: int):
         if (os.name != "posix" or not hasattr(socket, "SO_PEERCRED")
                 or os.geteuid() == 0 or type(client_uid) is not int
                 or client_uid in (0, os.geteuid())
+                or type(runtime_uid) is not int
+                or runtime_uid in (0, os.geteuid(), client_uid)
                 or not isinstance(state_directory, Path)
                 or not isinstance(socket_directory, Path)
                 or not state_directory.is_absolute()
@@ -139,6 +144,7 @@ class ProtectedRoomWriter:
         self.socket_directory = socket_directory
         self.socket_path = socket_directory / "hospital-room-writer-v1.sock"
         self.client_uid = client_uid
+        self.runtime_uid = runtime_uid
         if len(os.fsencode(self.socket_path)) >= 100:
             raise WriterHold("UNIX_SOCKET_PATH_TOO_LONG")
         self._server = None
@@ -192,9 +198,19 @@ class ProtectedRoomWriter:
             raise WriterHold("SIGNED_HOST_MISMATCH")
         return verified
 
-    def process(self, request):
+    def process(self, request, *, peer_uid):
+        # The UID is supplied ONLY by SO_PEERCRED, never the JSON request.
+        # A desktop application cannot invoke the privileged legacy store.
+        if peer_uid not in (self.client_uid, self.runtime_uid):
+            raise WriterHold("UNTRUSTED_PEER")
         action = request["operation"]
+        if action == "store-command" and peer_uid != self.runtime_uid:
+            raise WriterHold("STORE_REQUIRES_SEPARATE_RUNTIME_IDENTITY")
+        if action in _ALLOWED_WRITE and peer_uid != self.client_uid:
+            raise WriterHold("ROOM_ACTION_REQUIRES_CLIENT_IDENTITY")
         with closing(self._connect()) as db:
+            if action == "store-command":
+                return store_bridge.execute(db, request["argv"])
             if action == "review":
                 return lifecycle.review(db, request["roomId"])
             if action == "bin":
@@ -224,10 +240,12 @@ class ProtectedRoomWriter:
                     if not packet:
                         break
                     raw.extend(packet)
-                if uid != self.server.owner.client_uid:
+                if uid not in (
+                    self.server.owner.client_uid, self.server.owner.runtime_uid
+                ):
                     raise WriterHold("UNTRUSTED_PEER")
                 request = parse_request(bytes(raw))
-                data = self.server.owner.process(request)
+                data = self.server.owner.process(request, peer_uid=uid)
                 result = {"ok": True, "data": data}
                 wire = json.dumps(
                     result, separators=(",", ":"), ensure_ascii=True,
