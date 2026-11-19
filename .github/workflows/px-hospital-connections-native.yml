@@ -13,6 +13,8 @@ on:
       - "tests/test-px-hospital-native-release-audit.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "bin/px_hospital_staffing_admission.py"
+      - "bin/px_hospital_staffing_grants.py"
+      - "tests/test-px-hospital-staffing-grants-v1.py"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
@@ -31,6 +33,8 @@ on:
       - "tests/test-px-hospital-native-release-audit.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "bin/px_hospital_staffing_admission.py"
+      - "bin/px_hospital_staffing_grants.py"
+      - "tests/test-px-hospital-staffing-grants-v1.py"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
@@ -136,6 +140,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_admission.py tests/test-px-hospital-cross-owner-v12-compatibility.py
           python3 tests/test-px-hospital-cross-owner-v12-compatibility.py
+
+      - name: Verify separate one-use signed Session Doctor grant boundary, no native enablement
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_grants.py tests/test-px-hospital-staffing-grants-v1.py
+          python3 tests/test-px-hospital-staffing-grants-v1.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
