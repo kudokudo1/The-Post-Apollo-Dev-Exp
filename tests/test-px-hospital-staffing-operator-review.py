@@ -149,9 +149,13 @@ for altered, message in (
 ):
     refuse(lambda w=altered:review.review_digest(req,prepared,**w),message)
 
+# A syntactically VALID COMMIT frame still cannot generate the
+# initial operator review; the phase must be the original PREPARE.
+valid_commit=dict(req,kind="commit",
+                  writerInstance=prepared["writerInstance"],
+                  signedEnvelope=b64(b'{"body":{}}'))
 refuse(lambda:review.review_digest(
-    dict(req,kind="commit"),prepared,**witness),
-    "PREPARE_REVIEW_REQUIRED")
+    valid_commit,prepared,**witness),"PREPARE_REVIEW_REQUIRED")
 refuse(lambda:review.review_digest(
     dict(req,action="TRASH"),prepared,**witness),
     "UNKNOWN_OR_CROSS_SYSTEM_OPERATION")
