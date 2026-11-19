@@ -844,3 +844,94 @@ approvals are obtained.
 PR #133 remains draft and unmerged. No neighboring owner
 branch, native machine settings, local binaries, production
 keys, Hospital records or permanent Burn were changed.
+
+
+## 2026-11-19 // Package 1 native executable-image evidence + READY contract
+
+**Source/test milestone:** real Linux executable-image witness PASS, 
+credential-handshake PASS, all three workflows PASS on
+eb72e56df06e77352cf432b3575b36f7e99ddf32. **Native activation
+still HOLD.** Existing protected Room/Trash, Session/Doctor and source
+v12/v13 permission boundaries remain unchanged.
+
+### IMPLEMENTATION
+
+- bin/px_hospital_staffing_native_peer.py now hashes the actual
+  /proc/PID/exe file descriptor for the packet's kernel-verified PID,
+  not a caller-supplied path, JSON field, command line or desktop label.
+  The descriptor must be a 4 KiB–64 MiB root-owned, non-group/world-
+  writable, linked regular ELF inode, remain unchanged while hashed,
+  and not name an unlinked (deleted) executable. The SHA-256 is read
+  **twice while the pidfd is still retained**, before and after packet
+  receive. A mismatch refuses the packet, including in-place exec
+  changes that leave PID and start ticks unchanged.
+- KernelPeerEvidence exposes an executable_sha256 observation alongside
+  the kernel PID/UID/GID, process birth ticks and packet length. This
+  output alone is explicitly **not** a verified signed release, not an
+  installed signed Connections policy, and not operator authorization.
+- The module now implements the same READY-first handshake used by
+  the merged Connections C5-H2 issuer (App #2056): check the connected
+  AF_UNIX/SOCK_SEQPACKET root peer, enable SO_PASSCRED, then send the
+  exact fixed READY frame before the client sends a packet. The
+  public read-only receive_root_issuer_packet path hard-pins root
+  issuer UID 0 and uses this handshake. No caller chooses the UID.
+  No new bind/listen socket, systemd service, key or user-facing
+  permission action was added.
+- The separate, already-merged native Connections issuer C5-H2
+  source contains root-owned executable digest policy, logind
+  active-session checks, per-action Polkit approval and root key
+  custody for **Room TRASH/RESTORE**, not Session/Doctor staffing.
+  This PX change neither grants those unrelated permissions nor
+  duplicates the signer; staffing-specific issuer/operator contract
+  and approved signed release provenance are future owner work.
+
+### VERIFY
+
+- tests/test-px-hospital-staffing-native-peer.py uses real Linux
+  socketpair/pidfd/SO_PEERCRED/SCM_CREDENTIALS on GitHub Actions,
+  checks the witnessed ELF hash against independently read
+  /proc/self/exe bytes, rejects a changed observed binary digest
+  between packet stages and an unlinked executable, and checks
+  the fixed READY packet delivered before any accepted request.
+- A wrong UID cannot arm the READY handshake. Existing inherited-
+  socket child, truncated and oversized packet, unexpected socket
+  type, changed process birth, wrong UID and unconditional
+  staffing-dispatch denial tests remain covered.
+- Hospital / Universal Connections Signed Trash Restore,
+  PX / HOSPITAL STORE and Meta Apollo Grammar: **3/3 SUCCESS**
+  at implementation commit eb72e56df06e77352cf432b3575b36f7e99ddf32.
+
+### WATCH OUT FOR
+
+A root-owned executable inode and SHA-256 digest must be compared
+against an independently verified, signed release enrollment (C3e /
+C4b) before treating its bytes as an approved native client. Hash
+equality alone does not provide process isolation, runtime library
+attestation, origin of the installed release, real human presence,
+effective Polkit policy, compositor unlock proof, or permitted
+Hospital assignment. The current staffing issuer/seat approval
+contract is NOT deployed or owner-approved.
+
+The native staffing PREPARE/COMMIT coordinator remains CI-only;
+source v13 is a candidate unapproved SQLite migration, and the
+existing protected writer does not allow staffing commands.
+Native root signer, seat/consent, old-writer process fence,
+backup/recovery and independent release acceptance are required.
+Bed remains separately owned. Hospital Burn stays unsupported.
+
+### NEXT
+
+Coordinate the staffing-specific action/active-seat approval
+contract and exact signed installed-release enrollment with
+the existing Connections issuer and C3e/C4b owners. Align the
+kernel witness and pinned executable digest to that approved
+manifest; only then consider protected Session/Doctor native
+request routing and owner-approved v13 migration. Test old
+binary prevention, native source integrity and backup/recovery
+before operator acceptance and any production activation.
+
+### DECISIONS
+
+PR #133 stays draft, unmerged. Only its own source/test/docs
+changed; no other worker's branch, local host/service, signing
+key, actual Hospital record or irreversible Trash/Burn action.
