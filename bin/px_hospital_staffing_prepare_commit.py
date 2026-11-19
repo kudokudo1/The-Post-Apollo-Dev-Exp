@@ -279,9 +279,13 @@ class SourceStaffingRehearsal:
             "operatorAuthenticated": False,
             "requiresExternalConsent": True,
         }
+        # Reconstruct the exact original PREPARE frame. COMMIT carries
+        # different fields and a different phase label; neither may
+        # alter what the human approved in the PREPARE review.
         untrusted_request = {
             key: request[key] for key in transport.PREPARE_FIELDS
         }
+        untrusted_request["kind"] = transport.KIND_PREPARE
         expected_review = review.review_digest(
             untrusted_request, prepared,
             operator_uid=signed["operatorUid"],
