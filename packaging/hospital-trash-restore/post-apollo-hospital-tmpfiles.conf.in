@@ -1,0 +1,7 @@
+# SOURCE TEMPLATE ONLY. Must be installed by a verified root-owned package.
+# The C5 signer requires all socket path ancestors root-owned and unwritable.
+d /run/post-apollo 0755 root root -
+d /run/post-apollo/hospital 0755 root root -
+# The protected database directory is deliberately NOT provisioned here.
+# A separate operator-approved backup/restore operation must place the
+# original complete SQLite database under the dedicated owner account.
