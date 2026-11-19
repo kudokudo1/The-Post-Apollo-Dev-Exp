@@ -17,8 +17,34 @@ import struct
 import sys
 import threading
 
-# The systemd-installed libexec path must pin source and import ancestry;
-# a mutable user-installed PYTHONPATH must not control the native service.
+# Isolated Python disables PYTHONPATH, user site and script-directory
+# injection. Re-add ONLY root-owned source modules from this fixed path.
+# The installer must independently approve their exact release digest.
+LIB_DIR = Path("/usr/libexec/post-apollo/hospital")
+def _pinned_module_directory():
+    for entry in (LIB_DIR, *LIB_DIR.parents):
+        info = entry.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise RuntimeError("UNTRUSTED_NATIVE_SOURCE_DIRECTORY")
+    for filename in (
+        "px_hospital_room_writer.py", "px_hospital_native_approval.py",
+        "px_hospital_room_authority.py", "px_hospital_room_lifecycle.py",
+        "px_hospital_protected_store_bridge.py",
+    ):
+        info = (LIB_DIR / filename).lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                or info.st_nlink != 1
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise RuntimeError("UNTRUSTED_NATIVE_SOURCE_MODULE")
+    native = (LIB_DIR / "px-hospital-native-writerd").lstat()
+    actual = Path(__file__).stat()
+    if (not stat.S_ISREG(native.st_mode) or native.st_uid != 0
+            or native.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or (native.st_dev, native.st_ino) != (actual.st_dev, actual.st_ino)):
+        raise RuntimeError("UNPINNED_NATIVE_ENTRYPOINT")
+_pinned_module_directory()
+sys.path.insert(0, str(LIB_DIR))
 from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
 from px_hospital_native_approval import (
     ProtectedApproval, Refused, MAX_IPC
