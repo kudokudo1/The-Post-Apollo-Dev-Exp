@@ -54,6 +54,11 @@ def pair():
     a,b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     a.settimeout(2)
     b.settimeout(2)
+    # Enable Linux SCM_CREDENTIALS before any client queues a packet.
+    # Enabling SO_PASSCRED only after send can yield anonymous/synthetic
+    # credentials for a queued packet; rejecting such frames is correct.
+    a.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    b.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     return a,b
 
 
