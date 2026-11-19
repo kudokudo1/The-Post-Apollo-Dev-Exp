@@ -21,6 +21,25 @@ import json
 from pathlib import Path
 import sqlite3
 
+import px_hospital_staffing_grants as grants
+
+
+def _native_scope(grant, operation, expected):
+    """Only an installed root-pinned verifier may supply native authority.
+
+    The owner functions are callable internally during isolated source
+    verification; this helper never turns plain --confirm into approval.
+    The protected request dispatcher remains deny-only.
+    """
+    if (not isinstance(grant, grants.VerifiedStaffingGrant)
+            or grant.native_verified is not True
+            or grant.body.get("operation") != operation):
+        raise NativeStaffingHold("ROOT_PINNED_STAFFING_GRANT_REQUIRED")
+    scope = grant.body.get("scope")
+    if type(scope) is not dict or any(
+            scope.get(key) != str(value) for key, value in expected.items()):
+        raise NativeStaffingHold("NATIVE_STAFFING_REQUEST_SCOPE_CHANGED")
+
 
 class NativeStaffingHold(RuntimeError):
     """Native staff-operation authority has not been installed/reviewed."""
@@ -36,7 +55,7 @@ def dispatch_native_staffing(*_args, **_kwargs):
     raise NativeStaffingHold("NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
 
 
-def session_attach_atomic(conn: sqlite3.Connection, args, *, session_record) -> dict:
+def session_attach_atomic(conn: sqlite3.Connection, args, *, session_record, native_grant=None) -> dict:
     """Admission-only attach. Same-DB Room/Bed check and INSERT are one write.
 
     No model process is started. No existing Session is moved or overwritten.
@@ -70,8 +89,20 @@ def session_attach_atomic(conn: sqlite3.Connection, args, *, session_record) -> 
     if str(Path(bed_text).expanduser()) != bed_text:
         raise RuntimeError("HOSPITAL ATTACH REFUSED // Bed path must be explicit")
 
+    if native_grant is not None:
+        _native_scope(native_grant, grants.ATTACH, {
+            "roomId": room_id, "sessionId": session_id,
+            "doctorId": doctor_id, "providerId": provider_id,
+            "assignmentId": requested_assignment,
+            "repository": repository, "branch": branch,
+            "bedPath": bed_text, "mode": args.mode,
+        })
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if native_grant is not None:
+            native_grant.consume(
+                conn, operation=grants.ATTACH,
+                scope=native_grant.body["scope"])
         room = conn.execute(
             """
             SELECT r.*, p.repository AS repository
@@ -196,7 +227,7 @@ def session_attach_atomic(conn: sqlite3.Connection, args, *, session_record) -> 
         raise
 
 
-def session_succeed_atomic(conn: sqlite3.Connection, args, *, room_record, session_record) -> dict:
+def session_succeed_atomic(conn: sqlite3.Connection, args, *, room_record, session_record, native_grant=None) -> dict:
     """Move registered Doctor staffing and admit a NEW idle Session atomically.
 
     A terminated prior Session is historical evidence, not a heartbeat.
@@ -234,8 +265,23 @@ def session_succeed_atomic(conn: sqlite3.Connection, args, *, room_record, sessi
     if not bed.is_absolute() or not bed.is_dir():
         raise RuntimeError("HOSPITAL SUCCESSION REFUSED // absolute existing Bed required")
     canonical_bed = bed.resolve(strict=True)
+    if native_grant is not None:
+        _native_scope(native_grant, grants.SUCCEED, {
+            "roomId": room_id, "previousSessionId": old_session_id,
+            "newSessionId": next_session_id,
+            "previousDoctorId": old_doctor,
+            "previousProviderId": old_provider,
+            "successorDoctorId": next_doctor,
+            "successorProviderId": next_provider,
+            "assignmentId": assignment_id, "repository": repository,
+            "branch": branch, "bedPath": bed_text,
+        })
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if native_grant is not None:
+            native_grant.consume(
+                conn, operation=grants.SUCCEED,
+                scope=native_grant.body["scope"])
         room = conn.execute("""
             SELECT r.*, p.repository AS repository
             FROM rooms r LEFT JOIN patients p ON p.patient_id = r.patient_id
