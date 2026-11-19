@@ -14,6 +14,7 @@ on:
       - tests/test-px-hospital-unprotected-writer-witness.py
       - tests/test-px-hospital-protected-dac-fixture.py
       - bin/px_hospital_room_writer.py
+      - bin/px_hospital_protected_store_bridge.py
       - tests/test-px-hospital-protected-writer-socket.py
       - bin/px-hospital-room-writerd
       - tests/test-px-hospital-writer-host-refusals.py
@@ -30,6 +31,7 @@ on:
       - tests/test-px-hospital-unprotected-writer-witness.py
       - tests/test-px-hospital-protected-dac-fixture.py
       - bin/px_hospital_room_writer.py
+      - bin/px_hospital_protected_store_bridge.py
       - tests/test-px-hospital-protected-writer-socket.py
       - bin/px-hospital-room-writerd
       - tests/test-px-hospital-writer-host-refusals.py
@@ -53,7 +55,7 @@ jobs:
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py bin/px_hospital_room_writer.py tests/test-px-hospital-protected-writer-socket.py bin/px-hospital-room-writerd tests/test-px-hospital-writer-host-refusals.py
+          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py bin/px_hospital_room_writer.py tests/test-px-hospital-protected-writer-socket.py bin/px-hospital-room-writerd tests/test-px-hospital-writer-host-refusals.py bin/px_hospital_protected_store_bridge.py
 
       - name: Test Hospital durable state store
         run: |
