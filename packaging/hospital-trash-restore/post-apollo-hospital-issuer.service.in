@@ -4,7 +4,7 @@
 Description=Post Apollo Hospital interactive Room Trash and Restore approval
 Requires=post-apollo-hospital-consent.socket
 After=post-apollo-hospital-consent.socket
-ConditionPathExists=/etc/post-apollo/hospital/issuer-policy.json
+ConditionPathExists=/etc/post-apollo/hospital/issuer-runtime-policy.json
 ConditionPathExists=/etc/post-apollo/hospital/room-lifecycle-issuer.pub
 
 [Service]
