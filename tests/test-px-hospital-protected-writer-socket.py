@@ -28,7 +28,10 @@ ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / "bin" / "px-hospital-store"
 sys.path.insert(0, str(ROOT / "bin"))
 import px_hospital_room_authority as auth
-from px_hospital_room_writer import ProtectedRoomWriter, SCHEMA, parse_request
+from px_hospital_room_writer import ProtectedRoomWriter, SCHEMA, WriterHold
+from px_hospital_protected_client import (
+    prepare_argv, send_command, pinned_socket_contract, MAX_BODY,
+)
 
 CLIENT = r"""
 import json
@@ -50,6 +53,18 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         parts.extend(chunk)
         if len(parts) > 1048576: raise AssertionError("SERVER_REPLY_UNBOUNDED")
 print(parts.decode("utf-8", "strict"), end="")
+"""
+RUNTIME_CLIENT = r"""
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from px_hospital_protected_client import prepare_argv, send_command
+argv, _as_json = prepare_argv(
+    sys.argv[4:], body_data=b"streamed fixture body"
+)
+reply = send_command(Path(sys.argv[2]), int(sys.argv[3]), argv)
+print(json.dumps(reply))
 """
 DIRECT = r"""
 from pathlib import Path
@@ -137,6 +152,32 @@ def main():
     peer = pwd.getpwnam("nobody")
     runtime_peer = pwd.getpwnam("daemon")
     assert len({peer.pw_uid, runtime_peer.pw_uid, os.geteuid(), 0}) == 4
+
+    args, json_mode = prepare_argv([
+        "message-append", "--room-id", "room1",
+        "--author-role", "DOCTOR", "--direction", "outgoing",
+        "--body-stdin", "--json",
+    ], body_data=b"safe-stream-body")
+    assert json_mode and args[-2:] == ["--body", "safe-stream-body"]
+    for broken in (b"\xff", b"x" * (MAX_BODY + 1)):
+        try:
+            prepare_argv([
+                "message-append", "--room-id", "room1",
+                "--author-role", "DOCTOR", "--direction", "outgoing",
+                "--body-stdin",
+            ], body_data=broken)
+        except WriterHold:
+            pass
+        else:
+            raise AssertionError("UNSAFE_STDIN_BODY_ACCEPTED")
+    try:
+        pinned_socket_contract()
+    except (WriterHold, OSError):
+        # The temporary CI runner has no installed root-owned native
+        # config. This is expected and MUST NOT create one.
+        pass
+    else:
+        raise AssertionError("UNEXPECTED_CI_PRODUCTION_CONFIG")
 
     with tempfile.TemporaryDirectory(prefix="px-hospital-writer-socket-") as tmp:
         parent = Path(tmp)
@@ -377,6 +418,47 @@ def main():
                 ).fetchone()[0] == 2
                 assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert database.exists()
+
+            # The protected client must reject a world-writable socket
+            # instead of trusting a caller-supplied address.
+            try:
+                send_command(writer.socket_path, os.geteuid(),
+                             ["room", room])
+            except WriterHold as exc:
+                assert "SOCKET_OWNER_OR_PERMISSIONS_REFUSED" in str(exc)
+            else:
+                raise AssertionError("WORLD_WRITABLE_SOCKET_ACCEPTED")
+
+            # A disposable CI-only group handoff models the approved
+            # runtime socket ACL; no host daemon account is created.
+            permission = subprocess.run(
+                ["sudo", "-n", "chgrp", str(runtime_peer.pw_gid),
+                 str(writer.socket_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert permission.returncode == 0, permission.stderr
+            writer.socket_path.chmod(0o660)
+            native_client = subprocess.run([
+                "sudo", "-n", "-u", runtime_peer.pw_name, sys.executable,
+                "-c", RUNTIME_CLIENT, str(ROOT / "bin"),
+                str(writer.socket_path), str(os.geteuid()), "room", room,
+            ], capture_output=True, text=True, timeout=10)
+            assert native_client.returncode == 0, (
+                native_client.stdout, native_client.stderr
+            )
+            assert json.loads(native_client.stdout)["id"] == room
+            streamed = subprocess.run([
+                "sudo", "-n", "-u", runtime_peer.pw_name, sys.executable,
+                "-c", RUNTIME_CLIENT, str(ROOT / "bin"),
+                str(writer.socket_path), str(os.geteuid()),
+                "message-append", "--room-id", room,
+                "--author-role", "DOCTOR", "--direction", "outgoing",
+                "--body-stdin",
+            ], capture_output=True, text=True, timeout=10)
+            assert streamed.returncode == 0, (
+                streamed.stdout, streamed.stderr
+            )
+            assert json.loads(streamed.stdout)["id"] > 0
         assert not writer.socket_path.exists()
 
         # Restart the service on the SAME owner-controlled DB. No signed
@@ -427,8 +509,9 @@ def main():
         "PX PROTECTED ROOM SOCKET PASS // separate-UID peer, direct SQLite "
         "denial, pinned signed TRASH/RESTORE atomic fixture, replay, "
         "Burn/raw-SQL denial, distinct runtime UID legacy writers/reads, "
-        "trashed-Room trigger enforcement, service restart and WAL-aware "
-        "backup recovery, no production issuer or native install"
+        "trashed-Room trigger enforcement, pinned-client peer verification "
+        "and bounded stdin routing, service restart and WAL-aware backup "
+        "recovery, no production issuer or native install"
     )
 
 
