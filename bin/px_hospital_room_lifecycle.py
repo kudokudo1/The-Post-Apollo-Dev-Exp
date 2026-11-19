@@ -278,7 +278,7 @@ def trashed_rooms(conn):
 
 
 def transition(conn, room_id, action, expected_revision, expected_digest,
-               confirm_room_id, *, authorization=None):
+               confirm_room_id, *, authorization=None, protected_hold=None):
     """Exactly one Room, one revision, one transaction. No original DELETE."""
     room_id = _identity(room_id)
     if action not in ("TRASH", "RESTORE"):
@@ -316,6 +316,13 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
         """, (room_id,)).fetchone()
         if room_identity is None:
             raise RoomLifecycleRefused("ROOM_PATIENT_IDENTITY_UNVERIFIED")
+        # The issuer's retention/hold decision is checked again while
+        # the SAME source BEGIN IMMEDIATE write transaction is held.
+        # It is not a QML boolean and never selected by a CLI caller.
+        if protected_hold is not None:
+            if not callable(protected_hold):
+                raise RoomLifecycleRefused("PROTECTED_HOLD_NOT_CALLABLE")
+            protected_hold(conn, source, room_identity)
         operator_id, grant_digest = authorization.consume(
             conn, room_id=room_id,
             patient_id=str(room_identity["patient_id"] or ""),
