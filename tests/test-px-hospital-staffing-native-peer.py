@@ -7,6 +7,7 @@ database. No local operator/machine configuration or staff grant is written.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import sys
@@ -76,6 +77,9 @@ with reader, sender:
     assert evidence.uid == os.getuid()
     assert evidence.gid == os.getgid()
     assert evidence.start_ticks > 0
+    assert evidence.executable_sha256 == hashlib.sha256(
+        Path("/proc/self/exe").read_bytes()).hexdigest()
+    assert len(evidence.executable_sha256) == 64
     assert evidence.packet_length == len(data)
     assert evidence.source == "linux-so-peercred-scm-credentials"
     refuse(lambda:peer.authorize_staffing_from_packet(evidence, data),
@@ -148,6 +152,31 @@ with reader,sender:
                       side_effect=[true_ticks,true_ticks+1]):
         refuse(lambda:peer._receive_packet(
             reader,expected_uid=os.getuid()),"PROCESS_BIRTH_CHANGED")
+
+# A process that changes executable image without changing its numeric PID
+# or birth ticks still cannot reuse the original packet admission witness.
+reader,sender=pair()
+with reader,sender:
+    sender.sendall(data)
+    actual=peer._executable_sha(os.getpid())
+    with patch.object(peer,"_executable_sha",
+                      side_effect=[actual, "0"*64]):
+        refuse(lambda:peer._receive_packet(
+            reader,expected_uid=os.getuid()),
+            "EXECUTABLE_CHANGED_DURING_PACKET")
+
+# An unlinked executable is not an installed release, even if the old
+# inode remains readable through /proc/PID/exe.
+with patch.object(peer.os,"readlink",
+                  return_value="/tmp/removed-runner (deleted)"):
+    refuse(lambda:peer._executable_sha(os.getpid()),
+           "UNLINKED_EXECUTABLE_REFUSED")
+
+# The runner's ELF digest is evidence only. No packet, hash, env boolean,
+# arbitrary release pin or synthetic seat can activate native staffing.
+refuse(lambda:peer.authorize_staffing_from_packet(
+    "releaseSha256:"+actual, uid=os.getuid(), activeSeat=True),
+    "NATIVE_STAFFING_AUTHORITY_NOT_INSTALLED")
 
 # An inherited descriptor can be written by a different process. Linux's
 # SO_PEERCRED describes the connected endpoint, while SCM_CREDENTIALS
