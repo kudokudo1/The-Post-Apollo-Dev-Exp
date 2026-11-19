@@ -935,3 +935,116 @@ before operator acceptance and any production activation.
 PR #133 stays draft, unmerged. Only its own source/test/docs
 changed; no other worker's branch, local host/service, signing
 key, actual Hospital record or irreversible Trash/Burn action.
+
+
+## 2026-11-19 // Staffing-specific operator review and Polkit contract
+
+**Status:** source-only review contract and synthetic attacker tests PASS;
+native staffing permission, signed-release enrollment and host
+installation **NOT approved or active**.
+
+### IMPLEMENTATION
+
+- The existing signed staffing-grant schema now explicitly binds:
+  operatorUid and derived operatorId, source-specific
+  polkitActionId, positive root-policy generation, observed
+  clientExecutableSha256, issuerReleaseSha256, and
+  reviewDigest. The prior signed Session/Doctor scope, Room revision,
+  source graph, caller host, login1 seat, requestNonce, writerInstance,
+  one-use approval nonce, and <=30-second expiry remain required.
+  Only the correct action-specific Polkit ID is valid.
+- bin/px_hospital_staffing_operator_review.py defines the exact
+  canonical source review for either SESSION_ATTACH or
+  DOCTOR_SUCCEED: Room/Patient/Assignment/Git Bed, Session and
+  Doctor/Provider changes, repository/branch, source revision and
+  graph digest, prepared nonce, protected writer instance, operator
+  UID, login1 seat identifier, executable observations and policy
+  generation. The domain-separated SHA-256 reviewDigest changes when
+  any of these details change. The review summary cannot report
+  operatorAuthorized, polkitCompleted or signed-release verification
+  as true.
+- The staged CI-only PREPARE/COMMIT coordinator reconstructs the
+  original canonical PREPARE intent and independently recalculates
+  this reviewDigest at COMMIT; a validly signed but different
+  review, policy generation or action is refused before the original
+  atomic Session/Doctor mutation. COMMIT does not grant permission
+  just because it presents a matching text description.
+- Source-only candidate:
+  packaging/hospital-trash-restore/
+  candidate-org.postapollo.hospital.staffing.policy
+  defines separate Polkit auth_self actions for Session attach
+  and Doctor succession, with allow_any=no and allow_inactive=no;
+  no KEEP/caching. It is neither installed nor consulted by a
+  live system. The merged Connections C5-H2 issuer's existing
+  Room Trash/Restore Polkit actions and owner files remain unchanged.
+- The previously merged Connections H2 issuer DOES provide native
+  logind and interactive per-action Polkit mechanisms for Room
+  Trash/Restore, but its policy/action list does not authorize
+  Hospital staffing and cannot be silently repurposed. The
+  staffing-specific use of that installed native implementation
+  requires its owner's separate approval and a real policy/agent
+  review. A root-owned hash or a successful mocked Polkit return
+  is not independent signed-release or human-consent evidence.
+
+### VERIFY
+
+- tests/test-px-hospital-staffing-operator-review.py compares
+  review digests after changes to Room graph, revision, Assignment
+  context, Session/Doctor, request nonce, writer instance, operator
+  UID, seat, client/issuer executable digest, and policy generation.
+  It checks expired/untrusted prepared source, refused invalid
+  login1 seat, malformed metadata, spoofed operator identity and
+  a valid-shaped COMMIT substituted for PREPARE.
+- It parses the candidate Polkit XML to assert exactly two distinct
+  action IDs, no Trash/Restore permission crossover, and conservative
+  active/inactive/any defaults. It also reads the pinned merged
+  Connections C5-H2 source in CI to confirm the two sets of actions
+  remain separate and its existing logind/Polkit implementation
+  has not been modified.
+- tests/test-px-hospital-staffing-prepare-commit.py exercises
+  signer-valid but wrong reviewDigest, changed policy generation and
+  attempted use of Room-TRASH Polkit authorization for Session
+  attachment; all refuse. The original atomic rollback, issuer
+  replay, signature, identity and historical handoff tests still
+  run in the same integration workflow.
+- Three GitHub workflows PASS at implementation commit
+  8d6d840fd9924a3ba2aae4835e2addd6ab37c557:
+  Hospital / Universal Connections Signed Trash Restore,
+  PX / HOSPITAL STORE, Meta Apollo Grammar.
+- CI first exposed a PREPARE/COMMIT phase-reconstruction mismatch;
+  this was corrected to check the ORIGINAL PREPARE review.
+  A subsequent test used a malformed COMMIT and was amended to
+  exercise a structurally valid COMMIT; no parser checks were
+  relaxed to gain a pass.
+
+### WATCH OUT FOR
+
+This change only binds the data an operator MUST review. It does
+NOT prove what the operator actually saw, logind validity, lock
+state, current Polkit agent/rules, request-specific interaction,
+signed release provenance or trusted root signer installation.
+No real operator entered a password or consented. The source
+coordinator is CI-only, signed signer/seat enrollment is pending,
+candidate v13 database migration is not owner-approved, old direct
+writers are not fenced, and no native backup/rollback or final
+acceptance was performed. Both protected native staffing dispatch
+functions remain DENY ONLY; no Hospital Burn or Bed permission
+was enabled.
+
+### NEXT
+
+Obtain independent Connections C5-H2 and C3e/C4b signed-release
+owner review of the precise Session/Doctor Polkit actions, policy
+generation, fixed owner-controlled issuer key/host and issuer
+executable provenance, login1 active/unlocked seat and full
+visible review, and protected writer-only grant delivery.
+Reconcile PX #123/#125 staffing source and the candidate v13
+ledger with owners before installing any service or changing
+an actual Room. Then verify all-writer cutover, native backup,
+rollback, security review and final operator acceptance.
+
+### DECISIONS
+
+Remain in draft PR #133. No host, live database, root-owned key,
+installed Polkit rule, external worker branch, production permission
+or irreversible Hospital Burn changed.
