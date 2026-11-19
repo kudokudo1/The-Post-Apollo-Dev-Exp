@@ -22,6 +22,9 @@ on:
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
+      - "bin/px_hospital_staffing_operator_review.py"
+      - "tests/test-px-hospital-staffing-operator-review.py"
+      - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -50,6 +53,9 @@ on:
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
+      - "bin/px_hospital_staffing_operator_review.py"
+      - "tests/test-px-hospital-staffing-operator-review.py"
+      - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -181,6 +187,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_native_peer.py tests/test-px-hospital-staffing-native-peer.py
           python3 tests/test-px-hospital-staffing-native-peer.py
+
+      - name: Verify staffing operator review digest and distinct source-only Polkit permissions
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_operator_review.py tests/test-px-hospital-staffing-operator-review.py
+          python3 tests/test-px-hospital-staffing-operator-review.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
