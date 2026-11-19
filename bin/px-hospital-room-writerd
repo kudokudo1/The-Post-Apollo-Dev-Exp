@@ -20,8 +20,8 @@ from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
 CONFIG_PATH = Path("/etc/post-apollo/hospital/room-writer.json")
 CONFIG_SCHEMA = "post-apollo.hospital.protected-room-writer-host.v1"
 _CONFIG_FIELDS = frozenset((
-    "schema", "writerUid", "clientUid", "stateDirectory",
-    "socketDirectory",
+    "schema", "writerUid", "clientUid", "runtimeUid",
+    "stateDirectory", "socketDirectory",
 ))
 
 
@@ -80,9 +80,12 @@ def read_host_config():
             or cfg["schema"] != CONFIG_SCHEMA
             or type(cfg["writerUid"]) is not int
             or cfg["writerUid"] != os.geteuid()
-            or cfg["writerUid"] in (0, cfg["clientUid"])
+            or cfg["writerUid"] in (0, cfg["clientUid"], cfg["runtimeUid"])
             or type(cfg["clientUid"]) is not int
             or cfg["clientUid"] <= 0
+            or type(cfg["runtimeUid"]) is not int
+            or cfg["runtimeUid"] <= 0
+            or cfg["runtimeUid"] == cfg["clientUid"]
             or os.getuid() != os.geteuid()
             or any(k in os.environ for k in (
                 "PX_HOSPITAL_DB", "PX_HOSPITAL_DATA_DIR"))):
@@ -101,13 +104,13 @@ def read_host_config():
         values.append(candidate)
     if values[0] == values[1]:
         raise WriterHold("PRIVATE_DB_AND_PUBLIC_SOCKET_MUST_DIFFER")
-    return cfg["clientUid"], values[0], values[1]
+    return cfg["clientUid"], cfg["runtimeUid"], values[0], values[1]
 
 
 def main():
     if len(sys.argv) != 1:
         raise WriterHold("NO_ARGUMENTS_ALLOWED")
-    client_uid, state_dir, socket_dir = read_host_config()
+    client_uid, runtime_uid, state_dir, socket_dir = read_host_config()
     stop = threading.Event()
 
     def terminate(_signum, _frame):
@@ -119,6 +122,7 @@ def main():
     # There is no implicit migration, database creation or permission repair.
     with ProtectedRoomWriter(
         client_uid=client_uid,
+        runtime_uid=runtime_uid,
         state_directory=state_dir,
         socket_directory=socket_dir,
     ) as writer:
