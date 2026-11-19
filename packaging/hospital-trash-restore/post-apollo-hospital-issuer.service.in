@@ -1,0 +1,32 @@
+# SOURCE TEMPLATE ONLY - root-owned Connections authorization, Polkit and seat.
+# Active session / process identity must be verified by the installed issuer.
+[Unit]
+Description=Post Apollo Hospital interactive Room Trash and Restore approval
+Requires=post-apollo-hospital-consent.socket
+After=post-apollo-hospital-consent.socket
+ConditionPathExists=/etc/post-apollo/hospital/issuer-policy.json
+ConditionPathExists=/etc/post-apollo/hospital/room-lifecycle-issuer.pub
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/usr/libexec/post-apollo/hospital
+ExecStart=/usr/bin/python3 /usr/libexec/post-apollo/hospital/HospitalNativeIssuerService.py
+Restart=no
+RuntimeMaxSec=90s
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+# Do not hide /proc or the login1/Polkit system bus from this identity verifier.
+# NoNewPrivileges is defense-in-depth; review effective Polkit agent behavior.
+# No private key is ever supplied on argv, environment, stdin, or QML.
+
+[Install]
+# HOLD: intentionally no WantedBy.
