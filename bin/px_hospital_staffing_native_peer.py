@@ -26,6 +26,8 @@ import struct
 
 ISSUER_UID = 0
 MAX_PACKET = 16384
+READY_FRAME = (b'{"schema":"postapollo.hospital.native-staffing-ready.v1",'
+               b'"status":"READY"}')
 _CRED_SIZE = struct.calcsize("3i")
 
 
@@ -180,6 +182,27 @@ def _not_exited(fd):
         _hold("ISSUER_EXITED_DURING_PACKET")
 
 
+def _arm_peer_socket(sock, *, expected_uid):
+    """Establish SO_PASSCRED before the peer can send a valid packet.
+
+    This mirrors the existing Connections issuer's READY handshake. It
+    does not issue authorization and does not install a listening socket.
+    The public production-shaped wrapper never accepts a client UID.
+    Clients MUST wait for READY before sending; queued premature frames
+    are refused if no valid SCM_CREDENTIALS accompany them.
+    """
+    _connected_seqpacket(sock)
+    _kernel_peer(sock, expected_uid)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        if sock.send(READY_FRAME) != len(READY_FRAME):
+            _hold("INCOMPLETE_READY_HANDSHAKE")
+    except OSError as exc:
+        raise NativePeerHold(
+            "HOSPITAL_STAFFING_PEER_HOLD // READY_HANDSHAKE_UNAVAILABLE"
+        ) from exc
+
+
 def _receive_packet(sock, *, expected_uid):
     """Private testable kernel observation; UID never comes from a frame.
 
@@ -233,7 +256,8 @@ def _receive_packet(sock, *, expected_uid):
 
 
 def receive_root_issuer_packet(sock):
-    """Root-only packet inspection, without granting any native action."""
+    """Root-only READY then packet inspection; no staffing authorization."""
+    _arm_peer_socket(sock, expected_uid=ISSUER_UID)
     return _receive_packet(sock, expected_uid=ISSUER_UID)
 
 
