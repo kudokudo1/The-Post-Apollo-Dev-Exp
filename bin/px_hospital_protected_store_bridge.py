@@ -92,10 +92,13 @@ def route_coverage():
 
 def parse_argv(argv):
     if (type(argv) is not list or not 1 <= len(argv) <= _MAX_ARGV
-            or any(type(arg) is not str or not arg
+            or type(argv[0]) is not str or not argv[0]
+            or any(type(arg) is not str
                    or len(arg) > _MAX_ARG_LENGTH or "\x00" in arg
                    for arg in argv)):
         raise StoreCommandHold("INVALID_BOUNDED_ARGUMENTS")
+    # Preserve original CLI reset semantics such as --name "" on
+    # Doctor/Room display names; only the command token must be nonempty.
     command = argv[0]
     if command not in READ_COMMANDS | WRITE_COMMANDS:
         raise StoreCommandHold("COMMAND_NOT_EXPOSED")
