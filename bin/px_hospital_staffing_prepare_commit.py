@@ -175,12 +175,16 @@ class SourceStaffingRehearsal:
         self._room_record = room_record
         self.writer_instance = "writer-" + secrets.token_urlsafe(18)
         self.pending = {}
+        self.spent = {}  # Expiring, process-local replay tombstones; CI only.
 
     def _drop_expired(self):
         tick = time.monotonic()
         for nonce, value in list(self.pending.items()):
             if value.deadline <= tick:
                 del self.pending[nonce]
+        for nonce, deadline in list(self.spent.items()):
+            if deadline <= tick:
+                del self.spent[nonce]
 
     def prepare(self, db, raw: bytes, *, kernel_peer):
         _fixture_only()
@@ -190,6 +194,7 @@ class SourceStaffingRehearsal:
             _hold("PREPARE_STEP_REQUIRED")
         self._drop_expired()
         if (request["requestNonce"] in self.pending
+                or request["requestNonce"] in self.spent
                 or len(self.pending) >= MAX_PENDING):
             _hold("DUPLICATE_OR_FULL_PENDING")
         snapshot = _source_snapshot(db, request)
@@ -225,6 +230,10 @@ class SourceStaffingRehearsal:
         pending = self.pending.pop(request["requestNonce"], None)
         if pending is None:
             _hold("MISSING_EXPIRED_OR_REPLAYED_PREPARE")
+        # A failed COMMIT never re-opens the same approved PREPARE, even
+        # when the SQLite grant insertion correctly rolls back. A new
+        # operator approval and nonce are required to retry.
+        self.spent[pending.nonce] = time.monotonic() + PREPARE_TTL_SECONDS
         if (pending.peer != peer
                 or pending.writer_instance != self.writer_instance
                 or request["writerInstance"] != pending.writer_instance
@@ -250,6 +259,7 @@ class SourceStaffingRehearsal:
             _hold("NATIVE_GRANT_REQUIRED")
         signed = grant.body
         if (signed["requestNonce"] != pending.nonce
+                or signed["writerInstance"] != pending.writer_instance
                 or signed["scope"] != request["intent"]
                 or signed["operation"] != pending.action
                 or signed["roomRevision"] != pending.revision
