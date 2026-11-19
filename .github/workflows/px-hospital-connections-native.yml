@@ -9,6 +9,8 @@ on:
       - "tests/test-px-hospital-connections-consent.py"
       - "tests/test-px-hospital-release-cutover-v1.py"
       - "bin/px_hospital_release_preflight.py"
+      - "bin/px_hospital_native_release_audit.py"
+      - "tests/test-px-hospital-native-release-audit.py"
       - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
@@ -20,6 +22,8 @@ on:
       - "tests/test-px-hospital-connections-consent.py"
       - "tests/test-px-hospital-release-cutover-v1.py"
       - "bin/px_hospital_release_preflight.py"
+      - "bin/px_hospital_native_release_audit.py"
+      - "tests/test-px-hospital-native-release-audit.py"
       - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
 
@@ -57,6 +61,10 @@ jobs:
 
       - name: Full signed PREPARE / COMMIT Room Trash, Bin and Restore
         run: python3 tests/test-px-hospital-connections-consent.py
+      - name: Audit all protected read/write commands and disposable old-writer process inventory
+        run: |
+          python3 -m py_compile bin/px_hospital_native_release_audit.py tests/test-px-hospital-native-release-audit.py
+          python3 tests/test-px-hospital-native-release-audit.py
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
           python3 -m py_compile bin/px_hospital_release_preflight.py tests/test-px-hospital-release-cutover-v1.py
