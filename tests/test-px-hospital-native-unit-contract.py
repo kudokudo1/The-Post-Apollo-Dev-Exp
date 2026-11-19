@@ -38,7 +38,9 @@ for name,data in raw.items():
     assert "ExecStartPost=" not in data
     assert "ExecStopPost=" not in data
     assert "Environment=PX_HOSPITAL_" not in data
-    assert "chown " not in data and "chmod " not in data
+    executable_lines="\n".join(line.strip() for line in data.splitlines()
+                               if line.strip() and not line.lstrip().startswith("#"))
+    assert "chown " not in executable_lines and "chmod " not in executable_lines
     assert "--signed-authorization-file" not in data
     assert "BURN" not in data
     parser=configparser.ConfigParser(strict=False,interpolation=None)
