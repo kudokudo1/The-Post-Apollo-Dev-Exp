@@ -1,0 +1,32 @@
+# SOURCE TEMPLATE ONLY - no root privilege or consent by file existence.
+[Unit]
+Description=Post Apollo Hospital protected signed Room admission
+Requires=post-apollo-hospital-writer.service
+After=post-apollo-hospital-writer.service
+ConditionPathExists=/etc/post-apollo/hospital/room-writer.json
+ConditionPathExists=/etc/post-apollo/hospital/room-retention-decisions.json
+
+[Service]
+Type=simple
+User=@PROTECTED_WRITER_USER@
+Group=@PROTECTED_WRITER_GROUP@
+WorkingDirectory=/usr/libexec/post-apollo/hospital
+ExecStart=/usr/bin/python3 /usr/libexec/post-apollo/hospital/px-hospital-consent-writerd
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=@PROTECTED_DB_DIR@
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# LISTEN_FDS / LISTEN_PID / INVOCATION_ID are supplied by systemd, never faked.
+
+[Install]
+# HOLD: socket activation is not enabled by a source template.
