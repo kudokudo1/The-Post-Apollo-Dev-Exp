@@ -356,3 +356,59 @@ authority; rebase/reconcile source owners' changes without copying
 synthetic-only Bed authority into production; perform a complete secured
 all-writer cutover and native backup/restore acceptance. Until then,
 HOSPITAL BACKEND NOT READY is the correct state. No Hospital Burn.
+
+
+## 2026-11-19 // Package 1 Session + Doctor source adapter staged
+
+**Status:** source milestone PASS · native permissions and release still HOLD.
+
+`bin/px_hospital_staffing_admission.py` stages the **exact atomic
+function bodies** from independently owned PX [#123](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/123)
+(`session_attach_atomic`, pinned `4c3f0c97`) and
+PX [#125](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/125)
+(`session_succeed_atomic`, pinned `4e0fe43c`).
+Only their signatures inject the existing v12 `session_record` and
+`room_record` readers; the original source code bodies, transaction
+checks and rollback remain unchanged. This does not move either source
+owner's branch or replace their independent PR.
+
+The existing `tests/test-px-hospital-cross-owner-v12-compatibility.py`
+now verifies **full source parity** against both pinned owner files and
+executes the staged adapter on the disposable v12 Room/Session/Assignment
+database. It checks idempotence, conflicting Session denial, rollback of
+a partially updated Doctor Room, historical messages/HANDOFF preservation,
+and the existing frozen/trashed Room and signed Bed refusals.
+Exact head `0e848d0f349a240c65e913743f3b3b87f453c9c9`:
+Hospital/Universal Connections, PX Hospital Store, Meta Apollo Grammar
+**3/3 SUCCESS**.
+
+**Native security boundary:** `dispatch_native_staffing` unconditionally
+raises `NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED`, including if
+an untrusted caller supplies `authorized=True`. The module is NOT
+imported by the protected writer, does not add any CLI subcommand or
+socket operation and cannot be used to bypass the existing
+21-write/19-read router. Tests exercise internal functions only with
+temporary CI storage. Plain `--confirm` does not authenticate an
+operator, release a live Doctor, or establish Bed owner authority.
+
+**Next required integration steps:**
+1. Reconcile the two independently owned commands with an explicit
+   native Session/Doctor consent/caller identity and one-use authority
+   contract. Review exact Room/Assignment/Doctor/Provider/Session/Bed,
+   operator seat and run provenance, and check revocation in the same
+   source transaction; do not let a runtime UID or CLI flag alone
+   authorize worker replacement.
+2. Only after that review, expose separately typed and bounded native
+   operations on the fixed protected database owner. Keep unknown
+   commands, raw SQL, cross-patient authority and signed Bed file
+   injection denied. Re-run original owner tests and hostile
+   runtime/socket/rollback cases.
+3. Reconcile existing PX #123/#125 owner release order, then native
+   PX agent front doors and all old direct SQLite writers at one
+   approved cutover. Bed #127/#128/#129 remains synthetic/independent.
+4. Complete the existing release manifest, key/SELinux/Polkit review,
+   actual old-writer process fence, real backup/restore and
+   supervised operator-accepted installation. **No Hospital Burn**.
+
+This is an **implementation checkpoint**, not a certification,
+merge decision, native installation, or final operator acceptance.
