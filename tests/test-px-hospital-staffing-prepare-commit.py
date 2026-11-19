@@ -209,6 +209,18 @@ with tempfile.TemporaryDirectory(
                "SIGNED_PREPARE_MISMATCH")
         assert ledger()==0
 
+        # PREPARE expiry is independent of a still-valid signed grant.
+        # A late COMMIT cannot resurrect an expired in-memory ticket.
+        planned=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
+                                          "session-expired-prepare"))
+        ready=prepare(planned)
+        signed=grant_for(planned,ready)
+        with patch.object(coordinator.time,"monotonic",
+                          return_value=10**18):
+            denied(lambda:commit(planned,ready,signed),
+                   "MISSING_EXPIRED_OR_REPLAYED_PREPARE")
+        assert ledger()==0
+
         # A changed Room graph after PREPARE is rejected; existing
         # Message content remains intact and no approval is consumed.
         prepared_req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
