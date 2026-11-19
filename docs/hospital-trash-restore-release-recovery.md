@@ -273,3 +273,45 @@ Hospital database. Merely whitelisting these names or adding a generic
 raw SQL transport is NOT an acceptable fix. The operator need not
 coordinate these other chats: the Hospital integration owner must do
 that work through PR review and exact source evidence.
+
+
+## 2026-11-19 // Package 1 source compatibility checkpoint
+
+**Result:** independent-source compatibility audit PASS at Hospital draft
+commit `c7ed0e59` (3/3 GitHub workflows). **Protected compatibility and
+installation remain HOLD.** The test does NOT execute or promote any
+independently owned writer or unmerged branch.
+
+The new CI-only file
+`tests/test-px-hospital-pending-writer-compatibility.py` checks the
+exact Git commit revisions, command names, actual function entrypoints,
+transaction and confirmation witnesses, and hard denial by the current
+21-write/19-read protected source router:
+
+| Branch / owner draft | Exact revision | New command | Next permission decision |
+|---|---|---|---|
+| PX #123 Session attachment | `4c3f0c97` | `session-attach-atomic` | Require protected runtime and precise Room/Assignment/Bed/Doctor/Provider caller authority |
+| PX #125 Doctor succession | `4e0fe43c` | `session-succeed-atomic` | Require verified terminal prior Session, recorded handoff, successor staffing and assignment authority |
+| PX #127 initial Bed | `81f626d9` | `room-bed-claim-atomic` | Keep synthetic fixture-only; never elevate an ordinary `--confirm` argument |
+| PX #128 signed Bed | `a76a7b07` | `room-bed-claim-signed-atomic` | Requires separate host-bound intent signature and trusted native Bed gateway; never tunnel `--signed-intent-file` through generic store-command |
+| PX #129 native Bed gateway | `0dd14de0` | Adds gateway, not another store parser command | Verify peer/executable/seat/one-use authority and source compatibility with #128 |
+
+`bin/px_hospital_native_release_audit.py` now publishes explicit
+`allWriterCompatibilityVerified:false` and the four unreconciled
+command names, even when no old database descriptor is observed.
+This is intentionally never an authorization token or release approval.
+
+**Next integration work, not yet completed:** obtain separately owned
+writer-contract acceptance for the Session, Doctor and Bed actions; add
+narrow source-owned protected RPC handling with their original atomic
+validation intact and per-command runtime/native identity checks;
+reconcile schema v12 migration against their exact existing branches;
+then run complete positive and negative disposable tests. Do not
+whitelist the four names by themselves. Preserve independent branch
+ownership, no direct desktop SQLite fallback, no application changes,
+no live database migration, and no Hospital Burn.
+
+**Verification reference:** GitHub Actions commit `c7ed0e59a19dcead3b827e66a4e27b915a0f11da`,
+workflow `Hospital / Universal Connections Signed Trash Restore` +
+`PX / HOSPITAL STORE` + `Meta Apollo Grammar`: three SUCCESS.
+
