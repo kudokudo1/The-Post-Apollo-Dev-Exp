@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Hospital v12 ↔ independent Session, Doctor and Bed source compatibility.
 
-CI-ONLY. Runs the original, pinned owners' functions on ONE disposable
-v12 Hospital SQLite store. This is a data/transaction compatibility test,
+CI-ONLY. Runs a source-identical staged adapter checked against the
+original, pinned owners' functions on ONE disposable v12 SQLite store. This is a data/transaction compatibility test,
 NOT a protected-runtime route, caller authorization, native signer, or
 permission for the synthetic Bed code to execute in production.
 
-No imported owner code is copied into a release module; no user DB is opened.
+Owner routines are staged solely in a non-exposed source adapter; no user DB is opened.
 """
 from __future__ import annotations
 
 import base64
 from cryptography.hazmat.primitives import serialization
 from contextlib import closing
+import inspect
 from pathlib import Path
 import os
 import runpy
@@ -31,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import px_hospital_room_lifecycle as lifecycle
 import px_hospital_protected_store_bridge as bridge
+import px_hospital_staffing_admission as staffing
 
 SOURCE = {
     "hospital-witness-session": "4c3f0c97c4b6342bc7adb70443afecf65666d3cb",
@@ -98,6 +100,44 @@ v12 = runpy.run_path(
     str(ROOT / "bin" / "px-hospital-store"),
     run_name="px_hospital_v12_compat_fixture",
 )
+# The atomic routine bodies are byte-for-byte identical to the pinned
+# owners after adding explicit record-reader injection at their signatures.
+def source_equal(owned, adapted, name, injection):
+    old = inspect.getsource(owned)
+    exact = old.replace(
+        f"def {name}(conn: sqlite3.Connection, args) -> dict:",
+        f"def {name}(conn: sqlite3.Connection, args, *, {injection}) -> dict:",
+        1,
+    )
+    assert exact.strip() == inspect.getsource(adapted).strip(), (
+        "OWNER_ATOMIC_ROUTINE_DRIFT", name,
+    )
+
+source_equal(session["session_attach_atomic"],
+             staffing.session_attach_atomic, "session_attach_atomic",
+             "session_record")
+source_equal(succession["session_succeed_atomic"],
+             staffing.session_succeed_atomic, "session_succeed_atomic",
+             "room_record, session_record")
+
+def stage_attach(db, args):
+    return staffing.session_attach_atomic(
+        db, args, session_record=v12["session_record"]
+    )
+
+def stage_succeed(db, args):
+    return staffing.session_succeed_atomic(
+        db, args, room_record=v12["room_record"],
+        session_record=v12["session_record"]
+    )
+
+refuse(lambda: staffing.dispatch_native_staffing(
+    "session-attach-atomic", object(), object()
+), "NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
+refuse(lambda: staffing.dispatch_native_staffing(
+    "session-succeed-atomic", object(), object(), authorized=True
+), "NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
+
 assert bridge.route_coverage()
 assert "session-attach-atomic" not in bridge.WRITE_COMMANDS
 assert "session-succeed-atomic" not in bridge.WRITE_COMMANDS
@@ -146,14 +186,14 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             provider_id="mock-old", repository="org/project",
             branch="fixture/session", bed_path=str(work_bed), mode="create",
         )
-        refuse(lambda: session["session_attach_atomic"](
+        refuse(lambda: stage_attach(
             db, SimpleNamespace(**dict(vars(attach), confirm=False))
         ), "confirmation")
-        result = session["session_attach_atomic"](db, attach)
+        result = stage_attach(db, attach)
         assert result["created"] is True and result["session"]["status"] == "IDLE"
         assert result["authorityVerified"] is False
-        assert session["session_attach_atomic"](db, attach)["created"] is False
-        refuse(lambda: session["session_attach_atomic"](
+        assert stage_attach(db, attach)["created"] is False
+        refuse(lambda: stage_attach(
             db, SimpleNamespace(**dict(vars(attach), session_id="s-2"))
         ), "open Session")
 
@@ -182,7 +222,7 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             assignment_id=str(assignment_id), repository="org/project",
             branch="fixture/session", bed_path=str(work_bed),
         )
-        refuse(lambda: succession["session_succeed_atomic"](
+        refuse(lambda: stage_succeed(
             db, SimpleNamespace(**dict(vars(succeed), confirm=False))
         ), "confirmation")
         db.execute("""
@@ -190,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             BEFORE INSERT ON sessions WHEN NEW.session_id='s-new'
             BEGIN SELECT RAISE(ABORT,'fixture rollback'); END;
         """)
-        refuse(lambda: succession["session_succeed_atomic"](db, succeed),
+        refuse(lambda: stage_succeed(db, succeed),
                "fixture rollback")
         assert db.execute(
             "SELECT doctor_id FROM rooms WHERE room_id='room-session'"
@@ -199,11 +239,11 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             "SELECT COUNT(*) FROM sessions WHERE session_id='s-new'"
         ).fetchone()[0] == 0
         db.execute("DROP TRIGGER fixture_fail_succession")
-        moved = succession["session_succeed_atomic"](db, succeed)
+        moved = stage_succeed(db, succeed)
         assert moved["created"] is True
         assert moved["providerLaunched"] is False
         assert moved["authorityVerified"] is False
-        assert succession["session_succeed_atomic"](db, succeed)["created"] is False
+        assert stage_succeed(db, succeed)["created"] is False
         assert db.execute(
             "SELECT body_md FROM messages WHERE room_id='room-session'"
         ).fetchone()[0] == "IMMUTABLE_HISTORY"
