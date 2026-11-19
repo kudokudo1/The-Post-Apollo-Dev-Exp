@@ -315,3 +315,44 @@ no live database migration, and no Hospital Burn.
 workflow `Hospital / Universal Connections Signed Trash Restore` +
 `PX / HOSPITAL STORE` + `Meta Apollo Grammar`: three SUCCESS.
 
+
+
+## 2026-11-19 // Package 1 original owner functions against live-format v12 fixture
+
+**Cross-source compatibility test: PASS, source-only.**
+`tests/test-px-hospital-cross-owner-v12-compatibility.py` runs under GitHub
+Actions only with one throwaway **actual PX v12 database** created using
+the Hospital owner `migrate()` function. The test does not import the owner
+code into the installed protected service or grant it runtime permissions.
+
+The CI workflow checks out independent branches at pinned exact SHAs,
+and the test runs their real function objects against the v12 tables and
+actual Room lifecycle triggers:
+
+- `#123` atomic Session attachment: ACTIVE Room/Doctor/Assignment/Bed
+  snapshot, atomic Session insert, idempotent replay and duplicate denial.
+- `#125` atomic Doctor succession: terminal prior Session and handoff,
+  old history retained, simulated insertion failure rolls back the Room
+  staffing change, single succession event and idempotence.
+- `#127/#128` Bed registration: original synthetic-only plain Bed claim
+  and Ed25519 signed Bed intent, on v12, only with the owner-defined
+  ephemeral CI path/test gate. Production path refusal remains tested.
+- v12 lifecycle's actual frozen Room triggers refuse an attempted Bed
+  change to a trashed Room. SQLite integrity and foreign key checks pass.
+
+The cross-version check supplements the earlier exact source inventory.
+The existing protected service still exposes only its 21 reviewed writes
+and 19 reads; the four newer commands remain denied and
+`allWriterCompatibilityVerified:false` remains in the native release
+audit. Passing this test DOES NOT demonstrate trusted caller/active-seat
+authorization, migration of native binaries, or safe release enrollment.
+
+**Exact verified source checkpoint:** `b9a26845ce2279f5c52aad14f5efec072b46c44f`;
+Hospital signed integration, PX Hospital Store, and Meta Apollo Grammar
+workflows all passed.
+
+**Next required work:** separate review of each command's runtime/native
+authority; rebase/reconcile source owners' changes without copying
+synthetic-only Bed authority into production; perform a complete secured
+all-writer cutover and native backup/restore acceptance. Until then,
+HOSPITAL BACKEND NOT READY is the correct state. No Hospital Burn.
