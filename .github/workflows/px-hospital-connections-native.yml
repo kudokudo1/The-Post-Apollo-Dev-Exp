@@ -20,6 +20,8 @@ on:
       - "tests/test-px-hospital-staffing-transport-v13.py"
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "bin/px_hospital_staffing_native_peer.py"
+      - "tests/test-px-hospital-staffing-native-peer.py"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -46,6 +48,8 @@ on:
       - "tests/test-px-hospital-staffing-transport-v13.py"
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "bin/px_hospital_staffing_native_peer.py"
+      - "tests/test-px-hospital-staffing-native-peer.py"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -172,6 +176,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py tests/test-px-hospital-staffing-prepare-commit.py
           python3 tests/test-px-hospital-staffing-prepare-commit.py
+
+      - name: Inspect real Linux kernel peer and packet identity for future staffing issuer (no activation)
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_native_peer.py tests/test-px-hospital-staffing-native-peer.py
+          python3 tests/test-px-hospital-staffing-native-peer.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
