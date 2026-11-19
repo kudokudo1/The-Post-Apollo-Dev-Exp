@@ -11,6 +11,8 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-native-unit-contract.py"
+      - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
@@ -24,6 +26,8 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-native-unit-contract.py"
+      - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
 
@@ -46,6 +50,14 @@ jobs:
           path: app-source
           persist-credentials: false
 
+      - name: Check exact Hospital UI native client source only
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: e8de69000d4ebb5b36a580cfbf87f59989317b1c
+          path: hospital-ui-source
+          persist-credentials: false
+
       - name: Install pinned Ed25519 verifier
         run: python3 -m pip install 'cryptography==46.0.3'
 
@@ -61,6 +73,10 @@ jobs:
 
       - name: Full signed PREPARE / COMMIT Room Trash, Bin and Restore
         run: python3 tests/test-px-hospital-connections-consent.py
+      - name: Verify protected startup templates against exact issuer and Hospital UI
+        run: |
+          python3 -m py_compile tests/test-px-hospital-native-unit-contract.py
+          python3 tests/test-px-hospital-native-unit-contract.py
       - name: Audit all protected read/write commands and disposable old-writer process inventory
         run: |
           python3 -m py_compile bin/px_hospital_native_release_audit.py tests/test-px-hospital-native-release-audit.py
