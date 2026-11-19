@@ -1048,3 +1048,88 @@ rollback, security review and final operator acceptance.
 Remain in draft PR #133. No host, live database, root-owned key,
 installed Polkit rule, external worker branch, production permission
 or irreversible Hospital Burn changed.
+
+
+## 2026-11-19 // Writer-side staffing release and operator revocation policy
+
+**IMPLEMENTATION // Source-only safety package.** The protected
+Session/Doctor signer verifier now requires an independent current
+root-controlled *staffing verifier policy* at both native signature
+admission and revalidation within the original atomic Session/Doctor
+transaction. Previously valid signed grants fail if the installed
+operator UID, client executable release, issuer release fingerprint,
+active policy generation or permitted operation has changed.
+
+- Added bin/px_hospital_staffing_release_policy.py. It reads the ONLY
+  pinned path /etc/post-apollo/hospital/staffing-verifier-policy.json,
+  refuses missing/non-root/untrusted parents, symlinks, hard links,
+  group/world-writable or unstable file reads and noncanonical,
+  duplicate-field, nonfinite or unbounded policy JSON. It requires
+  the exact source schema:
+  postapollo.hospital.staffing-verifier-policy.v1 with
+  schema, operatorUid, clientExecutableSha256,
+  issuerReleaseSha256, hostId, policyGeneration,
+  allowedOperations and expiresAt. No user-controlled path,
+  environment override, policy enrollment, signer or writer route
+  is implemented.
+- The allowlist is a nonempty sorted subset of SESSION_ATTACH and
+  DOCTOR_SUCCEED. TRASH/RESTORE and Bed are not expressible. The
+  policy lifetime is bounded to at most 31 days. Writer-side
+  policyGeneration is an **exact match**, not a greater-than-only
+  floor, so a grant from an earlier or future rotation is rejected.
+- bin/px_hospital_staffing_grants.py now reloads that root-owned
+  policy after verifying the original Ed25519 signature and
+  installed host fingerprint. It checks the signed operator, client
+  and issuer executable hashes, exact policy generation, host and
+  allowed action. require_native_grant() repeats this check at the
+  actual protected mutation boundary and consume() invokes that
+  revalidation inside BEGIN IMMEDIATE when native_verified is true.
+  A syntactically valid or expired/revoked policy is NOT permission
+  to act by itself. CI-only fixture paths remain unreachable from
+  the production-shaped native interface.
+- New tests/test-px-hospital-staffing-release-policy.py validates
+  exact canonical policy parsing, malformed/duplicated keys, wrong
+  schema, expiry, unsorted or repeated operations, invalid hash/UID/
+  generation, and user-writable policy custody denial using only
+  disposable GitHub Actions files. No machine /etc state was read,
+  changed, or installed.
+- Original signed Session/Doctor atomic and PREPARE/COMMIT tests now
+  use explicitly mocked current policy in isolated CI. Added
+  hostile signed-grant cases proving an otherwise valid COMMIT
+  fails when the writer policy rotates operator UID, issuer/client
+  release digest, generation, or action allowlist. The tests
+  confirm source state and replay ledger remain intact on refusal.
+
+**VERIFY //** All three GitHub workflows PASS at exact implementation
+commit c242a64aa4e2d87060cf364c63b47b7f504676d1:
+Hospital / Universal Connections Signed Trash Restore,
+PX / HOSPITAL STORE and Meta Apollo Grammar. One earlier CI
+check failed because the new policy revocation gate correctly
+rejected an obsolete signed generation before the prior
+review-digest check. The test now expects the earlier, stricter
+refusal. No security requirement was removed for a green run.
+
+**WATCH OUT FOR //** This is a WRITER-SIDE enforcement contract,
+not the root-controlled native signer itself. Its policy path is
+intentionally absent from the installed host until separately
+approved. Neither hashes nor root ownership are proof of an
+operator-approved C3e/C4b signed release. The Connections C5-H2
+Room issuer remains a different owned system and has not been
+modified to sign Session/Doctor grants. Active login1 seat,
+compositor lock evidence, actual per-action Polkit human review,
+trusted root key distribution, signed issuer release provenance,
+candidate v13 schema integration, all-writer old-binary fence,
+backup/recovery, independent review and final operator acceptance
+remain mandatory.
+
+**NEXT //** Request cross-owner acceptance of the fixed staffing
+verifier policy schema and C5-H2 native issuer extension contract,
+without repurposing Room Trash/Restore authority. Once real
+operator/key/release/seat inputs and protected writer source are
+approved, connect the owner-controlled native issuer to the
+staffing PREPARE/COMMIT gate. Only then consider approved v13
+migration and supervised native cutover. Preserve no-Burn.
+
+**DECISIONS //** PR #133 stays draft/unmerged. No local files,
+live Hospital data, installed policy, real private keys, production
+service, owner-owned branches, merge or native activation changed.
