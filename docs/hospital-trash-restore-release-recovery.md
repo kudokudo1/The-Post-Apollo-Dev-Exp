@@ -518,3 +518,90 @@ independent security review and operator-authorized native release.
 All changes stay inside existing draft PX #133. No source-owner branch
 edit, merge, live local-machine write, production privilege or
 Hospital Burn is authorized by the passing tests.
+
+
+## 2026-11-19 // Package 1 typed staffing request + v13 ledger candidate
+
+**Engineering status:** disposable v12->v13 migration rehearsal PASS;
+source-only typed transport parser PASS; **native service remains HOLD**.
+
+### IMPLEMENTATION
+
+- bin/px_hospital_staffing_transport.py defines an independent,
+  canonical, bounded request contract:
+  postapollo.hospital.native-staffing-request.v1, with exact
+  prepare/commit kinds, Session attach or Doctor succession only,
+  Room/Patient/Assignment/Bed/Session/Doctor intent fields,
+  a separately encoded 32-byte request nonce, and bounded
+  signed-envelope bytes plus a writer-instance ID on COMMIT.
+  Unrecognized action, Bed claim, Room TRASH/RESTORE, unknown
+  fields, request-selected SQL/CLI commands, malformed/noncanonical
+  Base64, duplicate JSON fields, nonfinite numbers, mixed Room IDs
+  and extra permissions fail parsing.
+- dispatch_native_request() **always refuses**
+  NATIVE_STAFFING_SERVICE_NOT_INSTALLED; there is no socket listener,
+  process/seat authentication, native issuer or host-invocable write.
+  parse_request() is untrusted-data validation, NOT authorization.
+  A validly encoded envelope does not prove a trusted signature.
+  The future installed host must verify issuer provenance, exact
+  operator consent and active seat, bind COMMIT to a protected
+  PREPARE nonce and source snapshot, and invoke only the reviewed
+  original atomic Session/Doctor operation on the protected DB owner.
+- packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql
+  proposes an additive source-ledger migration from PX 12 to
+  **candidate** version 13. It uses BEGIN IMMEDIATE, rejects a
+  non-v12 starting schema, creates hospital_staffing_authorizations
+  with unique nonce, grant digest and approval ID, preserves all
+  historical Room/Session tables, and updates schema_meta to 13
+  in the same transaction.
+- **This is not an approved canonical PX schema bump.** PX #130
+  currently supports v12 only. Candidate SQL is not invoked by
+  PX migrate(), native daemon, build installer or systemd units.
+  The PX owner must approve and reconcile this version change
+  with all open writer branches and recovery protocols. Old PX
+  source intentionally refuses a candidate v13 DB.
+
+### VERIFY
+
+tests/test-px-hospital-staffing-transport-v13.py runs only on
+GitHub Actions using temporary SQLite WAL databases. It verifies
+request frame shapes, exact parser refusals, duplicate fields,
+invalid or unsupported operations, denied native dispatcher and
+versioned migration semantics.
+
+The candidate migration rehearsal takes a WAL online backup of an
+intact disposable v12 store, preserves old Hospital messages,
+migrates the copy to candidate v13, checks uniqueness and foreign
+keys, proves older v12 PX code refuses newer schema, then restores
+the exact pre-upgrade backup and verifies source integrity.
+Conflicted candidate tables and wrong starting versions fail without
+advancing schema_meta or overwriting existing rows.
+
+Existing signed staff grant and original atomic Session/Doctor
+rollback tests still run independently. Latest integration,
+Hospital Store and Grammar workflows passed **3/3** at exact commit
+eafa7b791329d1144edb396558d2a616c25c8afb.
+
+### WATCH OUT FOR
+
+No installed staff native issuer, authenticated process/seat,
+Polkit consent, reviewed signing key revocation, native handler,
+host migration/fencing/backup/rollback, or production acceptance.
+The staged source adapter and migration candidate are not an
+installed release. PX #123 and #125 still require source-owner
+reconciliation; Bed #127/#128/#129 remains fixture-only. Hospital
+Burn remains explicitly unsupported.
+
+### NEXT
+
+Independent PX/Connections/Hospital review of the typed PREPARE/COMMIT
+contract and candidate v13 schema; then the purpose-specific protected
+native handler, operator/seat permission and exact signed approval.
+After those approvals: real backup/restore, all-writer cutover,
+independent security review and operator-authorized installation.
+
+### DECISIONS
+
+Keep PR #133 draft; no adjacent owner branch, real database,
+local machine, service, key, QML permission, merge or production
+switch changed.
