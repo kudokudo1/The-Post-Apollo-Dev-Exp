@@ -82,7 +82,7 @@ def parse_request(frame: bytes):
         raise WriterHold("UNSUPPORTED_OPERATION")
     if set(request) != expected:
         raise WriterHold("EXACT_FIELDS_REQUIRED")
-    if action != "bin":
+    if action not in ("bin", "store-command"):
         lifecycle._identity(request["roomId"])
     if action in _ALLOWED_WRITE:
         if (type(request["expectedRevision"]) is not int
@@ -253,7 +253,7 @@ class ProtectedRoomWriter:
                 ).encode("ascii") + b"\n"
                 if len(wire) > _MAX_RESPONSE:
                     raise WriterHold("RESPONSE_TOO_LARGE")
-            except (OSError, ValueError, TypeError, RuntimeError,
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError,
                     sqlite3.Error):
                 # Do not disclose DB paths, historical Room contents or
                 # pinned-issuer failure internals to a failed caller.
