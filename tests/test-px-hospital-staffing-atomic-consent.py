@@ -124,11 +124,21 @@ with tempfile.TemporaryDirectory(
                 writerInstance="writer-ci-atomic-instance-001",
                 issuedAt=int(time.time()),expiresAt=int(time.time())+25,
             )
+        fixture_policy=dict(
+            schema=auth.release_policy.SCHEMA,operatorUid=1001,
+            clientExecutableSha256="a"*64,issuerReleaseSha256="b"*64,
+            hostId=host_id,policyGeneration=3,
+            allowedOperations=sorted([auth.ATTACH,auth.SUCCEED]),
+            expiresAt=int(time.time())+3600,
+        )
+
         def get_native_grant(payload):
             with patch.object(auth,"trusted_public_key",
                               return_value=private.public_key()), \
                  patch.object(auth,"installed_host_binding",
-                              return_value=host_id):
+                              return_value=host_id), \
+                 patch.object(auth.release_policy,"read_installed_policy",
+                              return_value=fixture_policy):
                 return auth.verify_native_envelope(sign(private,payload))
 
         # The isolated runner simulates a root-installed public key only
@@ -137,14 +147,18 @@ with tempfile.TemporaryDirectory(
             with patch.object(auth, "trusted_public_key",
                               return_value=private.public_key()), \
                  patch.object(auth, "installed_host_binding",
-                              return_value=host_id):
+                              return_value=host_id), \
+                 patch.object(auth.release_policy,"read_installed_policy",
+                              return_value=fixture_policy):
                 return admission.session_attach_atomic(*args, **kwargs)
 
         def trusted_succeed(*args, **kwargs):
             with patch.object(auth, "trusted_public_key",
                               return_value=private.public_key()), \
                  patch.object(auth, "installed_host_binding",
-                              return_value=host_id):
+                              return_value=host_id), \
+                 patch.object(auth.release_policy,"read_installed_policy",
+                              return_value=fixture_policy):
                 return admission.session_succeed_atomic(*args, **kwargs)
 
         def attach_args(room,bed,aid,sid):
@@ -192,7 +206,9 @@ with tempfile.TemporaryDirectory(
         with patch.object(auth, "trusted_public_key",
                           return_value=adversary_key.public_key()), \
              patch.object(auth, "installed_host_binding",
-                          return_value=host_id):
+                          return_value=host_id), \
+                 patch.object(auth.release_policy,"read_installed_policy",
+                              return_value=fixture_policy):
             refused(lambda:admission.session_attach_atomic(
                 db,a,session_record=source["session_record"],
                 native_grant=root_grant),"SIGNATURE_MISMATCH")
@@ -202,7 +218,9 @@ with tempfile.TemporaryDirectory(
         with patch.object(auth, "trusted_public_key",
                           return_value=private.public_key()), \
              patch.object(auth, "installed_host_binding",
-                          return_value="0"*64):
+                          return_value="0"*64), \
+             patch.object(auth.release_policy,"read_installed_policy",
+                          return_value=fixture_policy):
             refused(lambda:admission.session_attach_atomic(
                 db,a,session_record=source["session_record"],
                 native_grant=root_grant),"SIGNED_HOST_MISMATCH")
@@ -214,7 +232,9 @@ with tempfile.TemporaryDirectory(
              patch.object(auth, "installed_host_binding",
                           return_value=host_id), \
              patch.object(auth.time, "time",
-                          return_value=signed["expiresAt"] + 5):
+                          return_value=signed["expiresAt"] + 5), \
+             patch.object(auth.release_policy,"read_installed_policy",
+                          return_value=fixture_policy):
             refused(lambda:admission.session_attach_atomic(
                 db,a,session_record=source["session_record"],
                 native_grant=root_grant),"EXPIRED_GRANT")
