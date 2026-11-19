@@ -16,6 +16,9 @@ on:
       - "bin/px_hospital_staffing_grants.py"
       - "tests/test-px-hospital-staffing-grants-v1.py"
       - "tests/test-px-hospital-staffing-atomic-consent.py"
+      - "bin/px_hospital_staffing_transport.py"
+      - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
@@ -37,6 +40,9 @@ on:
       - "bin/px_hospital_staffing_grants.py"
       - "tests/test-px-hospital-staffing-grants-v1.py"
       - "tests/test-px-hospital-staffing-atomic-consent.py"
+      - "bin/px_hospital_staffing_transport.py"
+      - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
@@ -152,6 +158,11 @@ jobs:
         run: |
           python3 -m py_compile tests/test-px-hospital-staffing-atomic-consent.py
           python3 tests/test-px-hospital-staffing-atomic-consent.py
+
+      - name: Test typed native staffing frame and candidate v13 ledger on disposable WAL database
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_transport.py tests/test-px-hospital-staffing-transport-v13.py
+          python3 tests/test-px-hospital-staffing-transport-v13.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
