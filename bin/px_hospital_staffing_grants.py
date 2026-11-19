@@ -23,6 +23,7 @@ import stat
 import time
 
 import px_hospital_room_lifecycle as lifecycle
+import px_hospital_staffing_release_policy as release_policy
 
 try:
     from cryptography.exceptions import InvalidSignature
@@ -325,6 +326,11 @@ def verify_native_envelope(raw: bytes):
     grant = _verify_bytes(raw, trusted_public_key())
     if grant.body["hostId"] != installed_host_binding():
         hold("SIGNED_HOST_MISMATCH")
+    # A signature and matching host are necessary but insufficient.
+    # An old signed approval must lose authority when the root-owned
+    # enrolled operator, release, policy generation or operation changes.
+    release_policy.check_signed_grant(
+        grant.body, release_policy.read_installed_policy())
     # Only this root-pinned code path marks a grant as native-verified.
     # _verify_bytes is testable but its caller-supplied key is not proof
     # of installed-host authorization.
@@ -348,6 +354,8 @@ def require_native_grant(grant):
     fresh = _verify_bytes(grant._signed_raw, trusted_public_key())
     if fresh.body["hostId"] != installed_host_binding():
         hold("SIGNED_HOST_MISMATCH")
+    release_policy.check_signed_grant(
+        fresh.body, release_policy.read_installed_policy())
     if (fresh.digest != grant.digest
             or canonical(fresh.body) != canonical(grant.body)):
         hold("VERIFIED_GRANT_MUTATED")
