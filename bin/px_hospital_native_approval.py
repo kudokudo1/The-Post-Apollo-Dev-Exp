@@ -256,10 +256,19 @@ class ProtectedApproval:
         )
         if verified.body["hostId"]!=authority.installed_host_binding():
             hold("HOST_MISMATCH")
-        if (verified.body["nonce"]!=req["requestNonce"]
-            or verified.body["issuedAt"]>now+3
-            or verified.body["expiresAt"]<=now):
-            hold("SIGNED_NONCE_OR_TIME_MISMATCH")
+        # The requestNonce ties PREPARE to COMMIT. The independently
+        # generated signed grant nonce is different and is consumed only
+        # by PX's one-use SQLite ledger. Never conflate those identities.
+        if (verified.body["issuedAt"]>now+3
+            or verified.body["expiresAt"]<=now
+            or verified.body["roomId"]!=prepared["roomId"]
+            or verified.body["action"]!=prepared["action"]
+            or verified.body["expectedRevision"]!=prepared["expectedRevision"]
+            or verified.body["expectedDigest"]!=prepared["expectedDigest"]
+            or verified.body["patientId"]!=prepared["patientId"]
+            or verified.body["repository"]!=prepared["repository"]
+            or verified.body["retentionApproved"] is not True):
+            hold("SIGNED_GRANT_NOT_BOUND_TO_PREPARED_ROOM")
         with closing(self.connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
