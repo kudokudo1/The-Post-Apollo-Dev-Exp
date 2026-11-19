@@ -11,6 +11,7 @@ No imported owner code is copied into a release module; no user DB is opened.
 from __future__ import annotations
 
 import base64
+from cryptography.hazmat.primitives import serialization
 from contextlib import closing
 from pathlib import Path
 import os
@@ -228,7 +229,7 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
         third = root / "bed-third"
         make_bed(first)
         second_head = make_bed(second)
-        make_bed(third)
+        third_head = make_bed(third)
         args1 = SimpleNamespace(
             confirm=True, room_id="bed-one", repository="org/project",
             branch="fixture/bed", bed_path=str(first),
@@ -248,15 +249,9 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
 
         private = signed_bed.Ed25519PrivateKey.generate()
         public_raw = private.public_key().public_bytes(
-            encoding=signed_bed.serialization.Encoding.Raw,
-            format=signed_bed.serialization.PublicFormat.Raw,
-        ) if hasattr(signed_bed, "serialization") else None
-        if public_raw is None:
-            from cryptography.hazmat.primitives import serialization
-            public_raw = private.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw,
-            )
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
         trusted = root / "fixture-key.pub"
         trusted.write_bytes(public_raw)
         os.environ[signed_bed.KEY_ENV] = str(trusted)
@@ -286,6 +281,18 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             branch="fixture/bed", bed_path=str(second),
             signed_intent_file=str(signed_file),
         )
+        forged_frame = signed_bed._parse(signed_file.read_bytes())
+        forged_frame["body"]["operatorId"] = "forged-operator"
+        forged_file = root / "forged-intent.json"
+        forged_file.write_bytes(signed_bed._canon(forged_frame))
+        refuse(lambda: bed_claim.claim_first_bed_signed(
+            db, SimpleNamespace(**dict(vars(args2),
+                signed_intent_file=str(forged_file))),
+            v12["room_record"]
+        ), "wrong signer")
+        assert db.execute(
+            "SELECT COUNT(*) FROM hospital_bed_intent_consumptions"
+        ).fetchone()[0] == 0
         accepted = bed_claim.claim_first_bed_signed(
             db, args2, v12["room_record"]
         )
@@ -311,6 +318,28 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
         refuse(lambda: bed_claim.claim_first_bed(
             db, args3, v12["room_record"]
         ))
+        # The signed path must also roll back nonce consumption when
+        # v12 rejects the frozen Room mutation after signature verification.
+        frozen_row = v12["room_record"](db, "bed-frozen")
+        frozen_body = dict(
+            body, roomId="bed-frozen", bedPath=str(third),
+            head=third_head, roomUpdatedAt=frozen_row["updatedAt"],
+            nonce=base64.urlsafe_b64encode(
+                secrets.token_bytes(32)
+            ).rstrip(b"=").decode("ascii"),
+        )
+        frozen_intent = root / "frozen-intent.json"
+        frozen_intent.write_bytes(
+            signed_bed.seal_fixture(private, frozen_body)
+        )
+        refuse(lambda: bed_claim.claim_first_bed_signed(
+            db, SimpleNamespace(**dict(vars(args3),
+                signed_intent_file=str(frozen_intent))),
+            v12["room_record"],
+        ))
+        assert db.execute(
+            "SELECT COUNT(*) FROM hospital_bed_intent_consumptions"
+        ).fetchone()[0] == 1, "FAILED_BED_WRITE_CONSUMED_SIGNED_INTENT"
         assert v12["room_record"](db, "bed-frozen")["bedPath"] == ""
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
