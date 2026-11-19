@@ -291,8 +291,9 @@ with tempfile.TemporaryDirectory(prefix="px-hospital-v12-owners-") as tmp:
             v12["room_record"]
         ), "wrong signer")
         assert db.execute(
-            "SELECT COUNT(*) FROM hospital_bed_intent_consumptions"
-        ).fetchone()[0] == 0
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='hospital_bed_intent_consumptions'"
+        ).fetchone()[0] == 0, "FORGERY_CREATED_APPROVAL_LEDGER"
         accepted = bed_claim.claim_first_bed_signed(
             db, args2, v12["room_record"]
         )
