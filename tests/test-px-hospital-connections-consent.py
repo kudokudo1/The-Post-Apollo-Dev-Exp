@@ -253,3 +253,28 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
         expect_hold(lambda:consent.kernel_peer(left),"nonroot native caller")
 
 print("HOSPITAL + UNIVERSAL CONNECTIONS // PASS // exact native prepare/commit, signed one-use Trash → Bin → Restore, revocation, replays, no Burn")
+
+
+# The systemd-created endpoint is ROOT-created, but SocketUser must be the
+# non-root protected PX writer UID. The merged Connections signer verifies
+# that exact UID. Exercise positive/negative ownership without touching /run.
+from types import SimpleNamespace as _FakeStat
+from unittest.mock import patch as _patch
+import stat as _stat
+def _fake_socket_lstat(self):
+    if self == consent.CONSENT_SOCKET:
+        return _FakeStat(st_mode=_stat.S_IFSOCK | 0o660,
+                         st_uid=_socket_owner[0])
+    if self in (consent.CONSENT_SOCKET.parent,
+                consent.CONSENT_SOCKET.parent.parent):
+        return _FakeStat(st_mode=_stat.S_IFDIR | 0o755, st_uid=0)
+    raise AssertionError("Unexpected socket path: " + str(self))
+
+if os.geteuid() != 0:
+    _socket_owner=[os.geteuid()]
+    with _patch.object(Path, "lstat", _fake_socket_lstat):
+        assert consent.verify_root_socket() is None
+        _socket_owner[0]=0
+        expect_hold(consent.verify_root_socket, "ROOT_OWNED_SOCKET_CONFLICTS_WITH_C5")
+        _socket_owner[0]=os.geteuid()+1
+        expect_hold(consent.verify_root_socket, "FOREIGN_SOCKET_OWNER_REFUSED")
