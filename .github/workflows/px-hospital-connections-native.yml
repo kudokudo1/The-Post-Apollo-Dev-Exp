@@ -11,6 +11,7 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
@@ -26,6 +27,7 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
@@ -58,6 +60,46 @@ jobs:
           path: hospital-ui-source
           persist-credentials: false
 
+      - name: Read exact independent Hospital owner source (hospital-witness-session)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 4c3f0c97c4b6342bc7adb70443afecf65666d3cb
+          path: hospital-witness-session
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-succession)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 4e0fe43c1324c0011dbbdbcbdfc8bddfb06bcdc1
+          path: hospital-witness-succession
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-initial)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 81f626d9efe56089e2fd4117406729c82db58f3e
+          path: hospital-witness-bed-initial
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-signed)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: a76a7b079bba6cf5733b5be4860d2188028d63e4
+          path: hospital-witness-bed-signed
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-gateway)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 0dd14de064f2f50adb60b4217da6f2a937f4001c
+          path: hospital-witness-bed-gateway
+          persist-credentials: false
+
       - name: Install pinned Ed25519 verifier
         run: python3 -m pip install 'cryptography==46.0.3'
 
@@ -81,6 +123,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_native_release_audit.py tests/test-px-hospital-native-release-audit.py
           python3 tests/test-px-hospital-native-release-audit.py
+      - name: Check exact Session Doctor Bed source compatibility and deny unreviewed writes
+        run: |
+          python3 -m py_compile tests/test-px-hospital-pending-writer-compatibility.py
+          python3 tests/test-px-hospital-pending-writer-compatibility.py
+
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
           python3 -m py_compile bin/px_hospital_release_preflight.py tests/test-px-hospital-release-cutover-v1.py
