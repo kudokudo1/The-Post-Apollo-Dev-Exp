@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 import px_hospital_staffing_transport as transport
 import px_hospital_staffing_prepare_commit as coordinator
 import px_hospital_staffing_grants as auth
+import px_hospital_staffing_operator_review as review
 import px_hospital_staffing_admission as admission
 import px_hospital_protected_store_bridge as bridge
 
@@ -127,9 +128,17 @@ with tempfile.TemporaryDirectory(
                 operation=data["action"],scope=dict(data["intent"]),
                 roomRevision=prepared["expectedRevision"],
                 graphDigest=prepared["expectedDigest"],
-                operatorId="test-operator",
+                operatorId="uid:1001",operatorUid=1001,
+                polkitActionId=auth.POLKIT_ACTIONS[data["action"]],
+                policyGeneration=3,clientExecutableSha256="a"*64,
+                issuerReleaseSha256="b"*64,
+                reviewDigest=review.review_digest(
+                    data,prepared,operator_uid=1001,
+                    seat_id="logind-seat0-ciFixture",
+                    client_sha="a"*64,issuer_release_sha="b"*64,
+                    policy_generation=3),
                 approvalId="approval-"+secrets.token_hex(16),
-                seatId="test-seat-"+secrets.token_hex(12),
+                seatId="logind-seat0-ciFixture",
                 hostId=HOST,
                 nonce=b64(secrets.token_bytes(32)),
                 requestNonce=data["requestNonce"],
@@ -182,6 +191,38 @@ with tempfile.TemporaryDirectory(
                             requestNonce=b64(secrets.token_bytes(32)))
         denied(lambda:commit(prepared_req,ready,incorrect),
                "SIGNED_PREPARE_MISMATCH")
+        assert ledger()==0
+
+        # Signed approval for a different operator review digest is
+        # cryptographically valid but not this protected PREPARE.
+        prepared_req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
+                                              "session-wrong-review"))
+        ready=prepare(prepared_req)
+        incorrect=grant_for(prepared_req,ready,reviewDigest="d"*64)
+        denied(lambda:commit(prepared_req,ready,incorrect),
+               "SIGNED_OPERATOR_REVIEW_CHANGED")
+        assert ledger()==0
+
+        # Signing a policy generation for a previous operator review
+        # must not silently authorize the current source snapshot.
+        prepared_req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
+                                              "session-wrong-generation"))
+        ready=prepare(prepared_req)
+        incorrect=grant_for(prepared_req,ready,policyGeneration=4)
+        denied(lambda:commit(prepared_req,ready,incorrect),
+               "SIGNED_OPERATOR_REVIEW_CHANGED")
+        assert ledger()==0
+
+        # Polkit Room Trash authorization is not Doctor or Session
+        # attachment authorization, regardless of signer identity.
+        prepared_req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
+                                              "session-wrong-polkit"))
+        ready=prepare(prepared_req)
+        incorrect=grant_for(
+            prepared_req,ready,
+            polkitActionId="org.postapollo.hospital.room-trash")
+        denied(lambda:commit(prepared_req,ready,incorrect),
+               "STAFFING_POLKIT_ACTION_MISMATCH")
         assert ledger()==0
 
         # A valid signature from a different key cannot authorize.
