@@ -183,6 +183,39 @@ with tempfile.TemporaryDirectory(
             native_grant=promoted),"SIGNATURE_MISMATCH")
         assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
+        # A grant authenticated earlier loses authority when the
+        # installed root issuer rotates before the actual DB mutation.
+        with patch.object(auth, "trusted_public_key",
+                          return_value=adversary_key.public_key()), \
+             patch.object(auth, "installed_host_binding",
+                          return_value=host_id):
+            refused(lambda:admission.session_attach_atomic(
+                db,a,session_record=source["session_record"],
+                native_grant=root_grant),"SIGNATURE_MISMATCH")
+
+        # The signed host binding is checked again at admission, not
+        # inherited from a Python boolean set earlier.
+        with patch.object(auth, "trusted_public_key",
+                          return_value=private.public_key()), \
+             patch.object(auth, "installed_host_binding",
+                          return_value="0"*64):
+            refused(lambda:admission.session_attach_atomic(
+                db,a,session_record=source["session_record"],
+                native_grant=root_grant),"SIGNED_HOST_MISMATCH")
+
+        # Even a legitimate signature cannot be used after its signed
+        # expiry; admission re-reads the current time under trusted key.
+        with patch.object(auth, "trusted_public_key",
+                          return_value=private.public_key()), \
+             patch.object(auth, "installed_host_binding",
+                          return_value=host_id), \
+             patch.object(auth.time, "time",
+                          return_value=signed["expiresAt"] + 5):
+            refused(lambda:admission.session_attach_atomic(
+                db,a,session_record=source["session_record"],
+                native_grant=root_grant),"EXPIRED_GRANT")
+        assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
         refused(lambda:trusted_attach(
             db,SimpleNamespace(**dict(vars(a),session_id="changed")),
             session_record=source["session_record"],
