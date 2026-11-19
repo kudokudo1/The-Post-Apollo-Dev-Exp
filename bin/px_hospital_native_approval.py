@@ -289,10 +289,22 @@ class ProtectedApproval:
             except BaseException:
                 conn.rollback()
                 raise
+            def final_retention_guard(_conn, final_room, final_identity):
+                current=self.retention()
+                if (current["policyGeneration"]!=prepared["policyGeneration"]
+                    or current["expiresAt"]<=self.now()
+                    or final_room["digest"]!=prepared["expectedDigest"]):
+                    hold("RETENTION_REVOKED_DURING_TRANSACTION")
+                _decision(
+                    current,req["roomId"],
+                    str(final_identity["patient_id"]),
+                    str(final_identity["repository"]),req["action"],
+                )
             result=lifecycle.transition(
                 conn,req["roomId"],req["action"],
                 prepared["expectedRevision"],prepared["expectedDigest"],
                 req["roomId"],authorization=verified,
+                protected_hold=final_retention_guard,
             )
         return {
             "schema":RECEIPT_SCHEMA,
