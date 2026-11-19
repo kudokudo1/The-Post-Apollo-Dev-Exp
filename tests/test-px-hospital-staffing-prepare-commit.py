@@ -147,15 +147,25 @@ with tempfile.TemporaryDirectory(
             )
             body.update(changes)
             return sign(signer,body)
+        fixture_policy=dict(
+            schema=auth.release_policy.SCHEMA,operatorUid=1001,
+            clientExecutableSha256="a"*64,issuerReleaseSha256="b"*64,
+            hostId=HOST,policyGeneration=3,
+            allowedOperations=sorted([auth.ATTACH,auth.SUCCEED]),
+            expiresAt=int(time.time())+3600,
+        )
         def commit_frame(data,prepared,envelope):
             return dict(data,kind="commit",
                         writerInstance=prepared["writerInstance"],
                         signedEnvelope=b64(envelope))
-        def commit(data,prep,envelope,peer=PEER):
+        def commit(data,prep,envelope,peer=PEER,policy=None):
             with patch.object(auth,"trusted_public_key",
                               return_value=priv.public_key()), \
                  patch.object(auth,"installed_host_binding",
-                              return_value=HOST):
+                              return_value=HOST), \
+                 patch.object(auth.release_policy,"read_installed_policy",
+                              return_value=fixture_policy if policy is None
+                              else policy):
                 return planner.commit(
                     db,transport.canonical(commit_frame(data,prep,envelope)),
                     kernel_peer=peer)
@@ -224,6 +234,29 @@ with tempfile.TemporaryDirectory(
         denied(lambda:commit(prepared_req,ready,incorrect),
                "STAFFING_POLKIT_ACTION_MISMATCH")
         assert ledger()==0
+
+        # The *installed writer's* release/operator policy must match
+        # the signed grant at COMMIT. An old signed grant is revoked
+        # immediately if any operator, release or generation rotates.
+        for field, changed, reason in (
+            ("policyGeneration",4,"SIGNED_STAFFING_POLICY_REVOKED_OR_CHANGED"),
+            ("operatorUid",1002,"SIGNED_STAFFING_POLICY_REVOKED_OR_CHANGED"),
+            ("clientExecutableSha256","f"*64,
+             "SIGNED_STAFFING_POLICY_REVOKED_OR_CHANGED"),
+            ("issuerReleaseSha256","e"*64,
+             "SIGNED_STAFFING_POLICY_REVOKED_OR_CHANGED"),
+            ("allowedOperations",[auth.SUCCEED],
+             "STAFFING_OPERATION_NOT_ENROLLED"),
+        ):
+            req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
+                                          "session-revoked-"+field))
+            ready=prepare(req)
+            signed=grant_for(req,ready)
+            newer=dict(fixture_policy)
+            newer[field]=changed
+            denied(lambda req=req,ready=ready,signed=signed,newer=newer:
+                   commit(req,ready,signed,policy=newer),reason)
+            assert ledger()==0
 
         # A valid signature from a different key cannot authorize.
         prepared_req=request(auth.ATTACH,scope("room-b",bed_b,aid_b,
