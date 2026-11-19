@@ -241,3 +241,35 @@ process inventory is quiet. If any identity, ACL, source hash, root policy,
 schema, recovery witness, or old-writer fence is missing, the native
 release stays **HOSPITAL BACKEND NOT READY**. A real cutover needs an
 independently verified backup and explicit operator approval.
+
+
+## 2026-11-19 // Exact remaining Hospital writer ownership inventory
+
+I inspected the real PX source diffs for the independently owned open
+Hospital branches. These are **not** silently merged or granted new
+protected database privileges:
+
+| Existing Hospital work | New source command / request | Release decision |
+|---|---|---|
+| PX [#123](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/123), Session admission | \`session-attach-atomic\` | Must be reconciled with the protected PX runtime command validator |
+| PX [#125](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/125), Doctor succession | \`session-succeed-atomic\` | Must be reconciled with the protected PX runtime command validator |
+| PX [#127](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/127), initial Bed | \`room-bed-claim-atomic\` | Explicitly synthetic; cannot be promoted to native permissions |
+| PX [#128](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/128), signed initial Bed | \`room-bed-claim-signed-atomic\` | Separate signing and Room/Bed review required |
+| PX [#129](https://github.com/kudokudo1/The-Post-Apollo-Dev-Exp/pull/129), native Bed gateway | Native signed Bed request service, no new store parser command in this PR | Distinct staff/Bed authority; cannot reuse Room Trash consent |
+
+The protected Hospital writer in PX #130 currently admits exactly
+**21 existing write commands + 19 read commands**. The four commands above
+are **not** part of that allowlist. Its source coverage check rejects
+an unrecognized future command rather than granting it access. This
+prevents accidental privilege expansion, but also means installing
+the protected database before coordinating those branches could strand
+pending Session/Doctor/Bed workflows.
+
+**Next release gate:** preserve those workers' individual ownership and
+tests, reconcile their complete operations with the protected service's
+actual Room, Assignment, Session, Bed and process authority, then prove
+that every executable admitted after cutover uses the same private
+Hospital database. Merely whitelisting these names or adding a generic
+raw SQL transport is NOT an acceptable fix. The operator need not
+coordinate these other chats: the Hospital integration owner must do
+that work through PR review and exact source evidence.
