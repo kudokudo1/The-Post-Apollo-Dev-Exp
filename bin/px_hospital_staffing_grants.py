@@ -295,17 +295,22 @@ def verify_native_envelope(raw: bytes):
     grant = _verify_bytes(raw, trusted_public_key())
     if grant.body["hostId"] != installed_host_binding():
         hold("SIGNED_HOST_MISMATCH")
+    # Only this root-pinned code path marks a grant as native-verified.
+    # _verify_bytes is testable but its caller-supplied key is not proof
+    # of installed-host authorization.
+    grant.native_verified = True
     return grant
 
 
 class VerifiedStaffingGrant:
-    __slots__ = ("body", "digest")
+    __slots__ = ("body", "digest", "native_verified")
 
     def __init__(self, body, digest, *, token=None):
         if token is not _TRUSTED_VERIFICATION:
             hold("UNVERIFIED_GRANT_INSTANCE")
         self.body = body
         self.digest = digest
+        self.native_verified = False
 
     def consume(self, db: sqlite3.Connection, *, operation: str, scope: dict):
         """Validate source state, then consume a distinct nonce in source txn.
