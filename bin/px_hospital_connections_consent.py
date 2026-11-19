@@ -474,16 +474,23 @@ def handle_connection(conn, coordinator: ConsentCoordinator):
 
 
 def verify_root_socket(path=CONSENT_SOCKET):
-    # The native Socket unit creates this fixed path; the unprivileged PX
-    # process NEVER binds a caller-selected socket or chmods it.
+    # systemd ROOT creates this fixed pathname with SocketUser set to the
+    # dedicated non-root PX writer UID. The C5-H2 signer independently
+    # requires the socket owner == its pinned pxWriterUid. Requiring UID 0
+    # here would make the two protected services unable to communicate.
+    # PX itself never binds a caller-selected path or chmods this socket.
     if path != CONSENT_SOCKET:
         refuse("CONSENT_SOCKET_MUST_BE_FIXED")
+    expected_writer_uid = os.geteuid()
+    if expected_writer_uid == 0:
+        refuse("DEDICATED_NONROOT_WRITER_REQUIRED")
     for parent in (path.parent, path.parent.parent):
         st = parent.lstat()
         if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0
                 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
             refuse("UNTRUSTED_SYSTEMD_SOCKET_DIRECTORY")
     info = path.lstat()
-    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0
+    if (not stat.S_ISSOCK(info.st_mode)
+            or info.st_uid != expected_writer_uid
             or info.st_mode & stat.S_IWOTH):
         refuse("SYSTEMD_CONSENT_SOCKET_UNTRUSTED")
