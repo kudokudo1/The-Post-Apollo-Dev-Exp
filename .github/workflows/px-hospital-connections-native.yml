@@ -18,6 +18,8 @@ on:
       - "tests/test-px-hospital-staffing-atomic-consent.py"
       - "bin/px_hospital_staffing_transport.py"
       - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "bin/px_hospital_staffing_prepare_commit.py"
+      - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -42,6 +44,8 @@ on:
       - "tests/test-px-hospital-staffing-atomic-consent.py"
       - "bin/px_hospital_staffing_transport.py"
       - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "bin/px_hospital_staffing_prepare_commit.py"
+      - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
@@ -163,6 +167,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_transport.py tests/test-px-hospital-staffing-transport-v13.py
           python3 tests/test-px-hospital-staffing-transport-v13.py
+
+      - name: Verify CI-only native staffing PREPARE COMMIT same-transaction enforcement
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py tests/test-px-hospital-staffing-prepare-commit.py
+          python3 tests/test-px-hospital-staffing-prepare-commit.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
