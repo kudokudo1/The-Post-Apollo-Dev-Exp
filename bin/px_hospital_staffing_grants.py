@@ -261,7 +261,6 @@ def trusted_public_key():
 
 
 def installed_host_binding():
-    raw = _root_file(HOST_PATH, 33) if False else None
     # Machine-id is 32 lowercase hex bytes, often with a trailing newline.
     # Verify it from a trusted root-controlled path, never a caller field.
     path = HOST_PATH
@@ -270,17 +269,22 @@ def installed_host_binding():
         if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0
                 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
             hold("UNTRUSTED_HOST_PARENT")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                 | getattr(os, "O_CLOEXEC", 0))
     try:
-        st = os.fstat(fd)
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0
-                or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-                or st.st_size > 128):
-            hold("UNTRUSTED_HOST_ID")
-        raw = os.read(fd, 129).strip()
-    finally:
-        os.close(fd)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_CLOEXEC", 0))
+        try:
+            st = os.fstat(fd)
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0
+                    or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or st.st_size > 128):
+                hold("UNTRUSTED_HOST_ID")
+            raw = os.read(fd, 129).strip()
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise StaffingGrantHold(
+            "HOSPITAL_STAFFING_GRANT_HOLD // HOST_ID_UNAVAILABLE"
+        ) from exc
     if not re.fullmatch(rb"[0-9a-f]{32}", raw):
         hold("INVALID_HOST_ID")
     return hashlib.sha256(DOMAIN + bytes.fromhex(raw.decode("ascii"))).hexdigest()
@@ -314,6 +318,8 @@ class VerifiedStaffingGrant:
         if not isinstance(db, sqlite3.Connection) or not db.in_transaction:
             hold("ATOMIC_WRITER_TRANSACTION_REQUIRED")
         body = _body(self.body)
+        if hashlib.sha256(DOMAIN + canonical(body)).hexdigest() != self.digest:
+            hold("VERIFIED_GRANT_MUTATED")
         if operation != body["operation"]:
             hold("SIGNED_OPERATION_CHANGED")
         _scope(operation, scope)
