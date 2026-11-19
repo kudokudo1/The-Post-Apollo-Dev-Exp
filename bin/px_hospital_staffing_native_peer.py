@@ -16,6 +16,7 @@ Based on the existing Hospital Connections issuer peer+packet checks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 import select
 import socket
@@ -43,6 +44,7 @@ class KernelPeerEvidence:
     uid: int
     gid: int
     start_ticks: int
+    executable_sha256: str
     packet_length: int
     source: str = "linux-so-peercred-scm-credentials"
 
@@ -122,6 +124,55 @@ def _proc_start_ticks(pid):
     return ticks
 
 
+def _executable_sha(pid):
+    """Hash actual root-owned executable inode rather than cmdline or path.
+
+    The result is evidence only, NOT a signed release approval. A native
+    issuer must compare it to an independently trusted release manifest.
+    """
+    if type(pid) is not int or pid <= 1:
+        _hold("INVALID_EXECUTABLE_PID")
+    fd = None
+    max_size = 64 * 1024 * 1024
+    try:
+        # /proc/PID/exe is a procfs magic link. O_NOFOLLOW rejects the
+        # legitimate endpoint; fstat pins the actual opened ELF inode.
+        fd = os.open("/proc/%d/exe" % pid, os.O_RDONLY | os.O_CLOEXEC)
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0
+                or before.st_nlink < 1
+                or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not 4096 <= before.st_size <= max_size):
+            _hold("UNTRUSTED_EXECUTABLE_INODE")
+        if os.read(fd, 4) != b"\x7fELF":
+            _hold("EXECUTABLE_ELF_REQUIRED")
+        digest = hashlib.sha256(b"\x7fELF")
+        size = 4
+        while size <= max_size:
+            chunk = os.read(fd, min(65536, max_size + 1 - size))
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(fd)
+        if (size != before.st_size
+                or (before.st_dev, before.st_ino, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_dev, after.st_ino, after.st_size,
+                    after.st_mtime_ns, after.st_ctime_ns)):
+            _hold("EXECUTABLE_CHANGED_DURING_HASH")
+        if os.readlink("/proc/%d/exe" % pid).endswith(" (deleted)"):
+            _hold("UNLINKED_EXECUTABLE_REFUSED")
+        return digest.hexdigest()
+    except OSError as exc:
+        raise NativePeerHold(
+            "HOSPITAL_STAFFING_PEER_HOLD // EXECUTABLE_EVIDENCE_UNAVAILABLE"
+        ) from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _not_exited(fd):
     poll = select.poll()
     poll.register(fd, select.POLLIN | select.POLLERR | select.POLLHUP)
@@ -149,6 +200,7 @@ def _receive_packet(sock, *, expected_uid):
     try:
         _not_exited(fd)
         initial_start = _proc_start_ticks(peer[0])
+        initial_executable = _executable_sha(peer[0])
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         data, ancillary, flags, _address = sock.recvmsg(
             MAX_PACKET + 1, socket.CMSG_SPACE(_CRED_SIZE),
@@ -168,10 +220,13 @@ def _receive_packet(sock, *, expected_uid):
             _hold("CONNECTED_ISSUER_CHANGED")
         if _proc_start_ticks(peer[0]) != initial_start:
             _hold("PROCESS_BIRTH_CHANGED")
+        if _executable_sha(peer[0]) != initial_executable:
+            _hold("EXECUTABLE_CHANGED_DURING_PACKET")
         _not_exited(fd)
         return data, KernelPeerEvidence(
             pid=peer[0], uid=peer[1], gid=peer[2],
-            start_ticks=initial_start, packet_length=len(data),
+            start_ticks=initial_start, executable_sha256=initial_executable,
+            packet_length=len(data),
         )
     finally:
         os.close(fd)
