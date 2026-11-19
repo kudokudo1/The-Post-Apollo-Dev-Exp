@@ -12,6 +12,7 @@ on:
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
+      - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
@@ -28,6 +29,7 @@ on:
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
+      - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
@@ -127,6 +129,11 @@ jobs:
         run: |
           python3 -m py_compile tests/test-px-hospital-pending-writer-compatibility.py
           python3 tests/test-px-hospital-pending-writer-compatibility.py
+
+      - name: Cross-check original Session Doctor Bed transactions against v12 on disposable DB
+        run: |
+          python3 -m py_compile tests/test-px-hospital-cross-owner-v12-compatibility.py
+          python3 tests/test-px-hospital-cross-owner-v12-compatibility.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
