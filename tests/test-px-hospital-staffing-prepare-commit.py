@@ -220,7 +220,7 @@ with tempfile.TemporaryDirectory(
         ready=prepare(prepared_req)
         incorrect=grant_for(prepared_req,ready,policyGeneration=4)
         denied(lambda:commit(prepared_req,ready,incorrect),
-               "SIGNED_OPERATOR_REVIEW_CHANGED")
+               "SIGNED_STAFFING_POLICY_REVOKED_OR_CHANGED")
         assert ledger()==0
 
         # Polkit Room Trash authorization is not Doctor or Session
