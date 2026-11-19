@@ -59,6 +59,7 @@ SUCCEED_SCOPE = SHARED_SCOPE | frozenset((
 IDENTIFIER = re.compile(r"[A-Za-z0-9_.:@/-]{1,160}\Z", re.ASCII)
 APPROVAL = re.compile(r"[A-Za-z0-9_-]{12,128}\Z", re.ASCII)
 NONCE = re.compile(r"[A-Za-z0-9_-]{43}\Z", re.ASCII)
+ASSIGNMENT = re.compile(r"[1-9][0-9]{0,17}\Z", re.ASCII)
 SIGNATURE = re.compile(r"[A-Za-z0-9_-]{86}\Z", re.ASCII)
 DIGEST = re.compile(r"[a-f0-9]{64}\Z", re.ASCII)
 _TRUSTED_VERIFICATION = object()
@@ -132,9 +133,7 @@ def _scope(operation, value):
     if not bed.is_absolute() or ".." in bed.parts or str(bed) != value["bedPath"]:
         hold("INVALID_CANONICAL_BED")
     if (type(value["assignmentId"]) is not str
-            or not value["assignmentId"].isdecimal()
-            or value["assignmentId"] == "0"
-            or value["assignmentId"].startswith("0")):
+            or ASSIGNMENT.fullmatch(value["assignmentId"]) is None):
         hold("INVALID_ASSIGNMENT")
     if operation == ATTACH and value["mode"] not in ("create", "reuse"):
         hold("INVALID_ATTACH_MODE")
