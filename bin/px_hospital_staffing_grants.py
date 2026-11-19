@@ -43,9 +43,15 @@ BODY_FIELDS = frozenset((
     "schema", "audience", "operation", "scope", "roomRevision",
     "graphDigest", "operatorId", "approvalId", "seatId", "hostId",
     "nonce", "requestNonce", "writerInstance", "issuedAt", "expiresAt",
+    "operatorUid", "polkitActionId", "policyGeneration",
+    "clientExecutableSha256", "issuerReleaseSha256", "reviewDigest",
 ))
 ATTACH = "SESSION_ATTACH"
 SUCCEED = "DOCTOR_SUCCEED"
+POLKIT_ACTIONS = {
+    ATTACH: "org.postapollo.hospital.session-attach",
+    SUCCEED: "org.postapollo.hospital.doctor-succeed",
+}
 SHARED_SCOPE = frozenset((
     "roomId", "patientId", "repository", "branch", "bedPath", "assignmentId",
 ))
@@ -158,12 +164,28 @@ def _body(value, *, now=None):
             or type(value["graphDigest"]) is not str
             or not DIGEST.fullmatch(value["graphDigest"])):
         hold("INVALID_ROOM_VERSION")
-    if not _id(value["operatorId"]):
-        hold("INVALID_OPERATOR")
-    for key in ("approvalId", "seatId", "hostId"):
+    if (type(value["operatorUid"]) is not int
+            or not 0 < value["operatorUid"] < 2**31
+            or value["operatorId"] != "uid:" + str(value["operatorUid"])):
+        hold("UNVERIFIED_NATIVE_OPERATOR_IDENTITY")
+    if (type(value["polkitActionId"]) is not str
+            or value["polkitActionId"] != POLKIT_ACTIONS[op]):
+        hold("STAFFING_POLKIT_ACTION_MISMATCH")
+    if (type(value["policyGeneration"]) is not int
+            or not 0 < value["policyGeneration"] < 2**63):
+        hold("INVALID_SIGNED_POLICY_GENERATION")
+    for key in ("clientExecutableSha256", "issuerReleaseSha256",
+                "reviewDigest"):
+        if type(value[key]) is not str or not DIGEST.fullmatch(value[key]):
+            hold("INVALID_SIGNED_REVIEW_OR_RELEASE_DIGEST")
+    for key in ("approvalId", "seatId"):
         if (type(value[key]) is not str
                 or not APPROVAL.fullmatch(value[key])):
             hold("INVALID_APPROVAL_SEAT_OR_HOST")
+    if (not value["seatId"].startswith("logind-")
+            or type(value["hostId"]) is not str
+            or not DIGEST.fullmatch(value["hostId"])):
+        hold("INVALID_LOGIN1_SEAT_OR_SIGNED_HOST")
     if (type(value["nonce"]) is not str
             or not NONCE.fullmatch(value["nonce"])):
         hold("INVALID_NONCE")
