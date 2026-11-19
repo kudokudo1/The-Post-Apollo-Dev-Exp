@@ -66,6 +66,27 @@ def pair():
 # A byte-identical request must remain untrusted absent an authenticated
 # sender and a separately approved signed staff grant.
 data = b'{"kind":"prepare","action":"SESSION_ATTACH"}'
+
+# The future installed socket requires a READY handshake. Turning on
+# SO_PASSCRED after a packet was queued does not prove the original
+# sender. The sender must wait for READY before transmitting its data.
+reader,sender=pair()
+with reader,sender:
+    reader.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 0)
+    peer._arm_peer_socket(reader, expected_uid=os.getuid())
+    assert sender.recv(1024)==peer.READY_FRAME
+    sender.sendall(data)
+    received,witness=peer._receive_packet(reader,expected_uid=os.getuid())
+    assert received==data
+    assert witness.pid==os.getpid()
+    assert witness.executable_sha256==hashlib.sha256(
+        Path("/proc/self/exe").read_bytes()).hexdigest()
+
+reader,sender=pair()
+with reader,sender:
+    refuse(lambda:peer._arm_peer_socket(
+        reader,expected_uid=os.getuid()+1),
+        "WRONG_NATIVE_ISSUER_IDENTITY")
 reader, sender = pair()
 with reader, sender:
     sender.sendall(data)
