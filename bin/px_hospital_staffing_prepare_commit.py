@@ -27,6 +27,7 @@ import px_hospital_room_lifecycle as lifecycle
 import px_hospital_staffing_grants as grants
 import px_hospital_staffing_admission as admission
 import px_hospital_staffing_transport as transport
+import px_hospital_staffing_operator_review as review
 
 PREPARED_SCHEMA = "postapollo.hospital.native-staffing-prepared.v1"
 RECEIPT_SCHEMA = "postapollo.hospital.native-staffing-fixture-receipt.v1"
@@ -265,6 +266,34 @@ class SourceStaffingRehearsal:
                 or signed["roomRevision"] != pending.revision
                 or signed["graphDigest"] != pending.digest):
             _hold("SIGNED_PREPARE_MISMATCH")
+        prepared = {
+            "schema": PREPARED_SCHEMA,
+            "requestNonce": pending.nonce,
+            "roomId": pending.room,
+            "action": pending.action,
+            "expectedRevision": pending.revision,
+            "expectedDigest": pending.digest,
+            "writerInstance": pending.writer_instance,
+            "state": "ACTIVE",
+            "expiresInSeconds": PREPARE_TTL_SECONDS,
+            "operatorAuthenticated": False,
+            "requiresExternalConsent": True,
+        }
+        untrusted_request = {
+            key: request[key] for key in transport.PREPARE_FIELDS
+        }
+        expected_review = review.review_digest(
+            untrusted_request, prepared,
+            operator_uid=signed["operatorUid"],
+            seat_id=signed["seatId"],
+            client_sha=signed["clientExecutableSha256"],
+            issuer_release_sha=signed["issuerReleaseSha256"],
+            policy_generation=signed["policyGeneration"],
+        )
+        if (signed["reviewDigest"] != expected_review
+                or signed["polkitActionId"]
+                != review.ACTION_IDS[pending.action]):
+            _hold("SIGNED_OPERATOR_REVIEW_CHANGED")
         args = _atomic_args(pending.action, request["intent"])
         if pending.action == grants.ATTACH:
             result = admission.session_attach_atomic(
