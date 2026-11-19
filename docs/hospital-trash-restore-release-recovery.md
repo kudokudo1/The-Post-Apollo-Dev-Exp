@@ -605,3 +605,83 @@ independent security review and operator-authorized installation.
 Keep PR #133 draft; no adjacent owner branch, real database,
 local machine, service, key, QML permission, merge or production
 switch changed.
+
+
+## 2026-11-19 // Package 1 protected Session/Doctor PREPARE/COMMIT rehearsal
+
+**Status:** source-only, disposable CI PASS; native staffing service remains
+UNINSTALLED, UNAUTHORIZED and UNMERGED. Exact test head:
+ab4499b4d4967d2511b0df8515cbc03f79132c9e (3/3 workflows PASS).
+
+### IMPLEMENTATION
+
+- bin/px_hospital_staffing_grants.py now cryptographically binds exact
+  signed requestNonce (32 bytes) and writerInstance to the granted
+  staffing change. This prevents reusing a grant issued for one
+  PREPARE or another writer/service instance.
+- bin/px_hospital_staffing_prepare_commit.py implements a CI-ONLY
+  coordinator, never an installed socket or native handler. PREPARE
+  checks a protected Room/Patient/Bed, linked ACTIVE Assignment,
+  current Doctor and Provider, source revision and graph digest.
+  It records the exact typed intent, a bounded expiry and synthetic
+  root peer identity (PID, UID, process-start witness).
+- COMMIT consumes exactly that PREPARE, checks unchanged caller,
+  Room and intent, writer instance and deadline, requires a
+  separately signed staffing grant via the root-pinned verifier,
+  and matches signed scope/revision/graph/nonce/writer identity.
+  It then calls the original independently sourced atomic
+  Session attach or Doctor succession operation with the
+  verified grant consumed inside the same BEGIN IMMEDIATE.
+- A COMMIT attempt spends its in-memory PREPARE even if rejected;
+  in-memory tombstones prevent reusing the same PREPARE nonce
+  during its authorization lifetime. SQLite failures roll back
+  both approval ledger and Session/Doctor changes.
+- The coordinator constructor requires GitHub Actions and
+  disposable RUNNER_TEMP, and has no active network, socket, CLI,
+  key override, production DB opener, service unit or issuer.
+  Existing native dispatch_native_request and
+  dispatch_native_staffing remain DENY ONLY. PX protected writer
+  and generic store allowlist remain unchanged.
+
+### VERIFY
+
+- tests/test-px-hospital-staffing-prepare-commit.py runs only in
+  disposable GitHub CI, builds v12 and rehearses proposed v13
+  ledger migration. It tests exact signed PREPARE/COMMIT success,
+  wrong peer, wrong signed nonce, forged signer, writer restart,
+  stale graph, expired PREPARE, repeated COMMIT and replayed
+  PREPARE. A forced Session insert error after signed approval
+  consumption rolls back the ledger and Session together.
+- A fresh signed Session attachment and subsequent signed Doctor
+  succession preserve historical Message, HANDOFF and event
+  records, with SQLite integrity and foreign-key checks.
+- Existing independent owner source parity, Room Trash/Restore,
+  candidate ledger rollback, grammar and Hospital Store tests
+  remain in CI. 3/3 GitHub workflows passed at the exact
+  tested source head ab4499b4.
+
+### WATCH OUT FOR
+
+A synthetic CI root peer tuple is NOT real kernel process evidence,
+active user consent or an installed Polkit signer. PX schema v13 is
+a candidate, not an approved canonical migration. Real runtime still
+uses legacy v12 and no native staffing socket. No review of service
+identity, signing-key custody, revocation, actual Bed ownership,
+all-writer old-binary fencing or native backup/rollback is complete.
+Bed operations remain separately owned and unexposed. Hospital Burn
+is unsupported.
+
+### NEXT
+
+Independent PX and Connections owner review of the exact grant
+fields, source v13 migration, CI coordinator and protected host
+identity. Only after signed executable/seat proof and explicit
+operator-approved consent can this be converted to a native
+service handler, with separately approved database migration,
+complete all-writer cutover, backup/recovery and final acceptance.
+
+### DECISIONS
+
+Retain PR #133 as draft. No owner branch, local files, machine
+services, production keys, live Hospital Room, merge or permanent
+Burn changed in this milestone.
