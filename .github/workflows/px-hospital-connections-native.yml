@@ -1,0 +1,53 @@
+name: Hospital / Universal Connections Signed Trash Restore
+
+on:
+  pull_request:
+    paths:
+      - "bin/px_hospital_connections_consent.py"
+      - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-connections-consent.py"
+      - ".github/workflows/px-hospital-connections-native.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bin/px_hospital_connections_consent.py"
+      - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-connections-consent.py"
+      - ".github/workflows/px-hospital-connections-native.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signed-room-consent:
+    name: Hospital + Connections end-to-end source approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read exact PX source
+        uses: actions/checkout@v4
+
+      - name: Read merged Universal Connections C5-H2 signer source only
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: 29f816fb008d93f3153e2f347df579e6bd69283b
+          path: app-source
+          persist-credentials: false
+
+      - name: Install pinned Ed25519 verifier
+        run: python3 -m pip install 'cryptography==46.0.3'
+
+      - name: Check source syntax, reject direct pre-install launcher
+        run: |
+          python3 -m py_compile bin/px_hospital_connections_consent.py \
+            bin/px-hospital-consent-writerd bin/px_hospital_room_lifecycle.py \
+            tests/test-px-hospital-connections-consent.py
+          if python3 bin/px-hospital-consent-writerd --unsafe; then
+            echo "UNTRUSTED HOSPITAL CONSENT HOST STARTED" >&2
+            exit 1
+          fi
+
+      - name: Full signed PREPARE / COMMIT Room Trash, Bin and Restore
+        run: python3 tests/test-px-hospital-connections-consent.py
