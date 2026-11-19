@@ -274,6 +274,12 @@ if os.geteuid() != 0:
     _socket_owner=[os.geteuid()]
     with _patch.object(Path, "lstat", _fake_socket_lstat):
         assert consent.verify_root_socket() is None
+        # This is the ACTUAL merged Universal Connections issuer's
+        # socket-ownership verifier, not a hand-authored approximation.
+        import HospitalNativeIssuerService as _merged_issuer
+        observed = _merged_issuer._socket_root_path(
+            str(consent.CONSENT_SOCKET), os.geteuid())
+        assert observed.st_uid == os.geteuid()
         _socket_owner[0]=0
         expect_hold(consent.verify_root_socket, "ROOT_OWNED_SOCKET_CONFLICTS_WITH_C5")
         _socket_owner[0]=os.geteuid()+1
