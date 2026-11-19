@@ -1,0 +1,153 @@
+#!/usr/bin/python3 -I
+"""PX Hospital protected signer-to-writer socket, SOURCE ONLY, not installed.
+
+Runs as the existing separate protected DB writer UID. systemd must hand in
+the root-controlled SOCK_SEQPACKET listening socket as fd=3 at the fixed
+/run/post-apollo/hospital/px-writer.sock path. Never binds its own socket,
+selects a DB, creates a key, grants consent or changes user files.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import signal
+import socket
+import stat
+import struct
+import sys
+import threading
+
+# The systemd-installed libexec path must pin source and import ancestry;
+# a mutable user-installed PYTHONPATH must not control the native service.
+from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
+from px_hospital_native_approval import (
+    ProtectedApproval, Refused, MAX_IPC
+)
+
+SOCKET_PATH = Path("/run/post-apollo/hospital/px-writer.sock")
+SOCK_SEQPACKET = socket.SOCK_SEQPACKET
+
+def _pinned_socket(fd, writer_uid):
+    if os.geteuid() != writer_uid or writer_uid == 0:
+        raise WriterHold("DISTINCT_PROTECTED_WRITER_IDENTITY_REQUIRED")
+    for folder in (SOCKET_PATH.parent, SOCKET_PATH.parent.parent):
+        info=folder.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=0
+            or info.st_mode & (stat.S_IWGRP|stat.S_IWOTH)):
+            raise WriterHold("ROOT_NATIVE_SOCKET_ANCESTRY_REQUIRED")
+    info=SOCKET_PATH.lstat()
+    fd_info=os.fstat(fd)
+    if (not stat.S_ISSOCK(fd_info.st_mode)
+        or not stat.S_ISSOCK(info.st_mode)
+        or (info.st_dev,info.st_ino)!=(fd_info.st_dev,fd_info.st_ino)
+        or info.st_uid != writer_uid
+        or info.st_mode & stat.S_IWOTH):
+        raise WriterHold("NATIVE_SOCKET_NOT_PINNED")
+    listen=socket.fromfd(fd,socket.AF_UNIX,socket.SOCK_SEQPACKET)
+    if (listen.type & 0xf)!=socket.SOCK_SEQPACKET:
+        listen.close()
+        raise WriterHold("SIGNED_CHANNEL_REQUIRES_SEQPACKET")
+    if listen.getsockopt(socket.SOL_SOCKET,socket.SO_ACCEPTCONN)!=1:
+        listen.close()
+        raise WriterHold("SYSTEMD_LISTENER_REQUIRED")
+    return listen
+
+def _peer(sock):
+    raw=sock.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12)
+    if len(raw)!=12:
+        raise WriterHold("PEER_CREDENTIALS_REQUIRED")
+    peer=struct.unpack("3i",raw)
+    if peer[0]<=1 or peer[1]!=0 or peer[2]<0:
+        raise WriterHold("ROOT_ISSUER_REQUIRED")
+    return peer
+
+def recv_native(sock, expected_peer):
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
+    frame,ancillary,flags,_=sock.recvmsg(
+        MAX_IPC+1,socket.CMSG_SPACE(struct.calcsize("3i")))
+    credentials=[
+        struct.unpack("3i",value)
+        for level,kind,value in ancillary
+        if level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS
+        and len(value)==struct.calcsize("3i")
+    ]
+    if (flags & (socket.MSG_TRUNC|socket.MSG_CTRUNC)
+        or not 1<len(frame)<=MAX_IPC
+        or credentials!=[expected_peer]
+        or _peer(sock)!=expected_peer):
+        raise WriterHold("ISSUER_PACKET_SOURCE_REFUSED")
+    return frame
+
+def serve_connection(sock, approval):
+    try:
+        sock.settimeout(4)
+        peer=_peer(sock)
+        request=recv_native(sock,peer)
+        reply=approval.process(request,peer_uid=peer[1])
+        if (not isinstance(reply,bytes) or
+            not 1 <= len(reply) <= MAX_IPC
+            or _peer(sock)!=peer):
+            raise WriterHold("RESPONSE_INVALID")
+        sock.send(reply)
+    except (OSError,ValueError,TypeError,RuntimeError):
+        # C5 signer rejects anything other than its exact PREPARED or
+        # COMMITTED response. Do not disclose private retention decisions.
+        try:sock.send(b'{"status":"DENIED"}')
+        except OSError:pass
+    finally:
+        sock.close()
+
+def _load_writer_host():
+    # Import the already reviewed root-owned host contract. Its module
+    # filename uses dashes and is loaded by fixed path, not CLI input.
+    import importlib.machinery
+    import importlib.util
+    host_path=Path("/usr/libexec/post-apollo/hospital/px-hospital-room-writerd")
+    # The executable must be installed with root-owned source and pinned
+    # runtime. Missing entrypoint is an explicit hold.
+    info=host_path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=0
+        or info.st_mode & (stat.S_IWGRP|stat.S_IWOTH)):
+        raise WriterHold("REVIEWED_HOST_MODULE_NOT_INSTALLED")
+    loader=importlib.machinery.SourceFileLoader("px_protected_writer_host",str(host_path))
+    spec=importlib.util.spec_from_loader(loader.name,loader)
+    mod=importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod.read_host_config()
+
+def main():
+    if len(sys.argv)!=1 or os.getuid()!=os.geteuid():
+        raise WriterHold("NO_UNTRUSTED_NATIVE_ARGUMENTS")
+    client_uid,runtime_uid,state_dir,socket_dir=_load_writer_host()
+    writer=ProtectedRoomWriter(
+        client_uid=client_uid,runtime_uid=runtime_uid,
+        state_directory=state_dir,socket_directory=socket_dir,
+    )
+    # Reuse existing protected DB verification, without starting or
+    # modifying the other socket listener or database ownership.
+    with writer._connect() as conn:
+        pass
+    listener=_pinned_socket(3,os.geteuid())
+    service=ProtectedApproval(writer._connect)
+    stop=threading.Event()
+    def terminate(_sig,_frame):
+        stop.set()
+    signal.signal(signal.SIGTERM,terminate)
+    signal.signal(signal.SIGINT,terminate)
+    try:
+        listener.settimeout(0.4)
+        while not stop.is_set():
+            try: client,_=listener.accept()
+            except socket.timeout:continue
+            # One source owner, serialized PREPARE/COMMIT processing.
+            # Pending approvals are process-local and vanish on restart.
+            serve_connection(client,service)
+    finally:
+        listener.close()
+    return 0
+
+if __name__=="__main__":
+    try:raise SystemExit(main())
+    except (OSError,ValueError,RuntimeError):
+        print("HOSPITAL PROTECTED WRITER NOT READY",file=sys.stderr)
+        raise SystemExit(2)
