@@ -117,6 +117,7 @@ with tempfile.TemporaryDirectory(
                 seatId="se-"+secrets.token_hex(16),hostId=host_id,
                 nonce=b64(secrets.token_bytes(32)),
                 requestNonce=b64(secrets.token_bytes(32)),
+                writerInstance="writer-ci-atomic-instance-001",
                 issuedAt=int(time.time()),expiresAt=int(time.time())+25,
             )
         def get_native_grant(payload):
