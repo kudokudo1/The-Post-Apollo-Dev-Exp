@@ -458,7 +458,7 @@ def main():
             assert streamed.returncode == 0, (
                 streamed.stdout, streamed.stderr
             )
-            assert json.loads(streamed.stdout)["id"] > 0
+            assert int(json.loads(streamed.stdout)["id"]) > 0
         assert not writer.socket_path.exists()
 
         # Restart the service on the SAME owner-controlled DB. No signed
