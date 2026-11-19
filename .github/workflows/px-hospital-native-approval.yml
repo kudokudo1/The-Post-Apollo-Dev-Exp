@@ -1,0 +1,49 @@
+name: Hospital Trash Restore / Protected Native Approval Integration
+
+on:
+  pull_request:
+    paths:
+      - "bin/px_hospital_native_approval.py"
+      - "bin/px-hospital-native-writerd"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-native-protected-approval.py"
+      - ".github/workflows/px-hospital-native-approval.yml"
+      - "docs/hospital-protected-approval-integration.md"
+  push:
+    branches: [main]
+    paths:
+      - "bin/px_hospital_native_approval.py"
+      - "bin/px-hospital-native-writerd"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-native-protected-approval.py"
+      - ".github/workflows/px-hospital-native-approval.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signed-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout actual merged Connections signer, read-only
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: 11208791f13d14fb0b390de779afa1df1fce7d95
+          path: app-source
+          persist-credentials: false
+      - name: Install pinned Ed25519 verifier dependency
+        run: python3 -m pip install 'cryptography==46.0.3'
+      - name: Verify real C5 signer to protected PX Room Trash and Restore
+        run: |
+          python3 -m py_compile bin/px_hospital_native_approval.py bin/px_hospital_room_lifecycle.py bin/px-hospital-native-writerd tests/test-px-hospital-native-protected-approval.py
+          python3 tests/test-px-hospital-native-protected-approval.py
+      - name: Deny native daemon install-less startup
+        run: |
+          set +e
+          python3 bin/px-hospital-native-writerd >"$RUNNER_TEMP/native.stdout" 2>"$RUNNER_TEMP/native.stderr"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F "HOSPITAL PROTECTED WRITER NOT READY" "$RUNNER_TEMP/native.stderr"
