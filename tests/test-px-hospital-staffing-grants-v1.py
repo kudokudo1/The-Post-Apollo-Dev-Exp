@@ -111,6 +111,7 @@ with tempfile.TemporaryDirectory(
                 seatId="seat-"+secrets.token_hex(12),
                 hostId="a"*64,nonce=b64(secrets.token_bytes(32)),
                 requestNonce=b64(secrets.token_bytes(32)),
+                writerInstance="writer-ci-test-instance-001",
                 issuedAt=now,expiresAt=now+25,
             )
             value.update(changes)
