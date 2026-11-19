@@ -156,7 +156,6 @@ with tempfile.TemporaryDirectory(
         assert historical_witness(stage,cols)==initial
         assert stage.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         assert stage.execute("PRAGMA foreign_key_check").fetchone() is None
-        assert gate.inspect_readonly(stage)["schemaVersion"]==12
         assert stage.execute("SELECT count(*) FROM sqlite_master "
                              "WHERE type='trigger' AND name LIKE "
                              "'room_lifecycle_hold_%'").fetchone()[0] >= 27
@@ -178,7 +177,9 @@ with tempfile.TemporaryDirectory(
         except sqlite3.IntegrityError:
             pass
         # A migration witness is not a live storage activation permit.
-        assert gate.inspect_readonly(stage)["approvedToMigrate"] is False
+        proof=gate.inspect_readonly(stage)
+        assert proof["schemaVersion"] == 12
+        assert proof["approvedToMigrate"] is False
 
     # A crash after adding the v11 display name column but before
     # advancing schema_meta must resume safely, not ADD COLUMN again.
