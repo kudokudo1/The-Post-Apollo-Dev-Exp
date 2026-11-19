@@ -11,6 +11,7 @@ import re
 ROOT=Path(__file__).resolve().parents[1]
 DIR=ROOT/"packaging/hospital-trash-restore"
 APP=ROOT/"app-source"
+APP_UI=ROOT/"hospital-ui-source"
 def content(name):
     p=DIR/name
     assert p.is_file(),name
@@ -101,7 +102,8 @@ px_writer=(ROOT/"bin/px_hospital_room_writer.py").read_text()
 px_runner=(ROOT/"bin/px-hospital-consent-writerd").read_text()
 app_issuer=(APP/"services/connections/hospital/HospitalNativeIssuerService.py").read_text()
 app_core=(APP/"services/connections/hospital/HospitalNativeIssuerCore.py").read_text()
-app_client=(APP/"services/hospital/native/hospital_room_request_client.c").read_text()
+assert APP_UI.is_dir(),"PINNED_HOSPITAL_UI_CHECKOUT_REQUIRED"
+app_client=(APP_UI/"services/hospital/native/hospital_room_request_client.c").read_text()
 assert 'CONSENT_SOCKET = Path("/run/post-apollo/hospital/px-writer.sock")' in px_consent
 assert 'POLICY_PATH = Path("/etc/post-apollo/hospital/room-retention-decisions.json")' in px_consent
 assert 'socket.SOCK_SEQPACKET' in px_runner
