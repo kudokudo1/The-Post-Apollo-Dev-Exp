@@ -167,3 +167,77 @@ PX #130 and schema #121 remain prerequisites; do not silently merge
 parallel Bed/Session/Doctor work. All changes here are GitHub source
 and disposable CI. No local machine or live Hospital data is modified,
 and no production release is authorized by this document.
+
+
+## 2026-11-19 // Protected startup and old-writer inspection package
+
+This is an extension of the **same Hospital Trash and Restore PR #133**.
+
+### Source files added
+
+- \`bin/px_hospital_native_release_audit.py\` is a root-only, **read-only**
+  Linux process/DB descriptor inventory. It reads the existing fixed
+  root-controlled Hospital writer configuration, checks distinct writer /
+  runtime / desktop UIDs, inventories open \`hospital.db\`, \`hospital.db-wal\`
+  and \`hospital.db-shm\` file descriptors, reads kernel process UIDs and
+  access flags, and identifies database handles outside the protected
+  source path or owned by the wrong UID. Unreadable or changing /proc
+  observations cause a HOLD; the program never scans a user-supplied path.
+  It does not read patient records or print private paths/PIDs.
+- \`tests/test-px-hospital-native-release-audit.py\` checks the actual
+  source parser still has **21 allowlisted writes and 19 allowlisted
+  reads**. The disposable Linux /proc fixture tests approved and
+  unapproved source file descriptors, direct desktop-owned Hospital DB
+  handles, and fail-closed partial process evidence.
+- \`packaging/hospital-trash-restore/*.in\` defines **source-only**
+  systemd service/socket and tmpfiles templates for protected Hospital
+  database writer, separate signed Room approval service, root-owned
+  Connections issuer and root-owned IPC directories. They are deliberately
+  **not rendered, installed, enabled, or complete without the host
+  identity/security review**; no \`WantedBy\` directive is provided and
+  all machine-specific owner/service identities are unresolved.
+- \`tests/test-px-hospital-native-unit-contract.py\` checks the actual
+  merged Connections issuer and pinned Hospital UI executable source
+  against the templates' exact socket paths, non-root writer identities,
+  root-created/writer-owned approval socket, 0600/0660 modes and inert
+  startup settings. The template test does **not** install systemd units.
+- All tests run with temporary files or source parsing in GitHub CI,
+  not on the operator's desktop.
+
+### Unresolved install decisions, not hidden defaults
+
+1. The operator and installer must identify the actual dedicated Hospital
+   database writer identity and the approved desktop/runtime UIDs. No
+   hard-coded local UID, new account or group is created by this PR.
+2. A reviewable RPM/immutable-OS or equivalent trusted installation path
+   must provision \`/usr/libexec/post-apollo/hospital\`; on Fedora
+   Silverblue, casually writing into the immutable \`/usr\` tree is not
+   an approved rollout procedure.
+3. The writer's existing SOCK_STREAM socket defaults to **0600**. A
+   separately reviewed, narrow access-control-list policy must grant only
+   the pinned desktop read client and protected PX runtime access. The
+   templates intentionally do not widen it or disguise this missing step.
+4. The root-created signed \`px-writer.sock\` must be owned by the
+   dedicated non-root database writer, matching both PX and Universal
+   Connections source. The issuer's own socket stays root-owned and is
+   limited to an explicitly approved operator group.
+5. Legacy Hospital commands must be inventoried and fenced at their
+   *launch sources*, not just in an instantaneous process list. A clean
+   read-only /proc audit **never** sets \`releaseApproved:true\` or
+   \`externalWritersStopped:true\`. Startup unit source cannot prove that
+   unrelated per-user scripts, old binary versions, or future commands
+   will not open the old database again.
+6. SELinux labels, Polkit active-seat agent, key/certificate provenance,
+   root retention/legal-hold decisions, WAL backup restore receipt, all
+   open Bed/Session/Doctor writer compatibility and operator native
+   acceptance are still separate required gates.
+7. **No live Hospital Burn.** Permanent deletion remains outside this
+   Room Trash/Restore source integration.
+
+### Release and rollback decision
+
+No unit should be enabled merely because its template parses or the
+process inventory is quiet. If any identity, ACL, source hash, root policy,
+schema, recovery witness, or old-writer fence is missing, the native
+release stays **HOSPITAL BACKEND NOT READY**. A real cutover needs an
+independently verified backup and explicit operator approval.
