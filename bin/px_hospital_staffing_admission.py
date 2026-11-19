@@ -35,6 +35,10 @@ def _native_scope(grant, operation, expected):
             or grant.native_verified is not True
             or grant.body.get("operation") != operation):
         raise NativeStaffingHold("ROOT_PINNED_STAFFING_GRANT_REQUIRED")
+    # The in-memory flag is not an authorization capability. Recheck the
+    # original signed bytes under the root-pinned installed issuer, including
+    # current host binding, before any staffing mutation is attempted.
+    grants.require_native_grant(grant)
     scope = grant.body.get("scope")
     if type(scope) is not dict or any(
             scope.get(key) != str(value) for key, value in expected.items()):
