@@ -271,6 +271,17 @@ def main():
                 "store-command", argv=["doctor-put", "fixture-doctor",
                                       "--name", "Fixture Doctor"],
             ), runtime_peer.pw_name)["ok"]
+            # Preserve the pre-existing reset-to-ID semantics in the
+            # migrated CLI. Empty *values* are valid even though an empty
+            # command token is not.
+            for argv in (
+                ["doctor-name-set", "fixture-doctor", "--name", ""],
+                ["room-name-set", room, "--name", ""],
+                ["room-name-set", room, "--name", "Protected fixture Room"],
+            ):
+                assert send(writer.socket_path, request(
+                    "store-command", argv=argv,
+                ), runtime_peer.pw_name)["ok"], argv
 
             review_call = request("review", roomId=room)
             reviewed = send(writer.socket_path, review_call, peer.pw_name)
