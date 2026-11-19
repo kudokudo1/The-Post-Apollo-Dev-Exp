@@ -220,7 +220,9 @@ def _verify_bytes(raw: bytes, public_key, *, now=None):
         raise StaffingGrantHold(
             "HOSPITAL_STAFFING_GRANT_HOLD // SIGNATURE_MISMATCH"
         ) from exc
-    return VerifiedStaffingGrant(body, digest, token=_TRUSTED_VERIFICATION)
+    return VerifiedStaffingGrant(
+        body, digest, token=_TRUSTED_VERIFICATION, signed_raw=raw
+    )
 
 
 def _root_file(path: Path, expected_bytes: int):
@@ -308,15 +310,38 @@ def verify_native_envelope(raw: bytes):
     return grant
 
 
-class VerifiedStaffingGrant:
-    __slots__ = ("body", "digest", "native_verified")
+def require_native_grant(grant):
+    """Revalidate the *original* signed bytes against installed host trust.
 
-    def __init__(self, body, digest, *, token=None):
+    The boolean native_verified is a descriptive witness, NOT authority.
+    It can be assigned within Python, so neither it nor a verified object
+    created using a caller-selected fixture public key can promote itself.
+    The trusted key and host identity are loaded again at the mutation
+    boundary. No untrusted socket caller can provide a Python key object.
+    """
+    if (not isinstance(grant, VerifiedStaffingGrant)
+            or grant.native_verified is not True
+            or type(grant._signed_raw) is not bytes):
+        hold("ROOT_PINNED_STAFFING_GRANT_REQUIRED")
+    fresh = _verify_bytes(grant._signed_raw, trusted_public_key())
+    if fresh.body["hostId"] != installed_host_binding():
+        hold("SIGNED_HOST_MISMATCH")
+    if (fresh.digest != grant.digest
+            or canonical(fresh.body) != canonical(grant.body)):
+        hold("VERIFIED_GRANT_MUTATED")
+    return fresh
+
+
+class VerifiedStaffingGrant:
+    __slots__ = ("body", "digest", "native_verified", "_signed_raw")
+
+    def __init__(self, body, digest, *, token=None, signed_raw=None):
         if token is not _TRUSTED_VERIFICATION:
             hold("UNVERIFIED_GRANT_INSTANCE")
         self.body = body
         self.digest = digest
         self.native_verified = False
+        self._signed_raw = signed_raw
 
     def consume(self, db: sqlite3.Connection, *, operation: str, scope: dict):
         """Validate source state, then consume a distinct nonce in source txn.
@@ -328,6 +353,8 @@ class VerifiedStaffingGrant:
         """
         if not isinstance(db, sqlite3.Connection) or not db.in_transaction:
             hold("ATOMIC_WRITER_TRANSACTION_REQUIRED")
+        if self.native_verified is True:
+            require_native_grant(self)
         body = _body(self.body)
         if hashlib.sha256(DOMAIN + canonical(body)).hexdigest() != self.digest:
             hold("VERIFIED_GRANT_MUTATED")
