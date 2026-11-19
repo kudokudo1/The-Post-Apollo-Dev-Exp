@@ -100,25 +100,56 @@ v12 = runpy.run_path(
     str(ROOT / "bin" / "px-hospital-store"),
     run_name="px_hospital_v12_compat_fixture",
 )
-# The atomic routine bodies are byte-for-byte identical to the pinned
-# owners after adding explicit record-reader injection at their signatures.
-def source_equal(owned, adapted, name, injection):
+# Exact upstream body witness. The only allowed adaptations are explicit
+# record readers and the two audited optional native-grant transaction guards.
+# An unrecognized owner function change still fails the compatibility check.
+ATTACH_BEFORE = """    if native_grant is not None:
+        _native_scope(native_grant, grants.ATTACH, {
+            "roomId": room_id, "sessionId": session_id,
+            "doctorId": doctor_id, "providerId": provider_id,
+            "assignmentId": requested_assignment,
+            "repository": repository, "branch": branch,
+            "bedPath": bed_text, "mode": args.mode,
+        })
+"""
+SUCCEED_BEFORE = """    if native_grant is not None:
+        _native_scope(native_grant, grants.SUCCEED, {
+            "roomId": room_id, "previousSessionId": old_session_id,
+            "newSessionId": next_session_id,
+            "previousDoctorId": old_doctor,
+            "previousProviderId": old_provider,
+            "successorDoctorId": next_doctor,
+            "successorProviderId": next_provider,
+            "assignmentId": assignment_id, "repository": repository,
+            "branch": branch, "bedPath": bed_text,
+        })
+"""
+def native_after(operation):
+    return ("""        if native_grant is not None:
+            native_grant.consume(
+                conn, operation=grants.""" + operation + """,
+                scope=native_grant.body["scope"])
+""")
+
+def source_equal(owned, adapted, name, injection, before, operation):
     old = inspect.getsource(owned)
-    exact = old.replace(
-        f"def {name}(conn: sqlite3.Connection, args) -> dict:",
-        f"def {name}(conn: sqlite3.Connection, args, *, {injection}) -> dict:",
-        1,
+    source = inspect.getsource(adapted)
+    before_after = native_after(operation)
+    assert source.count(before) == 1, ("NATIVE_SCOPE_GUARD_DRIFT", name)
+    assert source.count(before_after) == 1, ("NATIVE_TXN_GUARD_DRIFT", name)
+    source = source.replace(before, "", 1).replace(before_after, "", 1)
+    source = source.replace(
+        f"def {name}(conn: sqlite3.Connection, args, *, {injection}, native_grant=None) -> dict:",
+        f"def {name}(conn: sqlite3.Connection, args) -> dict:", 1,
     )
-    assert exact.strip() == inspect.getsource(adapted).strip(), (
-        "OWNER_ATOMIC_ROUTINE_DRIFT", name,
-    )
+    assert old.strip() == source.strip(), ("OWNER_ATOMIC_ROUTINE_DRIFT", name)
 
 source_equal(session["session_attach_atomic"],
              staffing.session_attach_atomic, "session_attach_atomic",
-             "session_record")
+             "session_record", ATTACH_BEFORE, "ATTACH")
 source_equal(succession["session_succeed_atomic"],
              staffing.session_succeed_atomic, "session_succeed_atomic",
-             "room_record, session_record")
+             "room_record, session_record", SUCCEED_BEFORE, "SUCCEED")
 
 def stage_attach(db, args):
     return staffing.session_attach_atomic(
