@@ -106,7 +106,7 @@ for key, value, reason in (
     ("allowedOperations", [grants.ATTACH, grants.ATTACH],
      "UNTRUSTED_STAFFING_OPERATIONS"),
     ("allowedOperations", [], "UNTRUSTED_STAFFING_OPERATIONS"),
-    ("allowedOperations", [grants.SUCCEED,grants.ATTACH],
+    ("allowedOperations", [grants.ATTACH,grants.SUCCEED],
      "UNTRUSTED_STAFFING_OPERATIONS"),
     ("expiresAt", now - 1, "EXPIRED_OR_UNBOUNDED_RELEASE_POLICY"),
     ("expiresAt", now + 32*24*3600, "EXPIRED_OR_UNBOUNDED_RELEASE_POLICY"),
