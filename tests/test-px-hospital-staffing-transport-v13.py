@@ -122,7 +122,7 @@ for broken, expected in (
     (dict(req, argv=["room-put","room-1"]),"EXACT_PREPARE_FIELDS_REQUIRED"),
     (dict(req, signedEnvelope=commit["signedEnvelope"]),"EXACT_PREPARE_FIELDS_REQUIRED"),
     (dict(commit, writerInstance="../writer"),"INVALID_WRITER_INSTANCE"),
-    (dict(commit, signedEnvelope="broken!"),"NONCANONICAL_BINARY"),
+    (dict(commit, signedEnvelope="broken!"),"INVALID_CANONICAL_BINARY"),
     (dict(commit, signedEnvelope=b64(b"not-json")),"INVALID_ENVELOPE_BYTES"),
     (dict(commit, signedEnvelope=b64(b"{"*9000)),"NONCANONICAL_BINARY"),
 ):
