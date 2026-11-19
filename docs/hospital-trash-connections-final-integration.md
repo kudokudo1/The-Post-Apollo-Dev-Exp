@@ -132,3 +132,23 @@ substitute for that permission.
 - The work is kept in one *stacked draft* on PX #130, not on the active PX
   owner's branch or another worker's Trash++ GIO/Burn branch.
 - No production release, merge or workstation mutation is authorized.
+
+
+## 2026-11-19 // Fixed installed socket owner mismatch
+
+Independent comparison against the **actual merged Universal Connections
+issuer** found an installation-blocking mismatch: its native peer verifier
+requires \`px-writer.sock\` to be owned by the policy-pinned **dedicated,
+non-root Hospital database writer UID**, while the initial source
+\`verify_root_socket()\` required UID 0. The protected systemd socket is
+**created by root**, but its \`SocketUser\` must be the dedicated PX writer
+account and the parent \`/run/post-apollo/hospital\` hierarchy must remain
+root-owned and non-world-writable.
+
+The canonical source was corrected in this same PR, not a second competing
+implementation. Its CI now imports the merged Connections service itself
+and proves that **both actual source-side owner checks** accept the same
+reviewed socket identity, rejecting root-owned or unrelated-user sockets.
+The installed systemd SocketUser/SELinux policy still requires independent
+native verification and operator acceptance. This is source-level testing,
+not a claim that the user's desktop service is running.
