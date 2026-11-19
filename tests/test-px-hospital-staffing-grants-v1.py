@@ -110,6 +110,7 @@ with tempfile.TemporaryDirectory(
                 operatorId="operator-a",approvalId="approve-"+secrets.token_hex(16),
                 seatId="seat-"+secrets.token_hex(12),
                 hostId="a"*64,nonce=b64(secrets.token_bytes(32)),
+                requestNonce=b64(secrets.token_bytes(32)),
                 issuedAt=now,expiresAt=now+25,
             )
             value.update(changes)
