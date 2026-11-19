@@ -127,6 +127,22 @@ with tempfile.TemporaryDirectory(
                               return_value=host_id):
                 return auth.verify_native_envelope(sign(private,payload))
 
+        # The isolated runner simulates a root-installed public key only
+        # within these direct fixture calls. Production code has no override.
+        def trusted_attach(*args, **kwargs):
+            with patch.object(auth, "trusted_public_key",
+                              return_value=private.public_key()), \
+                 patch.object(auth, "installed_host_binding",
+                              return_value=host_id):
+                return admission.session_attach_atomic(*args, **kwargs)
+
+        def trusted_succeed(*args, **kwargs):
+            with patch.object(auth, "trusted_public_key",
+                              return_value=private.public_key()), \
+                 patch.object(auth, "installed_host_binding",
+                              return_value=host_id):
+                return admission.session_succeed_atomic(*args, **kwargs)
+
         def attach_args(room,bed,aid,sid):
             return SimpleNamespace(
                 confirm=True,room_id=room,session_id=sid,
@@ -151,11 +167,23 @@ with tempfile.TemporaryDirectory(
         fake_grant=auth._verify_bytes(sign(private,signed),
                                        private.public_key())
         assert fake_grant.native_verified is False
-        refused(lambda:admission.session_attach_atomic(
+        refused(lambda:trusted_attach(
             db,a,session_record=source["session_record"],
             native_grant=fake_grant),"ROOT_PINNED_STAFFING_GRANT_REQUIRED")
         assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-        refused(lambda:admission.session_attach_atomic(
+
+        # A caller can mutate the Python flag. That must never promote
+        # a grant signed by a different key into protected native authority.
+        adversary_key=Ed25519PrivateKey.generate()
+        forged_wire=sign(adversary_key,signed)
+        promoted=auth._verify_bytes(forged_wire,adversary_key.public_key())
+        promoted.native_verified=True
+        refused(lambda:trusted_attach(
+            db,a,session_record=source["session_record"],
+            native_grant=promoted),"SIGNATURE_MISMATCH")
+        assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+        refused(lambda:trusted_attach(
             db,SimpleNamespace(**dict(vars(a),session_id="changed")),
             session_record=source["session_record"],
             native_grant=root_grant),"NATIVE_STAFFING_REQUEST_SCOPE_CHANGED")
@@ -164,7 +192,7 @@ with tempfile.TemporaryDirectory(
             "SESSION_ATTACH",sign(private,signed),
             native_grant=root_grant),"NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
 
-        created=admission.session_attach_atomic(
+        created=trusted_attach(
             db,a,session_record=source["session_record"],
             native_grant=root_grant)
         assert created["created"] and created["session"]["status"]=="IDLE"
@@ -182,7 +210,7 @@ with tempfile.TemporaryDirectory(
             BEFORE INSERT ON sessions WHEN NEW.session_id='session-b'
             BEGIN SELECT RAISE(ABORT,'synthetic Session INSERT refusal'); END;
         """)
-        refused(lambda:admission.session_attach_atomic(
+        refused(lambda:trusted_attach(
             db,b,session_record=source["session_record"],
             native_grant=b_grant),"synthetic Session INSERT refusal")
         assert db.execute("SELECT COUNT(*) FROM hospital_staffing_authorizations"
@@ -190,7 +218,7 @@ with tempfile.TemporaryDirectory(
         assert db.execute("SELECT COUNT(*) FROM sessions WHERE session_id='session-b'"
                          ).fetchone()[0] == 0
         db.execute("DROP TRIGGER refuse_fixture_session")
-        retried=admission.session_attach_atomic(
+        retried=trusted_attach(
             db,b,session_record=source["session_record"],
             native_grant=b_grant)
         assert retried["created"]
@@ -226,7 +254,7 @@ with tempfile.TemporaryDirectory(
         )
         successor_grant=get_native_grant(body(
             auth.SUCCEED,succeed_scope,"room-a"))
-        accepted=admission.session_succeed_atomic(
+        accepted=trusted_succeed(
             db,successor_args,
             room_record=source["room_record"],
             session_record=source["session_record"],
