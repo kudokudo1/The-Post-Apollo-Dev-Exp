@@ -24,6 +24,8 @@ on:
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
       - "tests/test-px-hospital-staffing-operator-review.py"
+      - "bin/px_hospital_staffing_release_policy.py"
+      - "tests/test-px-hospital-staffing-release-policy.py"
       - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
@@ -55,6 +57,8 @@ on:
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
       - "tests/test-px-hospital-staffing-operator-review.py"
+      - "bin/px_hospital_staffing_release_policy.py"
+      - "tests/test-px-hospital-staffing-release-policy.py"
       - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
       - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
@@ -192,6 +196,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_operator_review.py tests/test-px-hospital-staffing-operator-review.py
           python3 tests/test-px-hospital-staffing-operator-review.py
+
+      - name: Verify root-owned staffing release and operator revocation policy (no install)
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_release_policy.py tests/test-px-hospital-staffing-release-policy.py
+          python3 tests/test-px-hospital-staffing-release-policy.py
 
       - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
         run: |
