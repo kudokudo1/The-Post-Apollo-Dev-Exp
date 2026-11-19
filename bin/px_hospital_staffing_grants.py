@@ -42,7 +42,7 @@ MAX_FRAME = 8192
 BODY_FIELDS = frozenset((
     "schema", "audience", "operation", "scope", "roomRevision",
     "graphDigest", "operatorId", "approvalId", "seatId", "hostId",
-    "nonce", "requestNonce", "issuedAt", "expiresAt",
+    "nonce", "requestNonce", "writerInstance", "issuedAt", "expiresAt",
 ))
 ATTACH = "SESSION_ATTACH"
 SUCCEED = "DOCTOR_SUCCEED"
@@ -172,6 +172,9 @@ def _body(value, *, now=None):
             or not NONCE.fullmatch(value["requestNonce"])):
         hold("INVALID_REQUEST_NONCE")
     _unb64(value["requestNonce"], 32)
+    if (type(value["writerInstance"]) is not str
+            or APPROVAL.fullmatch(value["writerInstance"]) is None):
+        hold("INVALID_WRITER_INSTANCE")
     if (type(value["issuedAt"]) is not int
             or type(value["expiresAt"]) is not int
             or not 0 < value["expiresAt"] - value["issuedAt"] <= 30):
