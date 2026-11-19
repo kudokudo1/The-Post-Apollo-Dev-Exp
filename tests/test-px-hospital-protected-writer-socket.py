@@ -186,6 +186,22 @@ def main():
         private.mkdir(mode=0o700)
         runtime = parent / "socket"
         runtime.mkdir(mode=0o711)
+        # GitHub's runner checkout is not traversable by the separate
+        # daemon UID. Copy this exact commit's client code into a separate
+        # non-writable-by-daemon fixture directory, never the real host.
+        client_code = parent / "read-only-runtime-source"
+        client_code.mkdir(mode=0o755)
+        for name in (
+            "px_hospital_protected_client.py",
+            "px_hospital_protected_store_bridge.py",
+            "px_hospital_room_writer.py",
+            "px_hospital_room_lifecycle.py",
+            "px_hospital_room_authority.py",
+            "px-hospital-store",
+        ):
+            dest = client_code / name
+            shutil.copyfile(ROOT / "bin" / name, dest)
+            dest.chmod(0o644)
         database = private / "hospital.db"
         env = dict(os.environ, PX_HOSPITAL_DATA_DIR=str(private))
         env.pop("PX_HOSPITAL_DB", None)
@@ -440,7 +456,7 @@ def main():
             writer.socket_path.chmod(0o660)
             native_client = subprocess.run([
                 "sudo", "-n", "-u", runtime_peer.pw_name, sys.executable,
-                "-c", RUNTIME_CLIENT, str(ROOT / "bin"),
+                "-c", RUNTIME_CLIENT, str(client_code),
                 str(writer.socket_path), str(os.geteuid()), "room", room,
             ], capture_output=True, text=True, timeout=10)
             assert native_client.returncode == 0, (
@@ -449,7 +465,7 @@ def main():
             assert json.loads(native_client.stdout)["id"] == room
             streamed = subprocess.run([
                 "sudo", "-n", "-u", runtime_peer.pw_name, sys.executable,
-                "-c", RUNTIME_CLIENT, str(ROOT / "bin"),
+                "-c", RUNTIME_CLIENT, str(client_code),
                 str(writer.socket_path), str(os.geteuid()),
                 "message-append", "--room-id", room,
                 "--author-role", "DOCTOR", "--direction", "outgoing",
