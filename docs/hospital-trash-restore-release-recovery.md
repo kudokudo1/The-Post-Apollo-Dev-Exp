@@ -685,3 +685,77 @@ complete all-writer cutover, backup/recovery and final acceptance.
 Retain PR #133 as draft. No owner branch, local files, machine
 services, production keys, live Hospital Room, merge or permanent
 Burn changed in this milestone.
+
+
+## 2026-11-19 // Session/Doctor trusted native grant revalidation fix
+
+**Status:** security implementation and disposable GitHub CI PASS. No
+native host installation, kernel-confirmed operator seat, protected
+staffing dispatcher or database migration has been approved.
+
+### IMPLEMENTATION
+
+- Removed reliance on the editable Python native_verified flag as
+  authorization in the staged native Session/Doctor mutation path.
+  VerifiedStaffingGrant now retains the original canonical signed
+  envelope bytes rather than an arbitrary reconstituted body.
+- require_native_grant() in bin/px_hospital_staffing_grants.py
+  verifies the original signed bytes AGAIN under the current
+  root-controlled public issuer key, validates the installed
+  host fingerprint, compares the reverified digest and body
+  against the previously accepted grant, and checks current
+  expiration. A fixture-verified grant or forged flag cannot
+  bypass this check.
+- The staged atomic Session/Doctor adapter calls root-pinned
+  revalidation immediately before attempting the staffing
+  transaction. The grant consume() method also revalidates any
+  native-verified grant WITHIN the original atomic SQLite
+  transaction. A revoked or expired authorization cannot
+  spend its nonce or change the staffing records.
+- No live signer, private key, installed anchor, socket
+  command or QML permit flag was added.
+
+### VERIFY
+
+- tests/test-px-hospital-staffing-atomic-consent.py now verifies
+  that forcibly setting a forged fixture grant's
+  native_verified flag to True does not promote it to trusted
+  authorization. A legitimate grant is also refused if the
+  installed issuer key changes, the host identity changes or
+  the signed grant expires before the actual Session write.
+- Existing signed PREPARE/COMMIT, source-level Session/Doctor
+  atomic rollback, candidate v13 WAL migration, Room
+  Trash/Restore and old-writer protections continue in CI.
+- Three exact-source-head workflows PASS at
+  57eee11a915c91af56e677c81b770c88e19dc72c:
+  Hospital / Universal Connections Signed Trash Restore,
+  PX / HOSPITAL STORE, Meta Apollo Grammar.
+
+### WATCH OUT FOR
+
+This closes an in-process flag-promotion bug, not the entire
+native authorization problem. Arbitrary malicious Python
+running inside the writer process is not a safe security
+boundary. Production still requires a review of the installed
+executable and protected process/UID, real kernel peer evidence,
+active-seat Polkit consent, issuer enrollment, native connector,
+versioned v13 schema owner acceptance, all-writer fencing,
+verified live backup and rollback, and operator acceptance.
+The CI-only PREPARE/COMMIT coordinator and version-13 candidate
+remain uninstalled. Bed and Hospital Burn stay unexposed.
+
+### NEXT
+
+Coordinate with the independent PX #123/#125 Session/Doctor owners
+and Connections issuer owner before introducing native protected
+staffing commands. Reuse the existing reviewed Linux peer and
+per-packet credential checks rather than inventing a second
+unreviewed privilege mechanism. After schema-owner approval,
+test true native operator/seat/executable provenance, cut over
+all old writers, and verify WAL recovery before release.
+
+### DECISIONS
+
+PR #133 remains draft/unmerged. No live Hospital DB, service,
+local host state, production key, unrelated owner branch or
+permanent Hospital Burn was modified.
