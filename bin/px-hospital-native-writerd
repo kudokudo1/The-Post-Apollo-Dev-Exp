@@ -43,12 +43,16 @@ def _pinned_module_directory():
             or native.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
             or (native.st_dev, native.st_ino) != (actual.st_dev, actual.st_ino)):
         raise RuntimeError("UNPINNED_NATIVE_ENTRYPOINT")
-_pinned_module_directory()
-sys.path.insert(0, str(LIB_DIR))
-from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
-from px_hospital_native_approval import (
-    ProtectedApproval, Refused, MAX_IPC
-)
+try:
+    _pinned_module_directory()
+    sys.path.insert(0, str(LIB_DIR))
+    from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
+    from px_hospital_native_approval import (
+        ProtectedApproval, Refused, MAX_IPC
+    )
+except (OSError, RuntimeError, ImportError):
+    print("HOSPITAL PROTECTED WRITER NOT READY", file=sys.stderr)
+    raise SystemExit(2)
 
 SOCKET_PATH = Path("/run/post-apollo/hospital/px-writer.sock")
 SOCK_SEQPACKET = socket.SOCK_SEQPACKET
