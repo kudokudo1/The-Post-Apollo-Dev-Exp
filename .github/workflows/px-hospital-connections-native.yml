@@ -9,6 +9,7 @@ on:
       - "tests/test-px-hospital-connections-consent.py"
       - "tests/test-px-hospital-release-cutover-v1.py"
       - "bin/px_hospital_release_preflight.py"
+      - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
     branches: [main]
@@ -17,6 +18,9 @@ on:
       - "bin/px-hospital-consent-writerd"
       - "bin/px_hospital_room_lifecycle.py"
       - "tests/test-px-hospital-connections-consent.py"
+      - "tests/test-px-hospital-release-cutover-v1.py"
+      - "bin/px_hospital_release_preflight.py"
+      - "docs/hospital-trash-restore-release-recovery.md"
       - ".github/workflows/px-hospital-connections-native.yml"
 
 permissions:
