@@ -21,6 +21,7 @@ on:
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
@@ -58,6 +59,7 @@ on:
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
@@ -142,6 +144,14 @@ jobs:
           path: hospital-witness-bed-gateway
           persist-credentials: false
 
+      - name: Checkout exact Connections source-only RECOVER query proposal for adversarial parity
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: f6767d7a178bbf7c5ab1103ed6a5ec11a4526943
+          path: connections-staffing-recover-proposal
+          persist-credentials: false
+
       - name: Install pinned Ed25519 verifier
         run: python3 -m pip install 'cryptography==46.0.3'
 
@@ -199,6 +209,11 @@ jobs:
         run: |
           python3 -m py_compile tests/test-px-hospital-staffing-recovery-fence-model.py
           python3 tests/test-px-hospital-staffing-recovery-fence-model.py
+
+      - name: Verify pinned Connections RECOVER query against real Hospital parser without native trust
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-recover-query-cross-owner.py
+          python3 -B tests/test-px-hospital-staffing-recover-query-cross-owner.py
 
       - name: Inspect real Linux kernel peer and packet identity for future staffing issuer (no activation)
         run: |
