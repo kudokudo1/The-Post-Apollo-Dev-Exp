@@ -240,6 +240,13 @@ with tempfile.TemporaryDirectory(
         journal_result(a, commit, "COMMITTED")
         assert count(a, "ci_model_outcomes") == 1
         assert count(a, "ci_model_source_sessions") == 1
+        # The sender loses its response and the reader process restarts.
+        # Reopening the WAL-backed file does not create permission to
+        # resend the same signed grant or pretend that the reply survived.
+        b.close()
+        b = sqlite3.connect(str(db_path), isolation_level=None, timeout=0)
+        b.row_factory = sqlite3.Row
+        b.execute("PRAGMA busy_timeout=0")
         observed = observe(b, commit)
         assert observed["ciOnlyObservation"] == MATCH_COMMIT
         assert all(observed[k] is False for k in DENIED)
