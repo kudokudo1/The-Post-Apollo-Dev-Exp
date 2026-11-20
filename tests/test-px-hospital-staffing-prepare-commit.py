@@ -405,6 +405,92 @@ with tempfile.TemporaryDirectory(
                    "WHERE room_id='room-a'",(__import__("json").loads(signed)
                                              ["body"]["graphDigest"],))
         assert recover_ci(*committed_original)["status"]==recovery.MATCH
+
+        # A missing ledger row cannot clear an uncertain *previously*
+        # committed grant, regardless of what an untrusted caller claims.
+        columns=("nonce","grant_digest","approval_id","room_id","operation",
+                 "operator_id","session_id","graph_digest","consumed_at")
+        saved=db.execute(
+            "SELECT " + ",".join(columns) + " FROM "
+            "hospital_staffing_authorizations WHERE room_id='room-a'"
+        ).fetchone()
+        assert saved is not None
+        db.execute("DELETE FROM hospital_staffing_authorizations WHERE nonce=?",
+                   (saved["nonce"],))
+        missing=recover_ci(*committed_original)
+        assert missing["status"]==recovery.UNKNOWN
+        assert missing["matchingDisposableLedgerRowObserved"] is False
+        assert missing["absentLedgerIsNotProofOfRefusal"] is True
+        assert missing["canRetrySameGrant"] is False
+        db.execute(
+            "INSERT INTO hospital_staffing_authorizations (" +
+            ",".join(columns) + ") VALUES (" +
+            ",".join("?" for _ in columns) + ")",
+            tuple(saved[c] for c in columns))
+        assert recover_ci(*committed_original)["status"]==recovery.MATCH
+
+        # A copied request cannot borrow the ledger row of another
+        # Session or silently relabel a source identity as COMMITTED.
+        db.execute("UPDATE hospital_staffing_authorizations "
+                   "SET session_id='session-foreign' WHERE nonce=?",
+                   (saved["nonce"],))
+        denied(lambda:recover_ci(*committed_original),
+               "DURABLE_LEDGER_COLLISION_OR_SCOPE_CONFLICT")
+        db.execute("UPDATE hospital_staffing_authorizations "
+                   "SET session_id=? WHERE nonce=?",
+                   (saved["session_id"],saved["nonce"]))
+
+        # Three individually UNIQUE columns could identify two different
+        # rows if the protected ledger is tampered with. Reject both.
+        db.execute("UPDATE hospital_staffing_authorizations "
+                   "SET grant_digest=? WHERE nonce=?",
+                   ("f"*64,saved["nonce"]))
+        collision_nonce=b64(secrets.token_bytes(32))
+        db.execute(
+            "INSERT INTO hospital_staffing_authorizations "
+            "(nonce,grant_digest,approval_id,room_id,operation,operator_id,"
+            "session_id,graph_digest) VALUES (?,?,?,?,?,?,?,?)",
+            (collision_nonce,saved["grant_digest"],"collision-ci-approval-002",
+             saved["room_id"],saved["operation"],saved["operator_id"],
+             saved["session_id"],saved["graph_digest"]))
+        denied(lambda:recover_ci(*committed_original),
+               "DURABLE_LEDGER_COLLISION_OR_SCOPE_CONFLICT")
+        db.execute("DELETE FROM hospital_staffing_authorizations WHERE nonce=?",
+                   (collision_nonce,))
+        db.execute("UPDATE hospital_staffing_authorizations "
+                   "SET grant_digest=? WHERE nonce=?",
+                   (saved["grant_digest"],saved["nonce"]))
+        assert recover_ci(*committed_original)["status"]==recovery.MATCH
+
+        # Noncanonical/duplicated PREPARED bytes cannot escape as an
+        # unhandled parser exception or a trusted writer result.
+        fixture_grant=auth._verify_bytes(
+            signed,priv.public_key(),now=int(time.time()))
+        def with_prepared(raw_prepared):
+            return recovery.inspect_ci_only(
+                db,original_prepare_raw=transport.canonical(planned),
+                prepared_raw=raw_prepared,
+                commit_raw=transport.canonical(
+                    commit_frame(planned,ready,signed)),
+                previously_verified_fixture_grant=fixture_grant)
+        prepared_raw=transport.canonical(ready)
+        denied(lambda:with_prepared(
+            prepared_raw[:-1]+b',"roomId":"room-a"}'),
+            "INVALID_PREPARED")
+        denied(lambda:with_prepared(
+            prepared_raw.replace(b'"expiresInSeconds":40',
+                                 b'"expiresInSeconds":NaN')),
+            "INVALID_PREPARED")
+
+        # Production store v12 is not a recovery ledger. A reported
+        # version downgrade must fail closed, not imply no commitment.
+        db.execute("UPDATE schema_meta SET value='12' "
+                   "WHERE key='schema_version'")
+        denied(lambda:recover_ci(*committed_original),
+               "CANDIDATE_V13_LEDGER_REQUIRED")
+        db.execute("UPDATE schema_meta SET value='13' "
+                   "WHERE key='schema_version'")
+        assert recover_ci(*committed_original)["status"]==recovery.MATCH
         denied(lambda:commit(planned,ready,signed),
                "MISSING_EXPIRED_OR_REPLAYED_PREPARE")
 
