@@ -21,6 +21,7 @@ on:
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-process-crash-model.py"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
@@ -59,6 +60,7 @@ on:
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-process-crash-model.py"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
@@ -209,6 +211,11 @@ jobs:
         run: |
           python3 -m py_compile tests/test-px-hospital-staffing-recovery-fence-model.py
           python3 tests/test-px-hospital-staffing-recovery-fence-model.py
+
+      - name: Crash separate CI-only writer process before and after SQLite COMMIT
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-process-crash-model.py
+          python3 -B tests/test-px-hospital-staffing-process-crash-model.py
 
       - name: Verify pinned Connections RECOVER query against real Hospital parser without native trust
         run: |
