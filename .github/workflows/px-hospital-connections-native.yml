@@ -33,6 +33,7 @@ on:
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
+      - "docs/hospital-staffing-writer-recovery-contract.md"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
     branches: [main]
@@ -67,6 +68,7 @@ on:
       - "tests/test-px-hospital-native-unit-contract.py"
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
+      - "docs/hospital-staffing-writer-recovery-contract.md"
       - ".github/workflows/px-hospital-connections-native.yml"
 
 permissions:
