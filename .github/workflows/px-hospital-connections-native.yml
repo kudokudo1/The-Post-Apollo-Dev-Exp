@@ -20,6 +20,7 @@ on:
       - "tests/test-px-hospital-staffing-transport-v13.py"
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
@@ -56,6 +57,7 @@ on:
       - "tests/test-px-hospital-staffing-transport-v13.py"
       - "bin/px_hospital_staffing_prepare_commit.py"
       - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
       - "bin/px_hospital_staffing_operator_review.py"
@@ -192,6 +194,11 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py bin/px_hospital_staffing_ledger_recovery.py tests/test-px-hospital-staffing-prepare-commit.py
           python3 tests/test-px-hospital-staffing-prepare-commit.py
+
+      - name: Test disposable staffing result journal and terminal refusal fence without native schema approval
+        run: |
+          python3 -m py_compile tests/test-px-hospital-staffing-recovery-fence-model.py
+          python3 tests/test-px-hospital-staffing-recovery-fence-model.py
 
       - name: Inspect real Linux kernel peer and packet identity for future staffing issuer (no activation)
         run: |
