@@ -34,6 +34,7 @@ on:
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
       - "docs/hospital-staffing-writer-recovery-contract.md"
+      - "docs/hospital-staffing-recovery-owner-decisions.md"
       - ".github/workflows/px-hospital-connections-native.yml"
   push:
     branches: [main]
@@ -69,6 +70,7 @@ on:
       - "packaging/hospital-trash-restore/**"
       - "docs/hospital-trash-restore-release-recovery.md"
       - "docs/hospital-staffing-writer-recovery-contract.md"
+      - "docs/hospital-staffing-recovery-owner-decisions.md"
       - ".github/workflows/px-hospital-connections-native.yml"
 
 permissions:
