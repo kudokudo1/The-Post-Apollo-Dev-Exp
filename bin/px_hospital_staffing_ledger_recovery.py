@@ -73,7 +73,8 @@ def _prepared(raw):
         if (type(obj) is not dict or set(obj) != PREPARED_FIELDS
                 or transport.canonical(obj) != raw):
             hold("EXACT_CANONICAL_PREPARED_REQUIRED")
-    except (ValueError, UnicodeError, RecursionError, TypeError) as exc:
+    except (transport.NativeStaffingTransportHold, ValueError, UnicodeError,
+            RecursionError, TypeError, OverflowError) as exc:
         raise LedgerRecoveryHold(
             "HOSPITAL_STAFFING_LEDGER_RECOVERY_HOLD // INVALID_PREPARED"
         ) from exc
@@ -195,6 +196,9 @@ def inspect_ci_only(db, *, original_prepare_raw, prepared_raw, commit_raw,
             str(entries[0][key]) != str(value)
             for key, value in matches.items())):
         hold("DURABLE_LEDGER_COLLISION_OR_SCOPE_CONFLICT")
+    # There is deliberately NO route from a missing row to a safe retry.
+    # A lost, withheld or rolled-back local ledger cannot prove that the
+    # original protected writer refused or never committed elsewhere.
     observed = len(entries) == 1
     return {
         "schema": SCHEMA,
