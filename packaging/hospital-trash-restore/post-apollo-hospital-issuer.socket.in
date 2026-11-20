@@ -1,0 +1,15 @@
+# SOURCE TEMPLATE ONLY - root-owned socket, restricted operator group.
+[Unit]
+Description=Post Apollo Hospital interactive approval socket
+
+[Socket]
+ListenSequentialPacket=/run/post-apollo/hospital/issuer.sock
+SocketUser=root
+SocketGroup=@OPERATOR_APPROVAL_GROUP@
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=post-apollo-hospital-issuer.service
+
+[Install]
+# HOLD: intentionally no WantedBy.

@@ -1,0 +1,16 @@
+# SOURCE TEMPLATE ONLY - ROOT-created socket, writer-owned pathname.
+# The root-controlled parent /run/post-apollo/hospital is created by tmpfiles.
+[Unit]
+Description=Post Apollo Hospital protected Room Trash and Restore admission socket
+
+[Socket]
+ListenSequentialPacket=/run/post-apollo/hospital/px-writer.sock
+SocketUser=@PROTECTED_WRITER_USER@
+SocketGroup=@PROTECTED_WRITER_GROUP@
+SocketMode=0600
+DirectoryMode=0755
+Accept=no
+Service=post-apollo-hospital-consent.service
+
+[Install]
+# HOLD: intentionally no WantedBy. No activation before operator acceptance.

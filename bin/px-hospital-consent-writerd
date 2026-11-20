@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Protected Hospital Room PREPARE/COMMIT service for Universal Connections.
+
+Source only. The native service MUST run under the existing dedicated
+(non-root) PX database owner and receive precisely one root-created systemd
+SOCK_SEQPACKET listening FD. No caller-selected config, DB, key, socket,
+UID, retention decision or migration is accepted.
+
+It does not start or modify the legacy protected writer's stream socket.
+Both read/write hosts access the SAME dedicated owner-only v12 SQLite DB,
+which serializes Room state transitions with BEGIN IMMEDIATE.
+"""
+from __future__ import annotations
+
+from contextlib import closing
+import os
+from pathlib import Path
+import runpy
+import signal
+import socket
+import stat
+import sys
+import threading
+
+from px_hospital_room_writer import ProtectedRoomWriter
+from px_hospital_connections_consent import (
+    ConsentCoordinator, ConsentHold, CONSENT_SOCKET,
+    handle_connection, verify_root_socket,
+)
+
+BASE = Path(__file__).resolve().parent
+CONFIG_SOURCE = BASE / "px-hospital-room-writerd"
+
+
+def main():
+    # A separately approved service unit owns the runtime identity, launch
+    # and fd. No interactive shell, desktop host or user-selected route.
+    if (len(sys.argv) != 1 or sys.platform != "linux"
+            or os.getuid() != os.geteuid()
+            or os.geteuid() == 0
+            or os.environ.get("LISTEN_FDS") != "1"
+            or os.environ.get("LISTEN_PID") != str(os.getpid())
+            or not os.environ.get("INVOCATION_ID")
+            or any(key in os.environ for key in (
+                "PX_HOSPITAL_DB", "PX_HOSPITAL_DATA_DIR"))):
+        raise ConsentHold("NATIVE_SYSTEMD_WRITER_IDENTITY_REQUIRED")
+
+    # One canonical PX root config for BOTH writer endpoints; do not fork
+    # identities or create a second database. Existing code checks root
+    # parent directories, file modes, exact owner, trusted fixed paths.
+    source = runpy.run_path(str(CONFIG_SOURCE), run_name="px_writer_config_import")
+    client_uid, runtime_uid, state_dir, socket_dir = source["read_host_config"]()
+    writer = ProtectedRoomWriter(
+        client_uid=client_uid, runtime_uid=runtime_uid,
+        state_directory=state_dir, socket_directory=socket_dir,
+    )
+    with closing(writer._connect()) as db:
+        if db.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise ConsentHold("PROTECTED_SQLITE_CONSTRAINTS_UNVERIFIED")
+    coordinator = ConsentCoordinator(writer)
+    coordinator._policy()  # no retention ledger => startup HOLD
+
+    listen = socket.fromfd(3, socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        if (listen.family != socket.AF_UNIX
+                or listen.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+                != socket.SOCK_SEQPACKET
+                or listen.getsockname() != str(CONSENT_SOCKET)):
+            raise ConsentHold("UNTRUSTED_SYSTEMD_NATIVE_LISTENER")
+        verify_root_socket()
+        listen.settimeout(0.5)
+        stop = threading.Event()
+
+        def terminate(_signal, _frame):
+            stop.set()
+
+        signal.signal(signal.SIGTERM, terminate)
+        signal.signal(signal.SIGINT, terminate)
+        while not stop.is_set():
+            try:
+                accepted, _ = listen.accept()
+            except socket.timeout:
+                continue
+            # No error body, grant or policy detail is returned on failure.
+            # Every PREPARE and COMMIT uses a new root-only peer connection.
+            with accepted:
+                accepted.settimeout(4)
+                try:
+                    handle_connection(accepted, coordinator)
+                except (ConsentHold, OSError, ValueError, TypeError,
+                        KeyError, RuntimeError):
+                    pass
+    finally:
+        listen.close()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ConsentHold, OSError, ValueError, RuntimeError) as exc:
+        print("HOSPITAL NATIVE CONSENT WRITER HOLD // " + str(exc),
+              file=sys.stderr)
+        raise SystemExit(2)
