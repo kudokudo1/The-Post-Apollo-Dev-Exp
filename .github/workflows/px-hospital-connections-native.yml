@@ -25,6 +25,7 @@ on:
       - "bin/px_hospital_staffing_operator_review.py"
       - "tests/test-px-hospital-staffing-operator-review.py"
       - "bin/px_hospital_staffing_release_policy.py"
+      - "bin/px_hospital_staffing_ledger_recovery.py"
       - "tests/test-px-hospital-staffing-release-policy.py"
       - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
@@ -58,6 +59,7 @@ on:
       - "bin/px_hospital_staffing_operator_review.py"
       - "tests/test-px-hospital-staffing-operator-review.py"
       - "bin/px_hospital_staffing_release_policy.py"
+      - "bin/px_hospital_staffing_ledger_recovery.py"
       - "tests/test-px-hospital-staffing-release-policy.py"
       - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
       - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
@@ -184,7 +186,7 @@ jobs:
 
       - name: Verify CI-only native staffing PREPARE COMMIT same-transaction enforcement
         run: |
-          python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py tests/test-px-hospital-staffing-prepare-commit.py
+          python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py bin/px_hospital_staffing_ledger_recovery.py tests/test-px-hospital-staffing-prepare-commit.py
           python3 tests/test-px-hospital-staffing-prepare-commit.py
 
       - name: Inspect real Linux kernel peer and packet identity for future staffing issuer (no activation)
