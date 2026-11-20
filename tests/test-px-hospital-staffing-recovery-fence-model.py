@@ -258,7 +258,7 @@ with tempfile.TemporaryDirectory(
                     "ONE_USE_REQUEST_OR_GRANT_FENCED")
         alternate = subject("three", grant_nonce=refusal["grant_nonce"])
         expect_hold(lambda:journal_result(a, alternate, "COMMITTED"),
-                    "SPLIT_DURABLE_IDENTITY_COLLISION")
+                    "CONTRADICTORY_DURABLE_IDENTITY")
         assert count(a, "ci_model_source_sessions") == 1
 
         # Even when the database is corrupted to lose a formerly committed
