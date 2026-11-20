@@ -32,6 +32,7 @@ import px_hospital_staffing_transport as transport
 import px_hospital_staffing_prepare_commit as coordinator
 import px_hospital_staffing_grants as auth
 import px_hospital_staffing_operator_review as review
+import px_hospital_staffing_ledger_recovery as recovery
 import px_hospital_staffing_admission as admission
 import px_hospital_protected_store_bridge as bridge
 
@@ -173,6 +174,27 @@ with tempfile.TemporaryDirectory(
             return db.execute(
                 "SELECT COUNT(*) FROM hospital_staffing_authorizations"
             ).fetchone()[0]
+        def recover_ci(data, prepared, envelope):
+            # This fixture verifies real Ed25519 bytes with a generated
+            # *caller-selected CI key*, never an installed root issuer.
+            body = __import__("json").loads(envelope)["body"]
+            candidate = auth._verify_bytes(
+                envelope,priv.public_key(),now=body["issuedAt"])
+            before = db.total_changes
+            outcome = recovery.inspect_ci_only(
+                db,original_prepare_raw=transport.canonical(data),
+                prepared_raw=transport.canonical(prepared),
+                commit_raw=transport.canonical(
+                    commit_frame(data,prepared,envelope)),
+                previously_verified_fixture_grant=candidate)
+            assert db.total_changes == before
+            assert outcome["nativeWriterReceiptVerified"] is False
+            assert outcome["liveHospitalTransactionVerified"] is False
+            assert outcome["canRetrySameGrant"] is False
+            return outcome
+        denied(lambda:recovery.recover_native_staffing(
+            commit_raw=b"{}",admin=True),
+            "NATIVE_STAFFING_RECOVERY_NOT_INSTALLED")
         denied(lambda:transport.dispatch_native_request(
             transport.canonical(request(auth.ATTACH,scope(
                 "room-a",bed_a,aid_a,"session-unused")))),
@@ -326,6 +348,11 @@ with tempfile.TemporaryDirectory(
         denied(lambda:commit(planned,ready,signed),
                "MISSING_EXPIRED_OR_REPLAYED_PREPARE")
         db.execute("DROP TRIGGER block_ci_session")
+        # No row after the atomic failure cannot establish live REFUSED.
+        failed_observation=recover_ci(planned,ready,signed)
+        assert failed_observation["status"]==recovery.UNKNOWN
+        assert failed_observation["absentLedgerIsNotProofOfRefusal"] is True
+        assert failed_observation["neverAutoRetryThisGrant"] is True
 
         # Fresh, separately signed approval now allows one Session.
         planned=request(auth.ATTACH,scope("room-a",bed_a,aid_a,"session-a"))
@@ -337,6 +364,47 @@ with tempfile.TemporaryDirectory(
         assert receipt["nativeInstallationVerified"] is False
         assert receipt["sessionId"]=="session-a"
         assert ledger()==1
+        committed_original=(planned,ready,signed)
+        observed=recover_ci(*committed_original)
+        assert observed["status"]==recovery.MATCH
+        assert observed["matchingDisposableLedgerRowObserved"] is True
+        assert observed["recoveryRequiresProtectedWriter"] is True
+        assert observed["productionAuthority"] is False
+        assert observed["requestNonceFromUntrustedFixture"]==planned["requestNonce"]
+        # A forged different request, altered PREPARE or signed envelope is
+        # not allowed to relabel an unrelated durable ledger entry.
+        altered=dict(planned,requestNonce=b64(secrets.token_bytes(32)))
+        denied(lambda:recovery.inspect_ci_only(
+            db,original_prepare_raw=transport.canonical(altered),
+            prepared_raw=transport.canonical(ready),
+            commit_raw=transport.canonical(commit_frame(planned,ready,signed)),
+            previously_verified_fixture_grant=auth._verify_bytes(
+                signed,priv.public_key(),now=int(time.time()))),
+            "CHANGED_REQUEST_CONTEXT")
+        modified=dict(ready,writerInstance="another-writer-ci-9999")
+        denied(lambda:recovery.inspect_ci_only(
+            db,original_prepare_raw=transport.canonical(planned),
+            prepared_raw=transport.canonical(modified),
+            commit_raw=transport.canonical(commit_frame(planned,ready,signed)),
+            previously_verified_fixture_grant=auth._verify_bytes(
+                signed,priv.public_key(),now=int(time.time()))),
+            "CHANGED_WRITER_INSTANCE")
+        denied(lambda:recovery.inspect_ci_only(
+            db,original_prepare_raw=transport.canonical(planned),
+            prepared_raw=transport.canonical(ready),
+            commit_raw=transport.canonical(commit_frame(planned,ready,signed)),
+            previously_verified_fixture_grant=object()),
+            "CI_VERIFIED_GRANT_OBJECT_REQUIRED")
+        # The CI ledger is independent of present Session status, but any
+        # cross-scope or grant-digest mismatch is a security HOLD.
+        db.execute("UPDATE hospital_staffing_authorizations SET graph_digest=? "
+                   "WHERE room_id='room-a'",("f"*64,))
+        denied(lambda:recover_ci(*committed_original),
+               "DURABLE_LEDGER_COLLISION_OR_SCOPE_CONFLICT")
+        db.execute("UPDATE hospital_staffing_authorizations SET graph_digest=? "
+                   "WHERE room_id='room-a'",(__import__("json").loads(signed)
+                                             ["body"]["graphDigest"],))
+        assert recover_ci(*committed_original)["status"]==recovery.MATCH
         denied(lambda:commit(planned,ready,signed),
                "MISSING_EXPIRED_OR_REPLAYED_PREPARE")
 
@@ -368,6 +436,10 @@ with tempfile.TemporaryDirectory(
         assert receipt["action"]==auth.SUCCEED
         assert receipt["sessionId"]=="session-new"
         assert ledger()==2
+        assert recover_ci(planned,ready,signed)["status"]==recovery.MATCH
+        # Historical attach remains in the durable ledger even after
+        # Doctor succession changes the current Room staffing/graph.
+        assert recover_ci(*committed_original)["status"]==recovery.MATCH
         assert db.execute("SELECT doctor_id FROM rooms WHERE room_id='room-a'"
                          ).fetchone()[0]=="doctor-new"
         assert db.execute("SELECT body_md FROM room_reports"
@@ -381,4 +453,4 @@ with tempfile.TemporaryDirectory(
         assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
 
-print("HOSPITAL STAFFING PREPARE/COMMIT CI // PASS // scoped signed nonce, writer instance, peer witness, fresh Room graph, independent signature, atomic rollback, historical Doctor handoff; NATIVE RPC OFF")
+print("HOSPITAL STAFFING PREPARE/COMMIT + RECOVERY LEDGER CI // PASS // bounded historical grant observation, altered PREPARE and ledger collision refusal, unknown after rolled-back commit, atomic Session/Doctor, no same-grant retry; NATIVE RPC OFF")
