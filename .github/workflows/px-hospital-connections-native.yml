@@ -23,6 +23,7 @@ on:
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "tests/test-px-hospital-staffing-process-crash-model.py"
       - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/test-px-hospital-staffing-signed-history-ci.py"
       - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
@@ -64,6 +65,7 @@ on:
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "tests/test-px-hospital-staffing-process-crash-model.py"
       - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/test-px-hospital-staffing-signed-history-ci.py"
       - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
@@ -220,6 +222,11 @@ jobs:
         run: |
           python3 -B -m py_compile tests/test-px-hospital-staffing-real-source-journal-ci.py
           python3 -B tests/test-px-hospital-staffing-real-source-journal-ci.py
+
+      - name: Verify signed PENDING witness identity, pinned CI signer and monotonic floor
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-signed-history-ci.py
+          python3 -B tests/test-px-hospital-staffing-signed-history-ci.py
 
       - name: Crash separate CI-only writer process before and after SQLite COMMIT
         run: |
