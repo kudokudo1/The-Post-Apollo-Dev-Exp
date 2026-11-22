@@ -281,6 +281,13 @@ with tempfile.TemporaryDirectory(
             "UPDATE sessions SET status='FAILED',"
             "ended_at='2026-11-21',active_pid=0 "
             "WHERE session_id='session-success'")
+        # Hospital's real Doctor source requires an actual durable HANDOFF
+        # or checkpoint before succession. Preserve that guard; create the
+        # approved *CI fixture* history before taking the PREPARE snapshot.
+        db.execute(
+            "INSERT INTO room_reports(room_id,session_id,report_kind,body_md)"
+            " VALUES('room-success','session-success','HANDOFF',"
+            "'CI_ONLY_DURABLE_HANDOFF')")
         next_bed,next_assignment=prepared_rooms["room-success"]
         successor_scope=dict(
             roomId="room-success",patientId="ci-patient",
