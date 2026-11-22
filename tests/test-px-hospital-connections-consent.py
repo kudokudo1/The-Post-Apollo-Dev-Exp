@@ -72,6 +72,10 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
             "INSERT INTO sessions(session_id,room_id,status,ended_at) "
             "VALUES('history-session',?,'COMPLETE','2026-11-01')", (room,))
         db.execute(
+            "INSERT INTO session_events(session_id,event_type,payload_json) "
+            "VALUES('history-session','turn.completed',"
+            "'{\"fixture\":\"FIXTURE_SECRET_EVENT\"}')")
+        db.execute(
             "INSERT INTO messages(room_id,session_id,author_role,direction,body_md) "
             "VALUES(?,'history-session','DOCTOR','incoming','FIXTURE_SECRET_MESSAGE')",
             (room,))
@@ -85,25 +89,38 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
             "INSERT INTO assignments(room_id,patient_id,goal_md,status) "
             "VALUES(?,'fixture-p','FIXTURE_SECRET_ASSIGNMENT','COMPLETE')",(room,))
         db.execute(
-            "INSERT INTO chart_entries(scope_type,room_id,body_md,status) "
-            "VALUES('ROOM',?,'FIXTURE_SECRET_CHART','RESOLVED')",(room,))
+            "INSERT INTO chart_entries(scope_type,room_id,source_room_id,body_md,status) "
+            "VALUES('ROOM',?,?,'FIXTURE_SECRET_CHART','RESOLVED')",(room,room))
         db.execute(
-            "INSERT INTO chart_suggestions(scope_type,room_id,body_md,status) "
-            "VALUES('ROOM',?,'FIXTURE_SECRET_SUGGESTION','REJECTED')",(room,))
+            "INSERT INTO chart_suggestions(scope_type,room_id,source_room_id,body_md,status) "
+            "VALUES('ROOM',?,?,'FIXTURE_SECRET_SUGGESTION','REJECTED')",(room,room))
         db.commit()
 
     # Compare complete linked rows, not just counts, and never print the
     # synthetic bodies. This explicitly excludes lifecycle state/receipts,
     # which are supposed to advance during Trash/Restore.
-    history_tables=("sessions","messages","room_checkpoints","room_reports",
-                    "assignments","chart_entries","chart_suggestions")
+    # Keep the query predicates independent of PX lifecycle.RELATIONS.
+    # An unintended omission from the source graph must not automatically
+    # disappear from this acceptance witness. Session events join by Session
+    # identity; Chart provenance also joins through source_room_id.
+    history_queries=(
+        ("sessions", "room_id=?", 1),
+        ("messages", "room_id=?", 1),
+        ("session_events", "session_id IN "
+         "(SELECT session_id FROM sessions WHERE room_id=?)", 1),
+        ("room_checkpoints", "room_id=?", 1),
+        ("room_reports", "room_id=?", 1),
+        ("assignments", "room_id=?", 1),
+        ("chart_entries", "room_id=? OR source_room_id=?", 2),
+        ("chart_suggestions", "room_id=? OR source_room_id=?", 2),
+    )
     def linked_history():
         with sqlite3.connect(dbfile) as db:
             return tuple(
                 (table,tuple(db.execute(
-                    "SELECT * FROM "+table+" WHERE room_id=? ORDER BY rowid",
-                    (room,)).fetchall()))
-                for table in history_tables
+                    "SELECT * FROM "+table+" WHERE "+predicate+" ORDER BY rowid",
+                    (room,)*nargs).fetchall()))
+                for table,predicate,nargs in history_queries
             )
     original_history=linked_history()
     assert all(rows for _table,rows in original_history)
@@ -117,6 +134,9 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
     with closing(writer._connect()) as db:
         snapshot=lifecycle.review(db,"room-consent-test")
     assert snapshot["canTrash"] and snapshot["revision"]==0
+    assert snapshot["relatedCounts"]["session_events"] == 1
+    assert snapshot["relatedCounts"]["chart_entries"] == 1
+    assert snapshot["relatedCounts"]["chart_suggestions"] == 1
 
     private=Ed25519PrivateKey.generate()
     public=private.public_key()
@@ -295,6 +315,56 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
     assert committed["revision"]==1 and restored["revision"]==2
     assert linked_history()==original_history, "RESTORE_ALTERED_LINKED_HOSPITAL_EVIDENCE"
     assert "FIXTURE_SECRET" not in json.dumps(restored)
+
+    # Foreign-Room provenance must prevent a new Trash even when the
+    # original Room has no active Session or Assignment. The external
+    # Chart rows are not part of the seven direct Room-ID relations.
+    # This checks the actual protected PREPARE admission, not a UI flag.
+    with closing(writer._connect()) as db:
+        db.execute(
+            "INSERT INTO rooms(room_id,patient_id) VALUES('foreign-consumer','fixture-p')")
+        db.execute(
+            "INSERT INTO chart_entries(scope_type,room_id,source_room_id,"
+            "body_md,status) VALUES('ROOM','foreign-consumer',?,"
+            "'FIXTURE_SECRET_FOREIGN_CHART','RESOLVED')",(room,))
+        db.execute(
+            "INSERT INTO chart_suggestions(scope_type,room_id,source_room_id,"
+            "body_md,status) VALUES('ROOM','foreign-consumer',?,"
+            "'FIXTURE_SECRET_FOREIGN_SUGGESTION','REJECTED')",(room,))
+        foreign_rows=tuple(
+            (table,tuple(db.execute(
+                "SELECT * FROM "+table+" WHERE room_id='foreign-consumer' "
+                "AND source_room_id=? ORDER BY rowid",(room,)).fetchall()))
+            for table in ("chart_entries","chart_suggestions")
+        )
+        held_review=lifecycle.review(db,room)
+        receipts_before=db.execute(
+            "SELECT count(*) FROM room_lifecycle_receipts").fetchone()[0]
+        approvals_before=db.execute(
+            "SELECT count(*) FROM room_lifecycle_authorizations").fetchone()[0]
+    assert all(rows for _table,rows in foreign_rows)
+    assert "FOREIGN_ROOM_DEPENDENCY" in held_review["blockers"]
+    assert held_review["relatedCounts"]["chart_entries"] == 2
+    assert held_review["relatedCounts"]["chart_suggestions"] == 2
+    assert held_review["canTrash"] is False
+    assert linked_history()[:6] == original_history[:6]
+    configure("TRASH")
+    assert coordinator.pending == {}
+    expect_hold(
+        lambda:prepare("TRASH",connections.b64(os.urandom(32))),
+        "foreign Room Chart provenance must block protected PREPARE")
+    with closing(writer._connect()) as db:
+        assert lifecycle.review(db,room)["state"]=="ACTIVE"
+        assert db.execute("SELECT count(*) FROM room_lifecycle_receipts").fetchone()[0] == receipts_before
+        assert db.execute("SELECT count(*) FROM room_lifecycle_authorizations").fetchone()[0] == approvals_before
+        assert all(
+            tuple(db.execute(
+                "SELECT * FROM "+table+" WHERE room_id='foreign-consumer' "
+                "AND source_room_id=? ORDER BY rowid",(room,)).fetchall()) == rows
+            for table,rows in foreign_rows
+        )
+    assert coordinator.pending == {}
+    assert linked_history()[:6] == original_history[:6]
 
     # No installed root-owned policy/socket exists in this disposable test;
     # daemon startup cannot pass with user-selected config.
