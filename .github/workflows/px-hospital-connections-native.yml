@@ -11,6 +11,7 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-h1-native-caller-inventory.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "bin/px_hospital_staffing_admission.py"
       - "bin/px_hospital_staffing_grants.py"
@@ -54,6 +55,7 @@ on:
       - "bin/px_hospital_release_preflight.py"
       - "bin/px_hospital_native_release_audit.py"
       - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-h1-native-caller-inventory.py"
       - "tests/test-px-hospital-pending-writer-compatibility.py"
       - "bin/px_hospital_staffing_admission.py"
       - "bin/px_hospital_staffing_grants.py"
@@ -185,6 +187,10 @@ jobs:
         run: |
           python3 -m py_compile bin/px_hospital_native_release_audit.py tests/test-px-hospital-native-release-audit.py
           python3 tests/test-px-hospital-native-release-audit.py
+      - name: Inventory exact Hospital UI legacy PX callers and keep native release HOLD
+        run: |
+          python3 -m py_compile tests/test-px-hospital-h1-native-caller-inventory.py
+          python3 tests/test-px-hospital-h1-native-caller-inventory.py
       - name: Check exact Session Doctor Bed source compatibility and deny unreviewed writes
         run: |
           python3 -m py_compile tests/test-px-hospital-pending-writer-compatibility.py
