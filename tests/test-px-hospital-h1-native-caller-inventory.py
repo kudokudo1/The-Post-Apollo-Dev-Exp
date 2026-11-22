@@ -20,6 +20,8 @@ REQUIRED_LEGACY = {
     "HospitalAssignmentService.qml",
     "HospitalChartService.qml",
     "HospitalWorkforceRoomCreateService.qml",
+    "HospitalRoomConversationAdapter.qml",
+    "HospitalWorkerAttachmentActionService.qml",
 }
 REQUIRED_NATIVE = {
     "HospitalRoomLifecycleService.qml",
@@ -55,6 +57,15 @@ for path in sorted(SERVICES.rglob("*.qml")):
 
 assert REQUIRED_LEGACY <= set(legacy), "KNOWN_UNMIGRATED_UI_CALLER_DISAPPEARED"
 assert REQUIRED_NATIVE <= set(native), "PROTECTED_ROOM_UI_CALLER_DISAPPEARED"
+
+# Existing application source includes a Session-creation operation through
+# the desktop PX agent front door. A separately gated Session-attach action
+# also remains in UI source even though its PX atomic command is unmerged.
+# Preserve the distinction: a capability probe does not authorize runtime.
+adapter = (SERVICES / "HospitalRoomConversationAdapter.qml").read_text()
+attachment = (SERVICES / "HospitalWorkerAttachmentActionService.qml").read_text()
+assert re.search(r'"agent"\s*,\s*"session-create"', adapter)
+assert re.search(r'"agent"\s*,\s*"session-attach"', attachment)
 px = (ROOT / "bin/px").read_text(encoding="utf-8")
 px_legacy = re.findall(
     r'python3\s+"\$ROOT/bin/px-hospital-store"',
@@ -82,6 +93,8 @@ report = {
     "protectedRoomServices": sorted(native),
     "pxDirectStoreCallSites": len(px_legacy),
     "knownLegacyWriteSurfaces": sorted(REQUIRED_LEGACY),
+    "sessionCreateDesktopRouteObserved": True,
+    "unmergedSessionAttachUiActionObserved": True,
     "allWriterCompatibilityVerified": False,
     "installedHostObserved": False,
     "oldBinariesAndLaunchersFenced": False,
