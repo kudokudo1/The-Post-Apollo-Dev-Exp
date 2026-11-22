@@ -22,6 +22,8 @@ on:
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "tests/test-px-hospital-staffing-process-crash-model.py"
+      - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
@@ -61,6 +63,8 @@ on:
       - "tests/test-px-hospital-staffing-prepare-commit.py"
       - "tests/test-px-hospital-staffing-recovery-fence-model.py"
       - "tests/test-px-hospital-staffing-process-crash-model.py"
+      - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
       - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
       - "bin/px_hospital_staffing_native_peer.py"
       - "tests/test-px-hospital-staffing-native-peer.py"
@@ -211,6 +215,11 @@ jobs:
         run: |
           python3 -m py_compile tests/test-px-hospital-staffing-recovery-fence-model.py
           python3 tests/test-px-hospital-staffing-recovery-fence-model.py
+
+      - name: Verify candidate D1-D2 journal inside original Hospital Session transaction using disposable database
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-real-source-journal-ci.py
+          python3 -B tests/test-px-hospital-staffing-real-source-journal-ci.py
 
       - name: Crash separate CI-only writer process before and after SQLite COMMIT
         run: |
