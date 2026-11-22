@@ -32,6 +32,7 @@ DOMAIN = b"postapollo.hospital.staffing-history-witness.ci-v1\0"
 FIELDS = frozenset((
     "schema", "purpose", "requestNonce", "scopeDigest", "commitDigest",
     "grantDigest", "writerInstance", "sequence", "state", "hostId",
+    "writerReleaseSha256", "issuerReleaseSha256", "policyGeneration",
 ))
 DENY = {
     "canExecuteNewGrant": False,
@@ -128,10 +129,14 @@ def verify(raw, *, installed_ci_pin, expected, independent_floor):
         hold("STALE_OR_UNPINNED_SEQUENCE")
     if type(body["requestNonce"]) is not str or len(body["requestNonce"]) != 43:
         hold("INVALID_ORIGINAL_NONCE")
-    for k in ("scopeDigest", "commitDigest", "grantDigest", "hostId"):
+    for k in ("scopeDigest", "commitDigest", "grantDigest", "hostId",
+              "writerReleaseSha256", "issuerReleaseSha256"):
         if (type(body[k]) is not str or len(body[k]) != 64
                 or any(c not in "0123456789abcdef" for c in body[k])):
             hold("INVALID_DIGEST")
+    if (type(body["policyGeneration"]) is not int
+            or body["policyGeneration"] < 1):
+        hold("INVALID_POLICY_GENERATION")
     if (type(body["writerInstance"]) is not str
             or len(body["writerInstance"]) < 5
             or len(body["writerInstance"]) > 160):
@@ -179,6 +184,9 @@ with tempfile.TemporaryDirectory(
         "grantDigest": hashlib.sha256(b"exact-original-grant").hexdigest(),
         "writerInstance": "original-writer-instance-ci",
         "hostId": hashlib.sha256(b"test-host").hexdigest(),
+        "writerReleaseSha256": hashlib.sha256(b"ci-writer-release").hexdigest(),
+        "issuerReleaseSha256": hashlib.sha256(b"ci-issuer-release").hexdigest(),
+        "policyGeneration": 3,
     }
     body = dict(original, schema=SCHEMA, purpose=PURPOSE,
                 sequence=17, state="PENDING")
@@ -222,6 +230,9 @@ with tempfile.TemporaryDirectory(
         ("grantDigest", "d"*64),
         ("writerInstance", "different-writer-instance-ci"),
         ("hostId", "c"*64),
+        ("writerReleaseSha256", "b"*64),
+        ("issuerReleaseSha256", "a"*64),
+        ("policyGeneration", 4),
     ):
         changed = dict(body, **{name: value})
         require_hold(
@@ -290,7 +301,7 @@ with tempfile.TemporaryDirectory(
 
 print(
     "HOSPITAL SIGNED PENDING HISTORY CI // PASS // pinned fixture signature, "
-    "exact original request/commit/scope, release-purpose isolation, "
+    "exact original request/commit/scope, writer/issuer release pinning, "
     "stale signed sequence & mismatched grants refused, "
     "missing pin/floor HOLD, PENDING never authorizes COMMITTED/REFUSED; "
     "no independent production custodian; native OFF"
