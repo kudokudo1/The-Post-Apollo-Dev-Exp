@@ -16,6 +16,15 @@ INSERT INTO ci_v14_expected_previous(previous)
 SELECT CASE WHEN value='13' THEN 13 ELSE -1 END
 FROM schema_meta WHERE key='schema_version';
 
+-- The actual staffing coordinator correctly requires schema_meta = 13.
+-- Keep the real schema version 13; record the proposed journal *only* in
+-- an isolated CI namespace. Any real v14 migration remains PX-owner gated.
+CREATE TABLE ci_staffing_candidate_contract_meta (
+  contract_version TEXT NOT NULL CHECK(contract_version = 'ci-v14-proposal-only')
+);
+INSERT INTO ci_staffing_candidate_contract_meta(contract_version)
+VALUES('ci-v14-proposal-only');
+
 CREATE TABLE ci_staffing_result_v14_candidate (
   request_nonce TEXT NOT NULL PRIMARY KEY,
   grant_nonce TEXT NOT NULL UNIQUE,
@@ -51,6 +60,6 @@ WHEN EXISTS (
 )
 BEGIN SELECT RAISE(ABORT,'CI_ONLY_TERMINAL_STAFFING_FENCE'); END;
 
-UPDATE schema_meta SET value='14' WHERE key='schema_version' AND value='13';
+-- Do NOT change schema_meta: there is no approved production v14.
 DROP TABLE ci_v14_expected_previous;
 COMMIT;
