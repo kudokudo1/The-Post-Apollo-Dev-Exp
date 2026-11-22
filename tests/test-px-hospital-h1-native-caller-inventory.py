@@ -55,10 +55,6 @@ for path in sorted(SERVICES.rglob("*.qml")):
 
 assert REQUIRED_LEGACY <= set(legacy), "KNOWN_UNMIGRATED_UI_CALLER_DISAPPEARED"
 assert REQUIRED_NATIVE <= set(native), "PROTECTED_ROOM_UI_CALLER_DISAPPEARED"
-assert all(
-    all(route in LEGACY_PATHS for route in LEGACY_PATHS)
-    for _name in REQUIRED_LEGACY
-)
 px = (ROOT / "bin/px").read_text(encoding="utf-8")
 px_legacy = re.findall(
     r'python3\s+"\$ROOT/bin/px-hospital-store"',
