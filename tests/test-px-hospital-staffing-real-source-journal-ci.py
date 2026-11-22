@@ -87,7 +87,10 @@ with tempfile.TemporaryDirectory(
                     "ci-only-staffing-source-journal-v14.sql").read_text("utf-8")
         db.executescript(proposed)
         assert db.execute("SELECT value FROM schema_meta "
-                          "WHERE key='schema_version'").fetchone()[0] == "14"
+                          "WHERE key='schema_version'").fetchone()[0] == "13"
+        assert db.execute(
+            "SELECT contract_version FROM ci_staffing_candidate_contract_meta"
+        ).fetchone()[0] == "ci-v14-proposal-only"
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
         db.execute("INSERT INTO patients(patient_id,repository) "
