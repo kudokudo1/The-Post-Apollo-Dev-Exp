@@ -294,6 +294,61 @@ def main():
                 "ok": True, "data": [],
             }
 
+            # H1 first ordinary read: desktop's fixed Doctor directory
+            # metadata has no argv/SQL route and cannot mutate Doctor rows.
+            directory = send(
+                writer.socket_path, request("doctor-directory"),
+                peer.pw_name,
+            )
+            assert directory["ok"] and type(directory["data"]) is list
+            doctor_rows = [
+                entry for entry in directory["data"]
+                if entry["id"] == "fixture-doctor"
+            ]
+            assert len(doctor_rows) == 1
+            assert doctor_rows[0] == {
+                "id": "fixture-doctor",
+                "name": "fixture-doctor",  # reset-to-ID in prior test
+                "role": "DOCTOR",
+                "status": "ACTIVE",
+                "createdAt": doctor_rows[0]["createdAt"],
+                "updatedAt": doctor_rows[0]["updatedAt"],
+            }
+            assert set(doctor_rows[0]) == {
+                "id", "name", "role", "status", "createdAt", "updatedAt"
+            }
+            assert send(writer.socket_path, request(
+                "doctor-directory",
+            )) == {"ok": False, "error": "DENIED"}
+            for attacker in (
+                request("doctor-directory", argv=["doctor-put", "bad"]),
+                request("doctor-directory", sql="DELETE FROM doctors"),
+                request("doctor-directory", roomId=room),
+                request("doctor-directory", status="INACTIVE"),
+                request("doctor-directory", database=str(database)),
+            ):
+                assert send(writer.socket_path, attacker, peer.pw_name) == {
+                    "ok": False, "error": "DENIED",
+                }
+            # Over-limit directory refuses rather than exporting a partial
+            # listing. All insertions/deletions are disposable test fixtures.
+            with sqlite3.connect(database) as db:
+                db.executemany(
+                    "INSERT INTO doctors(doctor_id,name) VALUES(?,?)",
+                    [(f"overflow-doctor-{idx:04d}", "Fixture")
+                     for idx in range(260)],
+                )
+            assert send(writer.socket_path, request(
+                "doctor-directory"
+            ), peer.pw_name) == {"ok": False, "error": "DENIED"}
+            with sqlite3.connect(database) as db:
+                db.execute(
+                    "DELETE FROM doctors WHERE doctor_id LIKE 'overflow-doctor-%'"
+                )
+            assert send(writer.socket_path, request(
+                "doctor-directory"
+            ), peer.pw_name) == directory
+
             # No generic SQL, Burn, caller-selected key, DB path, duplicate
             # frame keys, or signed-envelope omission can mutate Room state.
             blocked = [
