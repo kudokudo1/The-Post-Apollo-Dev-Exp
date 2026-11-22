@@ -18,6 +18,12 @@ import threading
 from px_hospital_room_writer import ProtectedRoomWriter, WriterHold
 
 CONFIG_PATH = Path("/etc/post-apollo/hospital/room-writer.json")
+# This is a deny-only release marker, not a permission to activate Hospital.
+# A trusted installer must separately stop old processes/launchers and verify
+# a recoverable database backup before atomically installing the marker.
+NATIVE_CUTOVER_MARKER = Path(
+    "/etc/post-apollo/hospital/legacy-store-cutover.v1"
+)
 CONFIG_SCHEMA = "post-apollo.hospital.protected-room-writer-host.v1"
 _CONFIG_FIELDS = frozenset((
     "schema", "writerUid", "clientUid", "runtimeUid",
@@ -45,6 +51,25 @@ def _trusted_parents(path: Path, uid: int, *, config: bool):
                 or info.st_uid not in ((0,) if config else (0, uid))
                 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
             raise WriterHold("UNTRUSTED_NATIVE_PARENT")
+
+
+def require_native_cutover_marker():
+    """Refuse protected service startup until trusted H1 legacy cutover.
+
+    The legacy CLI refuses on *any* marker entry, but the privileged writer
+    must demand a canonical root-owned, nonwritable, single-link regular file.
+    This is a prerequisite only: its existence cannot prove old binaries
+    are stopped, future launchers fenced, or a live backup verified.
+    """
+    _trusted_parents(NATIVE_CUTOVER_MARKER, os.geteuid(), config=True)
+    try:
+        info = NATIVE_CUTOVER_MARKER.lstat()
+    except OSError as exc:
+        raise WriterHold("NATIVE_CUTOVER_MARKER_UNAVAILABLE") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) not in (0o400, 0o440, 0o444)):
+        raise WriterHold("NATIVE_CUTOVER_MARKER_UNTRUSTED")
 
 
 def read_host_config():
@@ -104,6 +129,9 @@ def read_host_config():
         values.append(candidate)
     if values[0] == values[1]:
         raise WriterHold("PRIVATE_DB_AND_PUBLIC_SOCKET_MUST_DIFFER")
+    # Also applies to the Connections consent writer, which imports this
+    # exact PX launcher read_host_config() instead of inventing new authority.
+    require_native_cutover_marker()
     return cfg["clientUid"], cfg["runtimeUid"], values[0], values[1]
 
 
