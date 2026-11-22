@@ -31,7 +31,8 @@ import px_hospital_protected_store_bridge as store_bridge
 SCHEMA = "post-apollo.hospital.protected-room-writer.v1"
 _MAX_REQUEST = 65536
 _MAX_RESPONSE = 1048576
-_ALLOWED_READ = frozenset(("review", "bin"))
+_ALLOWED_READ = frozenset(("review", "bin", "doctor-directory"))
+_DOCTOR_DIRECTORY_LIMIT = 250
 _ALLOWED_WRITE = frozenset(("trash", "restore"))
 
 
@@ -69,7 +70,7 @@ def parse_request(frame: bytes):
     action = request.get("operation")
     if action == "review":
         expected = {"schema", "operation", "roomId"}
-    elif action == "bin":
+    elif action in ("bin", "doctor-directory"):
         expected = {"schema", "operation"}
     elif action == "store-command":
         expected = {"schema", "operation", "argv"}
@@ -82,7 +83,7 @@ def parse_request(frame: bytes):
         raise WriterHold("UNSUPPORTED_OPERATION")
     if set(request) != expected:
         raise WriterHold("EXACT_FIELDS_REQUIRED")
-    if action not in ("bin", "store-command"):
+    if action not in ("bin", "doctor-directory", "store-command"):
         lifecycle._identity(request["roomId"])
     if action in _ALLOWED_WRITE:
         if (type(request["expectedRevision"]) is not int
@@ -215,6 +216,30 @@ class ProtectedRoomWriter:
                 return lifecycle.review(db, request["roomId"])
             if action == "bin":
                 return lifecycle.trashed_rooms(db)
+            if action == "doctor-directory":
+                # Fixed metadata projection only. This is NOT an argv
+                # bridge, arbitrary SQL proxy, or Doctor mutation route.
+                # Rows are bounded before serialization; a large directory
+                # refuses rather than returning incomplete identities.
+                rows = db.execute(
+                    "SELECT doctor_id, name, role, status, created_at, "
+                    "updated_at FROM doctors "
+                    "ORDER BY updated_at DESC, doctor_id ASC LIMIT ?",
+                    (_DOCTOR_DIRECTORY_LIMIT + 1,),
+                ).fetchall()
+                if len(rows) > _DOCTOR_DIRECTORY_LIMIT:
+                    raise WriterHold("DOCTOR_DIRECTORY_LIMIT_EXCEEDED")
+                return [
+                    {
+                        "id": str(row["doctor_id"]),
+                        "name": str(row["name"] or row["doctor_id"]),
+                        "role": str(row["role"] or "DOCTOR"),
+                        "status": str(row["status"] or "ACTIVE"),
+                        "createdAt": str(row["created_at"] or ""),
+                        "updatedAt": str(row["updated_at"] or ""),
+                    }
+                    for row in rows
+                ]
             if action in _ALLOWED_WRITE:
                 verified = self._verify_envelope(request["signedEnvelope"])
                 return lifecycle.transition(
