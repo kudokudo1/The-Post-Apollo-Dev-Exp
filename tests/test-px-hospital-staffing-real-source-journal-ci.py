@@ -1033,6 +1033,87 @@ with tempfile.TemporaryDirectory(
                     coordinator_instance=stale_floor),
                     "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
                 history_floor["signed"]["floor"]=1
+
+                # Source-bound membership adversaries: after source rollback
+                # a *different* signed grant receives its own correctly
+                # signed PENDING packet. The packet passes signature/field
+                # validation for that new grant, but it is NOT a member of
+                # the previously pinned current history. Even a signer with
+                # the CI fixture key cannot rewrite historical membership.
+                def attempt_with_new_signed_pending():
+                    fresh=coordinator.SourceStaffingRehearsal(
+                        session_record=original["session_record"],
+                        room_record=original["room_record"])
+                    prepared=fresh.prepare(
+                        db,transport.canonical(ahead_request),
+                        kernel_peer=PEER)
+                    signed=make_grant(ahead_request,prepared)
+                    signed_body=__import__("json").loads(signed)["body"]
+                    raw=transport.canonical(dict(
+                        ahead_request,kind="commit",
+                        writerInstance=prepared["writerInstance"],
+                        signedEnvelope=b64(signed)))
+                    changed_identity=dict(
+                        ci_history_expected,
+                        requestNonce=signed_body["requestNonce"],
+                        scopeDigest=hashlib.sha256(
+                            transport.canonical(signed_body["scope"])
+                        ).hexdigest(),
+                        commitDigest=hashlib.sha256(raw).hexdigest(),
+                        grantDigest=hashlib.sha256(
+                            auth.DOMAIN+auth.canonical(signed_body)
+                        ).hexdigest(),
+                        writerInstance=signed_body["writerInstance"],
+                        hostId=signed_body["hostId"],
+                        issuerReleaseSha256=signed_body[
+                            "issuerReleaseSha256"],
+                        policyGeneration=signed_body["policyGeneration"],
+                    )
+                    new_pending=SIGNED_CI["issue"](
+                        ci_history_signer,dict(
+                            changed_identity,
+                            schema=SIGNED_CI["SCHEMA"],
+                            purpose=SIGNED_CI["PURPOSE"],
+                            sequence=1,state="PENDING"))
+                    assert new_pending!=history_floor["signed"]["packet"]
+                    return fresh,(ahead_request,prepared,signed,raw),new_pending
+
+                saved_packet=history_floor["signed"]["packet"]
+                saved_membership=history_floor["membership"]
+                # Missing current-head evidence must not fall back to
+                # standalone signed PENDING or a matching local ledger.
+                missing_head,missing_case,new_pending=(
+                    attempt_with_new_signed_pending())
+                history_floor["signed"]["packet"]=new_pending
+                history_floor["membership"]=None
+                denied(lambda:commit(
+                    missing_case,coordinator_instance=missing_head),
+                    "CI_HISTORY_MEMBERSHIP_REQUIRED")
+                history_floor["membership"]=saved_membership
+
+                # An otherwise valid signed grant/PENDING is refused if
+                # the head supplied to the original source hook is changed.
+                wrong_head,wrong_case,new_pending=(
+                    attempt_with_new_signed_pending())
+                history_floor["signed"]["packet"]=new_pending
+                history_floor["membership"]["pinned_head"]="f"*64
+                denied(lambda:commit(
+                    wrong_case,coordinator_instance=wrong_head),
+                    "HEAD_FORK_OR_MISSING_HISTORY")
+                history_floor["membership"]["pinned_head"]=ci_current_head
+
+                # Even with the genuine current head, newly signed
+                # alternate-grant evidence cannot impersonate the original
+                # member at historical sequence 1.
+                not_member,new_case,new_pending=(
+                    attempt_with_new_signed_pending())
+                history_floor["signed"]["packet"]=new_pending
+                denied(lambda:commit(
+                    new_case,coordinator_instance=not_member),
+                    "SIGNED_PENDING_BYTES_NOT_IN_HISTORY")
+                history_floor["signed"]["packet"]=saved_packet
+                assert history_floor["membership"] is saved_membership
+                assert history_floor["fixture_lease"] is None
                 assert db.execute(
                     "SELECT COUNT(*) FROM sessions "
                     "WHERE session_id='session-write-ahead'"
@@ -1102,7 +1183,7 @@ print(
     "local rollback permits fresh signed grant without witness; "
     "separate CI floor blocks reissue and missing/unavailable history; "
     "mandatory signed PENDING plus historical membership under newer "
-    "current head checked inside real Session transaction; absent packet, "
-    "changed grant/root and bad pin/floor HOLD; "
+    "current head checked inside real Session transaction; missing proof, "
+    "tampered pinned root, reissued signed member and bad pin/floor HOLD; "
     "no enrolled custodian or atomic two-store commit; native OFF"
 )
