@@ -396,7 +396,22 @@ with tempfile.TemporaryDirectory(
         )
         db.commit()
         assert counts()==(3,2,2)
-        denied(lambda:commit(refused),"REPLAYED_APPROVAL")
+        denied(lambda:commit(refused),
+               "CI_ONLY_ORIGINAL_REQUEST_TERMINAL_FENCE")
+        assert counts()==(3,2,2),counts()
+        # The original v13 trigger also remains a second layer: direct
+        # grant consumption with the SAME signed grant is independently
+        # stopped by its nonce/digest/approval fence.
+        fixture_grant=auth._verify_bytes(
+            signed,private.public_key(),now=body["issuedAt"])
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            denied(lambda:saved_consume(
+                fixture_grant,db,operation=auth.ATTACH,scope=req["intent"]),
+                "REPLAYED_APPROVAL")
+        finally:
+            if db.in_transaction:
+                db.rollback()
         assert counts()==(3,2,2),counts()
         assert db.execute(
             "SELECT COUNT(*) FROM sessions WHERE session_id='session-refused'"
