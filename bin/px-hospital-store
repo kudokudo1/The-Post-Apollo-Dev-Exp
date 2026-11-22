@@ -12,6 +12,34 @@ import px_hospital_room_authority as room_authority
 
 SCHEMA_VERSION = 12
 
+# Installed cutover is operator-managed. Before activating protected native
+# routing, an independently trusted installer must quiesce all old writers,
+# verify backup/rollback and then place this root-controlled tombstone.
+# The presence of ANY directory entry here blocks this legacy desktop SQLite
+# client. It is a DENY-ONLY fence, not evidence of installation or approval.
+# No environment variable, CLI option or client JSON can change this path.
+LEGACY_CUTOVER_MARKER = Path(
+    "/etc/post-apollo/hospital/legacy-store-cutover.v1"
+)
+
+
+def refuse_legacy_store_after_cutover():
+    """Never open/create a second desktop Hospital DB after native cutover.
+
+    A dangling symlink, directory, unreadable marker or corrupt marker also
+    blocks this client. A missing marker allows ONLY pre-cutover legacy use.
+    This source guard cannot stop previously installed binaries or already
+    running processes; native installation must independently fence those.
+    """
+    try:
+        LEGACY_CUTOVER_MARKER.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError("HOSPITAL_LEGACY_CUTOVER_STATE_UNVERIFIABLE") from exc
+    raise RuntimeError("HOSPITAL_NATIVE_PROTECTED_RUNTIME_REQUIRED")
+
+
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
@@ -356,6 +384,8 @@ def artifact_dir() -> Path:
     return hospital_data_dir() / "artifacts"
 
 def connect() -> sqlite3.Connection:
+    # The check must occur BEFORE mkdir, SQLite open or implicit migration.
+    refuse_legacy_store_after_cutover()
     db_path = hospital_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_dir().mkdir(parents=True, exist_ok=True)
