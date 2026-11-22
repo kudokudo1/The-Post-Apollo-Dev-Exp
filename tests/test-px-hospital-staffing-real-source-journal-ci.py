@@ -207,6 +207,10 @@ with tempfile.TemporaryDirectory(
 
         saved_consume=auth.VerifiedStaffingGrant.consume
         active = {}
+        # A distinct witness store is only a *disposable CI stand-in* for a
+        # future independently protected monotonic history. The test cannot
+        # enroll a trusted custodian or make two SQLite databases atomic.
+        history_floor = {"required": False, "witness": None}
 
         def ci_journal_hook(grant, connection, *, operation, scope):
             # This executes INSIDE the actual source-owned BEGIN IMMEDIATE.
@@ -235,6 +239,28 @@ with tempfile.TemporaryDirectory(
                 raise auth.StaffingGrantHold(
                     "HOSPITAL_STAFFING_GRANT_HOLD // "
                     "CI_ONLY_ORIGINAL_REQUEST_TERMINAL_FENCE")
+            if history_floor["required"]:
+                independent = history_floor["witness"]
+                if independent is None:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_ONLY_INDEPENDENT_HISTORY_UNAVAILABLE")
+                try:
+                    found = independent.execute(
+                        "SELECT original_commit_sha256 FROM ci_history_floor "
+                        "WHERE request_nonce=?", (body["requestNonce"],)
+                    ).fetchone()
+                except sqlite3.Error as exc:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_ONLY_INDEPENDENT_HISTORY_UNAVAILABLE") from exc
+                # A known historical request must be terminally fenced
+                # even after local DB rollback; a missing external witness
+                # is likewise NOT proof that this request never committed.
+                reason = ("CI_ONLY_SEPARATE_HISTORY_FLOOR_HOLD"
+                          if found else "CI_ONLY_HISTORY_ABSENT_UNCERTAIN")
+                raise auth.StaffingGrantHold(
+                    "HOSPITAL_STAFFING_GRANT_HOLD // " + reason)
             original_grant_result=saved_consume(
                 grant,connection,operation=operation,scope=scope)
             connection.execute(
@@ -469,6 +495,155 @@ with tempfile.TemporaryDirectory(
         denied(lambda:commit(success),"MISSING_EXPIRED_OR_REPLAYED_PREPARE")
         assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
+        # Rollback/lost-history attack after an actual source COMMIT:
+        # 1. Back up the disposable Hospital DB immediately *before*
+        #    the original signed staffing operation.
+        # 2. Commit the original Session, record its identity in a second
+        #    disposable WAL file, then restore the old Hospital DB image.
+        # 3. Show that an unaudited local-only hook accepts a fresh signed
+        #    grant for the SAME request after local history disappears.
+        # 4. Restore the old DB again; require a separate-history witness
+        #    and prove the fresh grant cannot consume or create a Session.
+        #
+        # Real external history must be independently enrolled, durable,
+        # antirollback-protected and failure-atomic. This fixture is NONE
+        # of those things; in particular its witness is recorded *after*
+        # the original COMMIT, leaving a real-world crash window.
+        rollback_bed,rollback_assignment=room("room-rollback")
+        prepared_rooms["room-rollback"]=(rollback_bed,rollback_assignment)
+        rollback_db_path=root/"before-commit-rollback-ci.db"
+        with closing(sqlite3.connect(
+                str(rollback_db_path),isolation_level=None)) as backup:
+            db.backup(backup)
+            original_case=plan("room-rollback","session-rollback")
+            original_receipt=commit(original_case)
+            assert original_receipt["fixtureTransactionCommitted"] is True
+            original_req=original_case[0]
+            original_signed_body=__import__("json").loads(
+                original_case[2])["body"]
+            original_commit_sha=hashlib.sha256(original_case[3]).hexdigest()
+            assert db.execute(
+                "SELECT terminal FROM ci_staffing_result_v14_candidate "
+                "WHERE request_nonce=?",
+                (original_req["requestNonce"],)
+            ).fetchone()[0]=="COMMITTED"
+            assert db.execute(
+                "SELECT session_id FROM sessions WHERE session_id='session-rollback'"
+            ).fetchone()[0]=="session-rollback"
+
+            # Separate file, not a signed trust anchor. The test only
+            # models what durable independent history could witness.
+            witness_path=root/"separate-untrusted-witness-ci.db"
+            assert witness_path!=rollback_db_path
+            with closing(sqlite3.connect(
+                    str(witness_path),isolation_level=None)) as witness:
+                witness.execute("PRAGMA journal_mode=WAL")
+                witness.execute("PRAGMA synchronous=FULL")
+                witness.execute(
+                    "CREATE TABLE ci_history_floor("
+                    "request_nonce TEXT PRIMARY KEY,"
+                    "original_commit_sha256 TEXT NOT NULL)")
+                witness.execute(
+                    "INSERT INTO ci_history_floor VALUES(?,?)",
+                    (original_req["requestNonce"],original_commit_sha))
+
+                backup.backup(db)
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-rollback'"
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM ci_staffing_result_v14_candidate "
+                    "WHERE request_nonce=?",
+                    (original_req["requestNonce"],)
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+                    "WHERE nonce=?",
+                    (original_signed_body["nonce"],)
+                ).fetchone()[0]==0
+
+                def different_signed_case():
+                    fresh=coordinator.SourceStaffingRehearsal(
+                        session_record=original["session_record"],
+                        room_record=original["room_record"])
+                    reply=fresh.prepare(
+                        db,transport.canonical(original_req),
+                        kernel_peer=PEER)
+                    new_signed=make_grant(original_req,reply)
+                    new_body=__import__("json").loads(new_signed)["body"]
+                    assert reply["writerInstance"]!=original_case[1]["writerInstance"]
+                    assert new_body["nonce"]!=original_signed_body["nonce"]
+                    assert new_body["approvalId"]!=original_signed_body["approvalId"]
+                    assert new_body["requestNonce"]==original_req["requestNonce"]
+                    new_raw=transport.canonical(dict(
+                        original_req,kind="commit",
+                        writerInstance=reply["writerInstance"],
+                        signedEnvelope=b64(new_signed)))
+                    return fresh,(original_req,reply,new_signed,new_raw)
+
+                # Deliberate negative control: without independent history,
+                # the *real Session source path* accepts a new signed grant
+                # once its local journal and grant ledger were rolled back.
+                local_restart,local_case=different_signed_case()
+                unsafe_replay=commit(
+                    local_case,coordinator_instance=local_restart)
+                assert unsafe_replay["fixtureTransactionCommitted"] is True
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-rollback'"
+                ).fetchone()[0]==1
+                assert db.execute(
+                    "SELECT COUNT(*) FROM ci_staffing_result_v14_candidate "
+                    "WHERE request_nonce=?",
+                    (original_req["requestNonce"],)
+                ).fetchone()[0]==1
+
+                # Rewind disposable Hospital bytes again. This time the
+                # independent floor can veto before the real v13 consume.
+                backup.backup(db)
+                history_floor["required"]=True
+                history_floor["witness"]=witness
+                protected_restart,protected_case=different_signed_case()
+                denied(lambda:commit(
+                    protected_case,coordinator_instance=protected_restart),
+                    "CI_ONLY_SEPARATE_HISTORY_FLOOR_HOLD")
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-rollback'"
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+                    "WHERE room_id='room-rollback'"
+                ).fetchone()[0]==0
+
+                # Missing external history is UNKNOWN, not a safe grant.
+                witness.execute(
+                    "DELETE FROM ci_history_floor WHERE request_nonce=?",
+                    (original_req["requestNonce"],))
+                missing_restart,missing_case=different_signed_case()
+                denied(lambda:commit(
+                    missing_case,coordinator_instance=missing_restart),
+                    "CI_ONLY_HISTORY_ABSENT_UNCERTAIN")
+                # Unreachable or missing custodian also holds instead of
+                # interpreting lack of a record as never committed.
+                history_floor["witness"]=None
+                unavailable_restart,unavailable_case=different_signed_case()
+                denied(lambda:commit(
+                    unavailable_case,coordinator_instance=unavailable_restart),
+                    "CI_ONLY_INDEPENDENT_HISTORY_UNAVAILABLE")
+                history_floor["required"]=False
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-rollback'"
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+                    "WHERE room_id='room-rollback'"
+                ).fetchone()[0]==0
+                assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+                assert db.execute("PRAGMA foreign_key_check").fetchone() is None
+
         denied(lambda:admission.dispatch_native_staffing(
             "SESSION_ATTACH",approved=True),
             "NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
@@ -478,5 +653,7 @@ print(
     "real Session+Doctor atomicity + candidate v14 journal rollback, "
     "original-request refusal fence blocks alternate signed grant, "
     "missing/duplicated version guarded, "
-    "deleted history remains unauthenticated UNKNOWN; native OFF"
+    "local rollback permits fresh signed grant without witness; "
+    "separate CI floor blocks reissue and missing/unavailable history; "
+    "native OFF"
 )
