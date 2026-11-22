@@ -5,6 +5,9 @@ on:
     paths:
       - "bin/px_hospital_connections_consent.py"
       - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_writer.py"
+      - "tests/test-px-hospital-protected-writer-socket.py"
+      - "docs/hospital-room-protected-writer-service-v1.md"
       - "bin/px_hospital_room_lifecycle.py"
       - "tests/test-px-hospital-connections-consent.py"
       - "tests/test-px-hospital-release-cutover-v1.py"
@@ -50,6 +53,9 @@ on:
     paths:
       - "bin/px_hospital_connections_consent.py"
       - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_writer.py"
+      - "tests/test-px-hospital-protected-writer-socket.py"
+      - "docs/hospital-room-protected-writer-service-v1.md"
       - "bin/px_hospital_room_lifecycle.py"
       - "tests/test-px-hospital-connections-consent.py"
       - "tests/test-px-hospital-release-cutover-v1.py"
