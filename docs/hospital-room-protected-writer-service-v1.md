@@ -166,3 +166,39 @@ fencing, not a replacement for installed process provenance, trusted
 enrollment, backup/rollback or native end-to-end acceptance. It does not
 enable Hospital Trash/Burn, does not affect the operator's workstation,
 and does not complete H1 production release.
+
+## H1 native Doctor directory // first bounded metadata-only route
+
+**Source-only, pending independent review and native installation.** The
+existing protected Room writer now accepts one additional exact action,
+`doctor-directory`, on its existing desktop-reader UID lane, alongside
+`review` and `bin`. The request has **exactly** `schema` and `operation`:
+no Room ID, caller-selected argv, filters, raw SQL, paths or alternate
+client UID. The response carries only Doctor `id`, `name`, `role`,
+`status`, `createdAt` and `updatedAt`, ordered as in the existing PX
+Doctor list. The protected owner performs a parameter-free fixed SQL
+`SELECT` with a hard limit; above **250 records**, the whole request
+fails closed rather than truncating a roster.
+
+This is intentionally separate from the generic `store-command` bridge:
+only the distinct native runtime service UID may invoke its 21-write/19-read
+legacy argv allowlist. The desktop UID gains **no Doctor mutation**, no
+Session/Assignment/Chart reads and no ability to elevate through argv,
+SQL or forged fields. Existing C5 signed Room Trash/Restore and legal-hold
+authority are unchanged.
+
+The disposable Linux `SO_PEERCRED` socket fixture verifies a real
+distinct-client Doctor directory read after source-owned `doctor-put`,
+exact output fields, denial to the writer's own UID, denial of arbitrary
+payload fields, and over-limit refusal with no persistent fixture changes.
+It does not prove user-interactive entitlement, installed socket ACL,
+native client executable provenance or a production Doctor roster.
+
+The application Doctor QML service **still invokes the old desktop PX CLI**.
+No application native read client or UI is switched by this source change;
+the caller-inventory release HOLD remains in force. Next integration requires
+a separately reviewed installed `hospital-room-read` operation contract
+and UI routing, preserving exact-source behavior and returning no privileged
+`store-command` access. The additional read is not a reason to place the
+root cutover marker early.
+
