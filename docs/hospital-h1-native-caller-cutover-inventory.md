@@ -129,3 +129,28 @@ H2 D1–D5 staffing historical recovery remains separately tracked, and
 Hospital Burn remains future Batch 2. This source inventory establishes a
 **real routing gap**, not a new authority to rewrite the application's
 separately owned UI or start protected services.
+
+## H1 next increment // Doctor metadata source route (no UI migration yet)
+
+At PX #130 source head `ff963f5de5d73f473fd58246f9ba056740fca208`,
+the protected Room writer added an exact `doctor-directory` operation
+to its existing desktop-reader UID lane. This is *not* general
+`store-command` access: zero arguments, no SQL or user-selected filters,
+fixed six-field Doctor metadata projection, at most 250 records,
+a fail-closed refusal when larger, and an existing
+Linux `SO_PEERCRED` socket CI fixture that tests rejection of forged
+fields, untrusted peers and over-limit output. Neither Doctor edits nor
+new staffing Session/Bed commands become available to the desktop.
+
+This is the **first source-level read-only building block**, not a
+completed Hospital service migration. The pinned
+`HospitalDoctorService.qml` still launches `px hospital doctors` and
+`px hospital doctor-put`. The installed native reader and that QML
+service have **not** been modified or activated, and Doctor writes
+remain unresolved. Before this new action can be used by the UI, the
+fixed trusted `hospital-room-read` client requires an independent
+reviewed operation/response contract and explicit source-identity
+enrollment, followed by end-to-end native tests and operator acceptance.
+
+**Native release HOLD** stays unchanged. The 22-source-caller inventory
+and all-writer compatibility gaps remain. Hospital Burn remains denied.
