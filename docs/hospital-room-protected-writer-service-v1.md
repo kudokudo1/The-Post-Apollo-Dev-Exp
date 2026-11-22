@@ -91,3 +91,68 @@ PX owner: source-level v12 legacy store routes are staged behind the privileged 
 ## DECISIONS
 
 Maintain PX #130 as draft, unmerged. Keep schema v11 dependency #121 and concurrent ownership intact. No root config, local migration, real grant, live Room change, host installation or permanent Burn was performed.
+
+## H1 legacy-store cutover tombstone // source gate, not activation
+
+**State: source/CI only. Operator-approved native installation and complete
+old-process inventory remain required.** After the operator's decision to
+release H1 with the four unmerged Session/Doctor/Bed commands disabled, this
+branch provides a narrow safeguard against accidentally reopening the old
+desktop-owned Hospital database from the *current source revision*.
+
+- `bin/px-hospital-store` now checks exactly
+  `/etc/post-apollo/hospital/legacy-store-cutover.v1` at the beginning of
+  `connect()`, **before** creating a data directory, opening SQLite or
+  migrating a schema. Any present file, directory or symlink refuses with
+  `HOSPITAL_NATIVE_PROTECTED_RUNTIME_REQUIRED`; errors inspecting the
+  marker also refuse. The path cannot be chosen through argv/environment.
+- The marker is **deny-only**: it does not configure the protected owner,
+  authorize Trash/Restore, prove a live issuer, or validate the host. Its
+  contents are deliberately not parsed for permissions. No marker is
+  created or installed by this PR. A trusted installer must own the marker
+  and its parent directories under the approved native release.
+- The protected runtime's 21 reviewed write and 19 read routes operate on
+  the already protected service-owned SQLite connection. They do **not**
+  invoke the old `connect()`; this is verified with the marker present.
+  `session-attach-atomic`, `session-succeed-atomic`,
+  `room-bed-claim-atomic` and `room-bed-claim-signed-atomic` remain
+  `COMMAND_NOT_EXPOSED`. The marker is not permission to use those
+  unmerged features.
+- New `tests/test-px-hospital-h1-legacy-cutover-fence.py` uses disposable
+  paths and in-process marker redirection only inside CI. It proves
+  pre-cutover legacy compatibility, marker/fail-closed refusal,
+  environment override refusal, protected read/write compatibility and
+  exclusion of all four unreviewed commands.
+
+### Native operator acceptance order (not automated here)
+
+1. Inventory **all** installed PX/Doctor/Session/Bed/Assignment/Chart
+   commands and process launch sources, including versions that predate
+   this guard. Decide which four draft commands are required vs deferred.
+   Validate runtime and operator UI use only approved routes.
+2. Quiesce every old writer and fence future launches independently.
+   A current process scan cannot prove a future binary will not start;
+   this marker only protects binaries containing the new source guard.
+3. Make and independently restore-verify a WAL-consistent owner-only
+   Hospital backup. Stage schema v10→v11→v12 migration and reconcile all
+   historical records before switching the authoritative database.
+4. Install and verify exact root-owned release sources, dedicated writer
+   identity, separate runtime/client identities, socket ACL/SELinux,
+   Connections issuer, Polkit/seat/retention authority and tested protected
+   native read/write transports. Do not grant desktop SQLite access.
+5. Only in the operator-approved quiesced cutover window, atomically
+   provision the root-controlled deny-only marker; re-observe that all
+   current-source direct `px-hospital-store` access refuses, that **old
+   pre-marker executables remain prevented from launching**, and that
+   protected native routes work without fallback. Then resume the
+   approved Hospital workflow against the one protected database.
+6. If validation fails, **leave Hospital writers stopped** and the
+   original archive protected. Do not remove the marker to improvise
+   a desktop fallback. An old-schema rollback after new writes requires
+   deliberate history reconciliation and fresh operator permission.
+
+**Scope warning:** This marker is *one defense* in native old-writer
+fencing, not a replacement for installed process provenance, trusted
+enrollment, backup/rollback or native end-to-end acceptance. It does not
+enable Hospital Trash/Burn, does not affect the operator's workstation,
+and does not complete H1 production release.
