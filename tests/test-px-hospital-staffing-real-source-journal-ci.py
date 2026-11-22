@@ -85,6 +85,29 @@ with tempfile.TemporaryDirectory(
         # or the installed versioned PX migrate() function.
         proposed = (ROOT/"tests"/"fixtures"/
                     "ci-only-staffing-source-journal-v14.sql").read_text("utf-8")
+        # An absent, duplicated, or wrong version key must fail the
+        # candidate gate before any CI journal table can be installed.
+        # This intentionally permits duplicate keys in the hostile
+        # miniature schema to test the count guard, even though the real
+        # PX schema normally enforces a unique key.
+        for history in ((), ("12",), ("13","13"), ("12","13")):
+            with closing(sqlite3.connect(
+                    ":memory:", isolation_level=None)) as invalid_db:
+                invalid_db.execute(
+                    "CREATE TABLE schema_meta(key TEXT, value TEXT)")
+                for version in history:
+                    invalid_db.execute(
+                        "INSERT INTO schema_meta(key,value) "
+                        "VALUES('schema_version',?)", (version,))
+                denied(lambda:invalid_db.executescript(proposed),
+                       "CHECK constraint failed")
+                if invalid_db.in_transaction:
+                    invalid_db.rollback()
+                assert invalid_db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name='ci_staffing_result_v14_candidate'"
+                ).fetchone() is None
+
         db.executescript(proposed)
         assert db.execute("SELECT value FROM schema_meta "
                           "WHERE key='schema_version'").fetchone()[0] == "13"
@@ -190,8 +213,6 @@ with tempfile.TemporaryDirectory(
             # A Session INSERT failure must roll back this journal and the
             # existing v13 grant consumption in the SAME transaction.
             assert connection is db and connection.in_transaction
-            original_grant_result=saved_consume(
-                grant,connection,operation=operation,scope=scope)
             request,prepared,signed,raw=active["case"]
             body=grant.body
             assert body["requestNonce"]==request["requestNonce"]
@@ -200,6 +221,22 @@ with tempfile.TemporaryDirectory(
             assert body["operation"]==operation
             assert hashlib.sha256(
                 auth.DOMAIN+auth.canonical(body)).hexdigest()==grant.digest
+            # D2 requires the original request identity to be permanently
+            # fenced regardless of how many distinct signatures/approvals
+            # an issuer generates for that same original PREPARE.
+            # This is a CI-only injection inside the real source's
+            # BEGIN IMMEDIATE. The existing v13 ledger INSERT lacks this
+            # field, so its trigger alone cannot enforce this requirement.
+            prior_request=connection.execute(
+                "SELECT terminal FROM ci_staffing_result_v14_candidate "
+                "WHERE request_nonce=?", (body["requestNonce"],)
+            ).fetchone()
+            if prior_request is not None:
+                raise auth.StaffingGrantHold(
+                    "HOSPITAL_STAFFING_GRANT_HOLD // "
+                    "CI_ONLY_ORIGINAL_REQUEST_TERMINAL_FENCE")
+            original_grant_result=saved_consume(
+                grant,connection,operation=operation,scope=scope)
             connection.execute(
                 """INSERT INTO ci_staffing_result_v14_candidate(
                    request_nonce,grant_nonce,grant_digest,approval_id,
@@ -218,7 +255,7 @@ with tempfile.TemporaryDirectory(
             )
             return original_grant_result
 
-        def commit(case):
+        def commit(case, *, coordinator_instance=None):
             active["case"]=case
             _,_,_,commit_raw=case
             with patch.object(auth,"trusted_public_key",
@@ -229,7 +266,8 @@ with tempfile.TemporaryDirectory(
                               return_value=policy), \
                  patch.object(auth.VerifiedStaffingGrant,"consume",
                               ci_journal_hook):
-                return planner.commit(db,commit_raw,kernel_peer=PEER)
+                return (coordinator_instance or planner).commit(
+                    db,commit_raw,kernel_peer=PEER)
 
         def counts():
             return (
@@ -364,6 +402,43 @@ with tempfile.TemporaryDirectory(
             "SELECT COUNT(*) FROM sessions WHERE session_id='session-refused'"
         ).fetchone()[0]==0
 
+        # Critical D2 attack: after issuer/writer coordinator restart, the
+        # same original PREPARE nonce is approved again with a DIFFERENT
+        # grant nonce, approval ID, grant digest and writer instance.
+        # The old v13 trigger cannot see requestNonce, so this is fenced
+        # by the proposed same-transaction original-request query, not by
+        # accidentally replaying the first signed grant.
+        restarted=coordinator.SourceStaffingRehearsal(
+            session_record=original["session_record"],
+            room_record=original["room_record"])
+        new_prepared=restarted.prepare(
+            db,transport.canonical(req),kernel_peer=PEER)
+        new_signed=make_grant(req,new_prepared)
+        changed_body=__import__("json").loads(new_signed)["body"]
+        assert changed_body["requestNonce"]==body["requestNonce"]
+        assert changed_body["nonce"]!=body["nonce"]
+        assert changed_body["approvalId"]!=body["approvalId"]
+        assert new_prepared["writerInstance"]!=prep["writerInstance"]
+        changed_digest=hashlib.sha256(
+            auth.DOMAIN+auth.canonical(changed_body)).hexdigest()
+        assert changed_digest!=grant_digest
+        new_raw=transport.canonical(dict(
+            req,kind="commit",
+            writerInstance=new_prepared["writerInstance"],
+            signedEnvelope=b64(new_signed)))
+        reissued=(req,new_prepared,new_signed,new_raw)
+        denied(lambda:commit(reissued,coordinator_instance=restarted),
+               "CI_ONLY_ORIGINAL_REQUEST_TERMINAL_FENCE")
+        assert counts()==(3,2,2),counts()
+        assert db.execute(
+            "SELECT terminal FROM ci_staffing_result_v14_candidate "
+            "WHERE request_nonce=?", (req["requestNonce"],)
+        ).fetchone()[0]=="REFUSED"
+        assert db.execute(
+            "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+            "WHERE nonce=?", (changed_body["nonce"],)
+        ).fetchone()[0]==0
+
         # CI-only observations are not native writer receipts; loss of a
         # committed journal entry must remain UNKNOWN, never REFUSED.
         db.execute(
@@ -386,6 +461,7 @@ with tempfile.TemporaryDirectory(
 print(
     "HOSPITAL REAL SOURCE D1/D2 CI HOOK // PASS // "
     "real Session+Doctor atomicity + candidate v14 journal rollback, "
-    "terminal refusal fence prevents grant consumption, "
+    "original-request refusal fence blocks alternate signed grant, "
+    "missing/duplicated version guarded, "
     "deleted history remains unauthenticated UNKNOWN; native OFF"
 )
