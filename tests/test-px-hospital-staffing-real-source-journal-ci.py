@@ -51,6 +51,13 @@ SIGNED_CI = runpy.run_path(
     str(ROOT/"tests"/"test-px-hospital-staffing-signed-history-ci.py"),
     run_name="hospital_signed_source_gate_ci",
 )
+# The separate membership model is now checked at the *same real source
+# transaction seam*. Both the current head and the historical PENDING must
+# independently match the original grant/COMMIT. No native custody inferred.
+MEMBERSHIP_CI = runpy.run_path(
+    str(ROOT/"tests"/"test-px-hospital-staffing-history-membership-ci.py"),
+    run_name="hospital_source_membership_gate_ci",
+)
 
 PEER = (5001, 0, 1234567)
 HOST = "a"*64
@@ -223,7 +230,7 @@ with tempfile.TemporaryDirectory(
             # The write-ahead variant is a disposable experiment, NOT a
             # trusted external process or operator authorization.
             "write_ahead": False, "fixture_lease": None,
-            "signed": None,
+            "signed": None, "membership": None,
         }
 
         def ci_journal_hook(grant, connection, *, operation, scope):
@@ -314,8 +321,41 @@ with tempfile.TemporaryDirectory(
                     assert signed_result["canExecuteNewGrant"] is False
                     assert signed_result["canDeclareCommitted"] is False
                     assert signed_result["canDeclareRefused"] is False
-                    # This PENDING observation grants NO authority; the
-                    # separate one-use fixture lease remains mandatory.
+                    # Require an independently *test-pinned current head*
+                    # and verifiable membership of the exact older signed
+                    # PENDING. A valid old packet alone cannot authorize
+                    # work after an adversary rewinds the global history.
+                    membership=history_floor["membership"]
+                    if membership is None:
+                        raise auth.StaffingGrantHold(
+                            "HOSPITAL_STAFFING_GRANT_HOLD // "
+                            "CI_HISTORY_MEMBERSHIP_REQUIRED")
+                    try:
+                        member_result=MEMBERSHIP_CI[
+                            "verify_historical_pending"](
+                            entries=membership["entries"],
+                            signed_current_head=membership["signed_head"],
+                            pinned_current_head=membership["pinned_head"],
+                            pinned_current_sequence=membership["pinned_sequence"],
+                            pinned_head_signer=membership["head_pin"],
+                            expected_context=membership["expected_context"],
+                            historical_pending_packet=context["packet"],
+                            pinned_pending_signer=context["pin"],
+                            expected_pending=expected_signed,
+                        )
+                    except MEMBERSHIP_CI["MembershipHold"] as exc:
+                        raise auth.StaffingGrantHold(
+                            "HOSPITAL_STAFFING_GRANT_HOLD // "
+                            "CI_HISTORY_MEMBERSHIP_HOLD: " + str(exc)
+                        ) from exc
+                    assert member_result["historicalSequence"]==1
+                    assert member_result["currentSequence"]==4
+                    assert member_result["mayExecuteNewGrant"] is False
+                    assert member_result["sourceCommitted"] is False
+                    assert member_result["sourceRefused"] is False
+                    # Evidence is NOT a grant. Original one-use fixture
+                    # lease and original protected source checks are still
+                    # required after this membership verification.
                 expected=(body["requestNonce"],hashlib.sha256(raw).hexdigest(),
                           grant.digest,body["writerInstance"])
                 observed=(body["requestNonce"],reserved[0],reserved[1],
@@ -834,14 +874,76 @@ with tempfile.TemporaryDirectory(
                     ci_history_expected,
                     schema=SIGNED_CI["SCHEMA"],
                     purpose=SIGNED_CI["PURPOSE"],
-                    sequence=31,
+                    sequence=1,
                     state="PENDING",
                 )
                 history_floor["signed"]=dict(
                     packet=SIGNED_CI["issue"](
                         ci_history_signer,ci_history_body),
                     pin=ci_history_signer.public_key(),
-                    floor=31,writer_release=ci_writer_release,
+                    floor=1,writer_release=ci_writer_release,
+                )
+                # Model unrelated requests advancing a different
+                # disposable, CI-signed global head. The exact original
+                # signed PENDING remains the first historical entry.
+                # These extra records do not grant staffing authority.
+                ci_head_signer=Ed25519PrivateKey.generate()
+                ci_history_entries=[dict(
+                    sequence=1,
+                    requestNonce=ahead_request["requestNonce"],
+                    signedPendingSha256=MEMBERSHIP_CI["h"](
+                        history_floor["signed"]["packet"]),
+                )]
+                for history_sequence in (2,3,4):
+                    distinct_request=b64(bytes([history_sequence])*32)
+                    distinct_identity=dict(
+                        ci_history_expected,
+                        requestNonce=distinct_request,
+                        scopeDigest=hashlib.sha256(
+                            ("later-scope-"+str(history_sequence)).encode()
+                        ).hexdigest(),
+                        commitDigest=hashlib.sha256(
+                            ("later-commit-"+str(history_sequence)).encode()
+                        ).hexdigest(),
+                        grantDigest=hashlib.sha256(
+                            ("later-grant-"+str(history_sequence)).encode()
+                        ).hexdigest(),
+                        writerInstance="later-ci-writer-"+str(history_sequence),
+                    )
+                    distinct_packet=SIGNED_CI["issue"](
+                        ci_history_signer,dict(
+                            distinct_identity,schema=SIGNED_CI["SCHEMA"],
+                            purpose=SIGNED_CI["PURPOSE"],
+                            sequence=history_sequence,state="PENDING",
+                        ))
+                    ci_history_entries.append(dict(
+                        sequence=history_sequence,
+                        requestNonce=distinct_request,
+                        signedPendingSha256=MEMBERSHIP_CI["h"](
+                            distinct_packet),
+                    ))
+                ci_current_head=MEMBERSHIP_CI["linked_head"](
+                    ci_history_entries)
+                ci_expected_head=dict(
+                    hostId=ci_history_expected["hostId"],
+                    writerReleaseSha256=ci_writer_release,
+                    issuerReleaseSha256=ci_history_expected[
+                        "issuerReleaseSha256"],
+                    policyGeneration=ci_history_expected[
+                        "policyGeneration"],
+                )
+                history_floor["membership"]=dict(
+                    entries=ci_history_entries,
+                    signed_head=MEMBERSHIP_CI["signed_head"](
+                        ci_head_signer,dict(
+                            ci_expected_head,schema=MEMBERSHIP_CI["SCHEMA"],
+                            purpose=MEMBERSHIP_CI["PURPOSE"],
+                            sequence=4,headSha256=ci_current_head,
+                        )),
+                    pinned_head=ci_current_head,
+                    pinned_sequence=4,
+                    head_pin=ci_head_signer.public_key(),
+                    expected_context=ci_expected_head,
                 )
                 # Only the original fixture writer has a one-use in-memory
                 # lease for this PENDING reservation. It is consumed before
@@ -915,7 +1017,7 @@ with tempfile.TemporaryDirectory(
                     coordinator_instance=no_pin),
                     "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
                 history_floor["signed"]["pin"]=ci_history_signer.public_key()
-                history_floor["signed"]["floor"]=32
+                history_floor["signed"]["floor"]=2
                 stale_floor=coordinator.SourceStaffingRehearsal(
                     session_record=original["session_record"],
                     room_record=original["room_record"])
@@ -930,7 +1032,7 @@ with tempfile.TemporaryDirectory(
                     (ahead_request,sf_prepared,sf_signed,sf_raw),
                     coordinator_instance=stale_floor),
                     "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
-                history_floor["signed"]["floor"]=31
+                history_floor["signed"]["floor"]=1
                 assert db.execute(
                     "SELECT COUNT(*) FROM sessions "
                     "WHERE session_id='session-write-ahead'"
@@ -984,6 +1086,7 @@ with tempfile.TemporaryDirectory(
                 history_floor["write_ahead"]=False
                 history_floor["fixture_lease"]=None
                 history_floor["signed"]=None
+                history_floor["membership"]=None
         assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
 
@@ -998,8 +1101,8 @@ print(
     "missing/duplicated version guarded, "
     "local rollback permits fresh signed grant without witness; "
     "separate CI floor blocks reissue and missing/unavailable history; "
-    "mandatory signed PENDING checked within real Session transaction "
-    "before grant consumption; absent packet, rollback, bad pin/floor/new "
-    "grant HOLD; "
+    "mandatory signed PENDING plus historical membership under newer "
+    "current head checked inside real Session transaction; absent packet, "
+    "changed grant/root and bad pin/floor HOLD; "
     "no enrolled custodian or atomic two-store commit; native OFF"
 )
