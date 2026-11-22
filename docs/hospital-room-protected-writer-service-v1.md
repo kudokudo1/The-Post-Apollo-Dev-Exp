@@ -106,6 +106,16 @@ desktop-owned Hospital database from the *current source revision*.
   migrating a schema. Any present file, directory or symlink refuses with
   `HOSPITAL_NATIVE_PROTECTED_RUNTIME_REQUIRED`; errors inspecting the
   marker also refuse. The path cannot be chosen through argv/environment.
+- **Native startup now enforces a stronger counterpart:** the PX writer's
+  `read_host_config()` demands this same exact marker under root-controlled,
+  non-group/world-writable directory ancestors before returning the configured
+  service identities. The marker must be a root-owned, single-link regular
+  file with mode `0400`, `0440` or `0444`. Absence, a symlink, a directory,
+  a writable marker, or an untrusted parent refuses service startup.
+  `px-hospital-consent-writerd` imports this exact function, so both writer
+  endpoints inherit the gate. The legacy CLI still denies on *any* marker
+  entry, including invalid ones; an invalid marker can never open the old
+  desktop database by making the native service refuse.
 - The marker is **deny-only**: it does not configure the protected owner,
   authorize Trash/Restore, prove a live issuer, or validate the host. Its
   contents are deliberately not parsed for permissions. No marker is
