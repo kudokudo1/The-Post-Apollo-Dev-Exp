@@ -1,0 +1,355 @@
+"""PX Hospital protected Room writer, pre-install native service prototype.
+
+This is an actual AF_UNIX, SO_PEERCRED-checked RPC to a separately owned
+SQLite database, but NOT an installed or activated production service.
+Client peers cannot select a database, key, SQL command or grant verifier.\nA separately pinned runtime service UID can invoke a reviewed allowlist of\nexisting PX Hospital store commands, preserving their source validators.
+Read-only Room review and bin are exposed; the ONLY mutations are the
+existing signed/atomic Room TRASH and RESTORE transitions.
+
+Ordinary desktop writers remain unmigrated until approved runtime cutover. No service unit, sudo,
+setuid, operator approval, signing key, environment-selected trust anchor
+or host storage migration is provided by this module.
+"""
+from __future__ import annotations
+
+from contextlib import closing
+import json
+import os
+from pathlib import Path
+import socket
+import socketserver
+import sqlite3
+import stat
+import struct
+import threading
+from urllib.parse import quote
+
+import px_hospital_room_authority as authority
+import px_hospital_room_lifecycle as lifecycle
+import px_hospital_protected_store_bridge as store_bridge
+
+SCHEMA = "post-apollo.hospital.protected-room-writer.v1"
+_MAX_REQUEST = 65536
+_MAX_RESPONSE = 1048576
+_ALLOWED_READ = frozenset(("review", "bin", "doctor-directory"))
+_DOCTOR_DIRECTORY_LIMIT = 250
+_ALLOWED_WRITE = frozenset(("trash", "restore"))
+
+
+class WriterHold(RuntimeError):
+    pass
+
+
+def _pairs_unique(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise WriterHold("DUPLICATE_FIELD")
+        obj[key] = value
+    return obj
+
+
+def _invalid_constant(value):
+    raise WriterHold("NONFINITE_FIELD")
+
+
+def parse_request(frame: bytes):
+    if (type(frame) is not bytes or not 2 <= len(frame) <= _MAX_REQUEST
+            or not frame.endswith(b"\n") or frame.count(b"\n") != 1):
+        raise WriterHold("BOUNDED_SINGLE_FRAME_REQUIRED")
+    try:
+        request = json.loads(
+            frame[:-1].decode("utf-8", "strict"),
+            object_pairs_hook=_pairs_unique,
+            parse_constant=_invalid_constant,
+        )
+    except (ValueError, UnicodeError, TypeError) as exc:
+        raise WriterHold("INVALID_JSON") from exc
+    if type(request) is not dict or request.get("schema") != SCHEMA:
+        raise WriterHold("SCHEMA_REFUSED")
+    action = request.get("operation")
+    if action == "review":
+        expected = {"schema", "operation", "roomId"}
+    elif action in ("bin", "doctor-directory"):
+        expected = {"schema", "operation"}
+    elif action == "store-command":
+        expected = {"schema", "operation", "argv"}
+    elif action in _ALLOWED_WRITE:
+        expected = {
+            "schema", "operation", "roomId", "expectedRevision",
+            "expectedDigest", "confirmRoomId", "signedEnvelope",
+        }
+    else:
+        raise WriterHold("UNSUPPORTED_OPERATION")
+    if set(request) != expected:
+        raise WriterHold("EXACT_FIELDS_REQUIRED")
+    if action not in ("bin", "doctor-directory", "store-command"):
+        lifecycle._identity(request["roomId"])
+    if action in _ALLOWED_WRITE:
+        if (type(request["expectedRevision"]) is not int
+                or not 0 <= request["expectedRevision"] < 1_000_000_000
+                or type(request["expectedDigest"]) is not str
+                or lifecycle.DIGEST_PATTERN.fullmatch(
+                    request["expectedDigest"]) is None
+                or request["confirmRoomId"] != request["roomId"]
+                or type(request["signedEnvelope"]) is not str
+                or not 1 <= len(request["signedEnvelope"]) <= 4096):
+            raise WriterHold("INVALID_TRANSITION_FRAME")
+    return request
+
+
+def kernel_peer(sock: socket.socket):
+    if not hasattr(socket, "SO_PEERCRED"):
+        raise WriterHold("LINUX_PEER_CREDENTIALS_REQUIRED")
+    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    if len(raw) != 12:
+        raise WriterHold("PEER_CREDENTIALS_TRUNCATED")
+    pid, uid, gid = struct.unpack("3i", raw)
+    if pid <= 0 or uid < 0 or gid < 0:
+        raise WriterHold("INVALID_PEER")
+    return pid, uid, gid
+
+
+def _private_directory(path: Path, expected_mode: int):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != expected_mode):
+        raise WriterHold("WRITER_DIRECTORY_NOT_PRIVATE")
+
+
+class ProtectedRoomWriter:
+    """One-process protected SQLite owner with a deliberately narrow RPC.
+
+    The trusted native service manager must choose owner-only paths and the
+    desktop UID; a client request never supplies or changes those settings.
+    The socket is 0600 by default. Both client and runtime UIDs must be\n    distinct from the service owner and from each other.\n    Installers must separately approve a
+    restricted per-client ACL/owner-owned socket activation policy.
+    """
+
+    def __init__(self, *, state_directory: Path, socket_directory: Path,
+                 client_uid: int, runtime_uid: int):
+        if (os.name != "posix" or not hasattr(socket, "SO_PEERCRED")
+                or os.geteuid() == 0 or type(client_uid) is not int
+                or client_uid in (0, os.geteuid())
+                or type(runtime_uid) is not int
+                or runtime_uid in (0, os.geteuid(), client_uid)
+                or not isinstance(state_directory, Path)
+                or not isinstance(socket_directory, Path)
+                or not state_directory.is_absolute()
+                or not socket_directory.is_absolute()
+                or state_directory == socket_directory):
+            raise WriterHold("DISTINCT_NATIVE_OWNER_REQUIRED")
+        self.state_directory = state_directory
+        self.database = state_directory / "hospital.db"
+        self.socket_directory = socket_directory
+        self.socket_path = socket_directory / "hospital-room-writer-v1.sock"
+        self.client_uid = client_uid
+        self.runtime_uid = runtime_uid
+        if len(os.fsencode(self.socket_path)) >= 100:
+            raise WriterHold("UNIX_SOCKET_PATH_TOO_LONG")
+        self._server = None
+        self._thread = None
+        self._socket_inode = None
+
+    def _check_storage(self):
+        _private_directory(self.state_directory, 0o700)
+        _private_directory(self.socket_directory, 0o711)
+        info = self.database.lstat()
+        if (not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o177):
+            raise WriterHold("PROTECTED_DATABASE_NOT_OWNER_ONLY")
+        # No migrations or implicit database creation via RPC. The actual
+        # source owner must verify backup/recovery before starting the host.
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(self.database) + suffix)
+            if sidecar.exists() or sidecar.is_symlink():
+                side = sidecar.lstat()
+                if (not stat.S_ISREG(side.st_mode)
+                        or side.st_uid != os.geteuid()
+                        or stat.S_IMODE(side.st_mode) & 0o177):
+                    raise WriterHold("PROTECTED_SQLITE_SIDECAR_UNSAFE")
+
+    def _connect(self):
+        self._check_storage()
+        url = "file:" + quote(str(self.database), safe="/") + "?mode=rw"
+        connection = sqlite3.connect(
+            url, uri=True, timeout=3, isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=3000")
+        row = connection.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        if row is None or row["value"] != "12":
+            connection.close()
+            raise WriterHold("MIGRATION_AND_BACKUP_NOT_ACCEPTED")
+        return connection
+
+    @staticmethod
+    def _verify_envelope(raw: str):
+        # The only trusted issuer is pinned by PX authority's installed
+        # root-owned KEY_PATH. No caller-selected key or test/CI env flag.
+        verified = authority._verify_bytes(
+            raw.encode("utf-8"), authority.trusted_public_key(),
+        )
+        if verified.body["hostId"] != authority.installed_host_binding():
+            raise WriterHold("SIGNED_HOST_MISMATCH")
+        return verified
+
+    def process(self, request, *, peer_uid):
+        # The UID is supplied ONLY by SO_PEERCRED, never the JSON request.
+        # A desktop application cannot invoke the privileged legacy store.
+        if peer_uid not in (self.client_uid, self.runtime_uid):
+            raise WriterHold("UNTRUSTED_PEER")
+        action = request["operation"]
+        if action == "store-command" and peer_uid != self.runtime_uid:
+            raise WriterHold("STORE_REQUIRES_SEPARATE_RUNTIME_IDENTITY")
+        if action in _ALLOWED_WRITE and peer_uid != self.client_uid:
+            raise WriterHold("ROOM_ACTION_REQUIRES_CLIENT_IDENTITY")
+        with closing(self._connect()) as db:
+            if action == "store-command":
+                return store_bridge.execute(db, request["argv"])
+            if action == "review":
+                return lifecycle.review(db, request["roomId"])
+            if action == "bin":
+                return lifecycle.trashed_rooms(db)
+            if action == "doctor-directory":
+                # Fixed metadata projection only. This is NOT an argv
+                # bridge, arbitrary SQL proxy, or Doctor mutation route.
+                # Rows are bounded before serialization; a large directory
+                # refuses rather than returning incomplete identities.
+                rows = db.execute(
+                    "SELECT doctor_id, name, role, status, created_at, "
+                    "updated_at FROM doctors "
+                    "ORDER BY updated_at DESC, doctor_id ASC LIMIT ?",
+                    (_DOCTOR_DIRECTORY_LIMIT + 1,),
+                ).fetchall()
+                if len(rows) > _DOCTOR_DIRECTORY_LIMIT:
+                    raise WriterHold("DOCTOR_DIRECTORY_LIMIT_EXCEEDED")
+                return [
+                    {
+                        "id": str(row["doctor_id"]),
+                        "name": str(row["name"] or row["doctor_id"]),
+                        "role": str(row["role"] or "DOCTOR"),
+                        "status": str(row["status"] or "ACTIVE"),
+                        "createdAt": str(row["created_at"] or ""),
+                        "updatedAt": str(row["updated_at"] or ""),
+                    }
+                    for row in rows
+                ]
+            if action in _ALLOWED_WRITE:
+                verified = self._verify_envelope(request["signedEnvelope"])
+                return lifecycle.transition(
+                    db, request["roomId"], action.upper(),
+                    request["expectedRevision"], request["expectedDigest"],
+                    request["confirmRoomId"], authorization=verified,
+                )
+            raise WriterHold("UNSUPPORTED_OPERATION")
+
+    class _Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            conn = self.request
+            try:
+                conn.settimeout(1.5)
+                _pid, uid, _gid = kernel_peer(conn)
+                raw = bytearray()
+                # Receive one bounded frame through EOF before responding.
+                # An immediate close with unread peer bytes can cause Linux
+                # to reset the connection and discard the refusal reply.
+                # No request is parsed, trusted or executed before UID check.
+                while len(raw) <= _MAX_REQUEST:
+                    packet = conn.recv(min(2048, _MAX_REQUEST + 1 - len(raw)))
+                    if not packet:
+                        break
+                    raw.extend(packet)
+                if uid not in (
+                    self.server.owner.client_uid, self.server.owner.runtime_uid
+                ):
+                    raise WriterHold("UNTRUSTED_PEER")
+                request = parse_request(bytes(raw))
+                data = self.server.owner.process(request, peer_uid=uid)
+                result = {"ok": True, "data": data}
+                wire = json.dumps(
+                    result, separators=(",", ":"), ensure_ascii=True,
+                    allow_nan=False,
+                ).encode("ascii") + b"\n"
+                if len(wire) > _MAX_RESPONSE:
+                    raise WriterHold("RESPONSE_TOO_LARGE")
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError,
+                    sqlite3.Error):
+                # Do not disclose DB paths, historical Room contents or
+                # pinned-issuer failure internals to a failed caller.
+                wire = b'{"ok":false,"error":"DENIED"}\n'
+            try:
+                conn.sendall(wire)
+            except OSError:
+                pass
+
+    def start(self):
+        if self._server is not None:
+            raise WriterHold("ALREADY_STARTED")
+        self._check_storage()
+        with closing(self._connect()) as connection:
+            if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                raise WriterHold("SQLITE_FOREIGN_KEYS_NOT_ENFORCED")
+        if os.path.lexists(self.socket_path):
+            raise WriterHold("EXISTING_SOCKET_REFUSED")
+        old_umask = os.umask(0o077)
+        try:
+            server = socketserver.UnixStreamServer(
+                str(self.socket_path), self._Handler,
+            )
+        finally:
+            os.umask(old_umask)
+        try:
+            server.owner = self
+            os.chmod(self.socket_path, 0o600)
+            info = self.socket_path.lstat()
+            if (not stat.S_ISSOCK(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise WriterHold("SOCKET_NOT_OWNER_CONTROLLED")
+            self._socket_inode = info.st_ino
+            self._server = server
+            thread = threading.Thread(
+                target=server.serve_forever,
+                kwargs={"poll_interval": 0.02},
+                daemon=True,
+                name="px-hospital-protected-room-writer",
+            )
+            self._thread = thread
+            thread.start()
+        except BaseException:
+            server.server_close()
+            if self._socket_inode == self.socket_path.lstat().st_ino:
+                self.socket_path.unlink()
+            self._socket_inode = None
+            self._server = None
+            raise
+
+    def close(self):
+        server, thread = self._server, self._thread
+        self._server = None
+        self._thread = None
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            if thread is not None:
+                thread.join(timeout=3)
+        try:
+            if (self._socket_inode is not None
+                    and self.socket_path.lstat().st_ino == self._socket_inode):
+                self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        self._socket_inode = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()

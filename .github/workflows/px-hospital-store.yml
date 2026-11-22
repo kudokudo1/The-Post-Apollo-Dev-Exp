@@ -6,8 +6,21 @@ on:
     paths:
       - bin/px
       - bin/px-hospital-store
+      - bin/px_hospital_room_lifecycle.py
+      - bin/px_hospital_room_authority.py
       - tests/test-px-hospital-store.sh
       - tests/test-px-hospital-room-names.py
+      - tests/test-px-hospital-room-lifecycle-v12.py
+      - tests/test-px-hospital-unprotected-writer-witness.py
+      - tests/test-px-hospital-protected-dac-fixture.py
+      - bin/px_hospital_room_writer.py
+      - bin/px_hospital_protected_store_bridge.py
+      - bin/px_hospital_protected_client.py
+      - bin/px-hospital-protected-runtime
+      - tests/test-px-hospital-protected-writer-socket.py
+      - bin/px-hospital-room-writerd
+      - tests/test-px-hospital-writer-host-refusals.py
+      - tests/test-px-hospital-h1-legacy-cutover-fence.py
       - .github/workflows/px-hospital-store.yml
   push:
     branches:
@@ -17,6 +30,17 @@ on:
       - bin/px-hospital-store
       - tests/test-px-hospital-store.sh
       - tests/test-px-hospital-room-names.py
+      - tests/test-px-hospital-room-lifecycle-v12.py
+      - tests/test-px-hospital-unprotected-writer-witness.py
+      - tests/test-px-hospital-protected-dac-fixture.py
+      - bin/px_hospital_room_writer.py
+      - bin/px_hospital_protected_store_bridge.py
+      - bin/px_hospital_protected_client.py
+      - bin/px-hospital-protected-runtime
+      - tests/test-px-hospital-protected-writer-socket.py
+      - bin/px-hospital-room-writerd
+      - tests/test-px-hospital-writer-host-refusals.py
+      - tests/test-px-hospital-h1-legacy-cutover-fence.py
       - .github/workflows/px-hospital-store.yml
 
 permissions:
@@ -31,12 +55,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install pinned Ed25519 verifier dependency
+        run: python3 -m pip install 'cryptography==46.0.3'
+
       - name: Validate Hospital store syntax
         run: |
           bash -n tests/test-px-hospital-store.sh
-          python3 -m py_compile bin/px-hospital-store tests/test-px-hospital-room-names.py
+          python3 -m py_compile bin/px-hospital-store bin/px_hospital_room_lifecycle.py bin/px_hospital_room_authority.py tests/test-px-hospital-room-names.py tests/test-px-hospital-room-lifecycle-v12.py tests/test-px-hospital-unprotected-writer-witness.py tests/test-px-hospital-protected-dac-fixture.py bin/px_hospital_room_writer.py tests/test-px-hospital-protected-writer-socket.py bin/px-hospital-room-writerd tests/test-px-hospital-writer-host-refusals.py bin/px_hospital_protected_store_bridge.py bin/px_hospital_protected_client.py bin/px-hospital-protected-runtime tests/test-px-hospital-h1-legacy-cutover-fence.py
 
       - name: Test Hospital durable state store
         run: |
           bash ./tests/test-px-hospital-store.sh
           python3 tests/test-px-hospital-room-names.py
+          python3 tests/test-px-hospital-room-lifecycle-v12.py
+      - name: Record unprotected same-UID SQLite bypass on disposable fixture (negative security evidence)
+        run: python3 tests/test-px-hospital-unprotected-writer-witness.py
+      - name: Exercise distinct UID PX database/backup isolation in disposable Linux fixture
+        run: python3 tests/test-px-hospital-protected-dac-fixture.py
+      - name: Prove protected Room socket rejects unsigned/direct SQL and accepts fixture-signed one-use transitions
+        run: python3 tests/test-px-hospital-protected-writer-socket.py
+      - name: Verify native writer launcher refuses untrusted client config or key paths
+        run: python3 tests/test-px-hospital-writer-host-refusals.py
+      - name: Verify H1 legacy direct SQLite cutover fence and protected service compatibility
+        run: python3 tests/test-px-hospital-h1-legacy-cutover-fence.py

@@ -69,11 +69,11 @@ with tempfile.TemporaryDirectory(prefix="px-room-name-test-") as tmp:
         conn.commit()
     recovery_env = dict(env, PX_HOSPITAL_DATA_DIR=str(recovery_dir))
     recovered = invoke(recovery_env, "status")
-    assert recovered["schema_version"] == 11, recovered
+    assert recovered["schema_version"] == 12, recovered
     assert invoke(recovery_env, "room", "room-one")["id"] == "room-one"
 
     status = invoke(env, "status")
-    assert status["schema_version"] == 11, status
+    assert status["schema_version"] == 12, status
     # Keep Assignment title projection bound to the Room's real active contract.
     with sqlite3.connect(db_path) as conn:
         assignment_id = conn.execute(

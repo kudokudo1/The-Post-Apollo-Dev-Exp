@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Protected PX runtime-side Hospital store client. No database fallback.
+
+This standalone entrypoint must be launched under the distinct native PX
+runtime service UID; it reads only root-pinned /etc writer configuration.
+It never accepts --db, --socket, --config, --public-key, or raw SQL.
+No installation or active role is provided in this repository.
+"""
+from __future__ import annotations
+
+import sys
+
+from px_hospital_protected_client import main
+from px_hospital_room_writer import WriterHold
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (WriterHold, OSError, ValueError, TypeError) as exc:
+        # Include the safe refusal category but no database, grant or
+        # operator data from a protected service reply.
+        print("PX HOSPITAL PROTECTED RUNTIME HOLD // " + str(exc),
+              file=sys.stderr)
+        raise SystemExit(2)

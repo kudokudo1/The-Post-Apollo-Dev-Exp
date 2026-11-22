@@ -6,7 +6,39 @@ import sqlite3
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import px_hospital_room_lifecycle as room_lifecycle
+import px_hospital_room_authority as room_authority
+
+SCHEMA_VERSION = 12
+
+# Installed cutover is operator-managed. Before activating protected native
+# routing, an independently trusted installer must quiesce all old writers,
+# verify backup/rollback and then place this root-controlled tombstone.
+# The presence of ANY directory entry here blocks this legacy desktop SQLite
+# client. It is a DENY-ONLY fence, not evidence of installation or approval.
+# No environment variable, CLI option or client JSON can change this path.
+LEGACY_CUTOVER_MARKER = Path(
+    "/etc/post-apollo/hospital/legacy-store-cutover.v1"
+)
+
+
+def refuse_legacy_store_after_cutover():
+    """Never open/create a second desktop Hospital DB after native cutover.
+
+    A dangling symlink, directory, unreadable marker or corrupt marker also
+    blocks this client. A missing marker allows ONLY pre-cutover legacy use.
+    This source guard cannot stop previously installed binaries or already
+    running processes; native installation must independently fence those.
+    """
+    try:
+        LEGACY_CUTOVER_MARKER.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError("HOSPITAL_LEGACY_CUTOVER_STATE_UNVERIFIABLE") from exc
+    raise RuntimeError("HOSPITAL_NATIVE_PROTECTED_RUNTIME_REQUIRED")
+
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -352,6 +384,8 @@ def artifact_dir() -> Path:
     return hospital_data_dir() / "artifacts"
 
 def connect() -> sqlite3.Connection:
+    # The check must occur BEFORE mkdir, SQLite open or implicit migration.
+    refuse_legacy_store_after_cutover()
     db_path = hospital_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_dir().mkdir(parents=True, exist_ok=True)
@@ -495,6 +529,10 @@ def migrate(conn: sqlite3.Connection) -> int:
         )
         conn.commit()
         version = 11
+
+    if version < 12:
+        room_lifecycle.install_schema_v12(conn)
+        version = 12
 
     return version
 
@@ -839,6 +877,8 @@ def room_record(conn: sqlite3.Connection, room_id: str) -> dict:
             r.*,
             p.repository AS repository,
             p.label AS patient_label,
+            COALESCE(l.state,'ACTIVE') AS lifecycle_state,
+            COALESCE(l.revision,0) AS lifecycle_revision,
             (
                 SELECT a.title
                 FROM assignments a
@@ -862,6 +902,7 @@ def room_record(conn: sqlite3.Connection, room_id: str) -> dict:
             ) AS last_message
         FROM rooms r
         LEFT JOIN patients p ON p.patient_id = r.patient_id
+        LEFT JOIN room_lifecycle l ON l.room_id = r.room_id
         WHERE r.room_id = ?
         """,
         (room_id,),
@@ -895,6 +936,14 @@ def normalize_room(row: sqlite3.Row) -> dict:
         "assignmentStatus": str(row["assignment_status"] or ""),
         "createdAt": str(row["created_at"] or ""),
         "updatedAt": str(row["updated_at"] or ""),
+        "lifecycleState": (
+            str(row["lifecycle_state"] or "ACTIVE")
+            if "lifecycle_state" in row.keys() else "ACTIVE"
+        ),
+        "lifecycleRevision": (
+            int(row["lifecycle_revision"] or 0)
+            if "lifecycle_revision" in row.keys() else 0
+        ),
     }
 
 
@@ -905,6 +954,8 @@ def rooms_list(conn: sqlite3.Connection) -> list:
             r.*,
             p.repository AS repository,
             p.label AS patient_label,
+            COALESCE(l.state,'ACTIVE') AS lifecycle_state,
+            COALESCE(l.revision,0) AS lifecycle_revision,
             (
                 SELECT a.title
                 FROM assignments a
@@ -928,6 +979,8 @@ def rooms_list(conn: sqlite3.Connection) -> list:
             ) AS last_message
         FROM rooms r
         LEFT JOIN patients p ON p.patient_id = r.patient_id
+        LEFT JOIN room_lifecycle l ON l.room_id = r.room_id
+        WHERE COALESCE(l.state,'ACTIVE') = 'ACTIVE'
         ORDER BY r.updated_at DESC, r.room_id ASC
         """
     ).fetchall()
@@ -2951,6 +3004,24 @@ def build_parser() -> argparse.ArgumentParser:
     rooms = sub.add_parser("rooms")
     rooms.add_argument("--json", action="store_true")
 
+    # v12 Room soft-Trash: only the PX source-owner can change these records.
+    room_review = sub.add_parser("room-lifecycle-review")
+    room_review.add_argument("room_id")
+    room_review.add_argument("--json", action="store_true")
+
+    room_bin = sub.add_parser("room-lifecycle-bin")
+    room_bin.add_argument("--json", action="store_true")
+
+    for command_name in ("room-lifecycle-trash", "room-lifecycle-restore"):
+        operation = sub.add_parser(command_name)
+        operation.add_argument("room_id")
+        operation.add_argument("--expected-revision", type=int, required=True)
+        operation.add_argument("--expected-digest", required=True)
+        operation.add_argument("--confirm-room-id", required=True)
+        operation.add_argument("--signed-authorization-file", required=True,
+                               help="Externally signed, root-pinned one-use grant")
+        operation.add_argument("--json", action="store_true")
+
     session = sub.add_parser("session-put")
     session.add_argument("session_id")
     session.add_argument("--room-id", required=True)
@@ -3332,6 +3403,25 @@ def main() -> int:
                 emit_data(room_record(conn, args.room_id), args.json)
             elif args.command == "rooms":
                 emit_data(rooms_list(conn), args.json)
+            elif args.command == "room-lifecycle-review":
+                emit_data(room_lifecycle.review(conn, args.room_id), args.json)
+            elif args.command == "room-lifecycle-bin":
+                emit_data(room_lifecycle.trashed_rooms(conn), args.json)
+            elif args.command in ("room-lifecycle-trash",
+                                   "room-lifecycle-restore"):
+                target_action = ("TRASH"
+                                 if args.command == "room-lifecycle-trash"
+                                 else "RESTORE")
+                emit_data(
+                    room_lifecycle.transition(
+                        conn, args.room_id, target_action,
+                        args.expected_revision, args.expected_digest,
+                        args.confirm_room_id,
+                        authorization=room_authority.verify_file(
+                            args.signed_authorization_file
+                        ),
+                    ), args.json
+                )
             elif args.command == "session-put":
                 emit_data(session_put(conn, args), args.json)
             elif args.command == "sessions":
