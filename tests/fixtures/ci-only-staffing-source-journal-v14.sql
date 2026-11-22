@@ -12,8 +12,11 @@ BEGIN IMMEDIATE;
 CREATE TEMP TABLE ci_v14_expected_previous (
   previous INTEGER NOT NULL CHECK(previous = 13)
 );
+-- Aggregate SELECT always emits exactly one row, including when the
+-- version key is absent. Zero or duplicate history rows are not proof that
+-- a protected schema v13 journal is present. Both must fail closed.
 INSERT INTO ci_v14_expected_previous(previous)
-SELECT CASE WHEN value='13' THEN 13 ELSE -1 END
+SELECT CASE WHEN COUNT(*)=1 AND MIN(value)='13' THEN 13 ELSE -1 END
 FROM schema_meta WHERE key='schema_version';
 
 -- The actual staffing coordinator correctly requires schema_meta = 13.
@@ -51,6 +54,11 @@ ON ci_staffing_result_v14_candidate(room_id, operation);
 -- its same BEGIN IMMEDIATE. The CI-only trigger models a terminal refusal
 -- fence at that actual insertion point. REFUSED and COMMITTED both fence
 -- grant replay; a missing row never implies a trustworthy REFUSED.
+-- IMPORTANT: v13 grant INSERT has no original request_nonce, so this trigger
+-- CANNOT enforce the complete D2 request fence. A future owner-controlled
+-- writer must atomically check the UNIQUE journal.request_nonce against the
+-- grant's signed requestNonce before every protected grant consumption.
+-- CI tests this via a separate source-transaction hook; native remains OFF.
 CREATE TRIGGER ci_staffing_terminal_fence_before_grant
 BEFORE INSERT ON hospital_staffing_authorizations
 WHEN EXISTS (
