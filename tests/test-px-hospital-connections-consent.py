@@ -61,6 +61,53 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
     dbfile=state/"hospital.db"
     os.chmod(dbfile,0o600)
 
+    # H1 cross-owner lifecycle acceptance: actual linked Room evidence must
+    # survive the merged Connections-signed TRASH -> Bin -> RESTORE route.
+    # All fixtures are completed/resolved, not active work. Test data stays
+    # in this private disposable database; no report/message body is logged.
+    room="room-consent-test"
+    with sqlite3.connect(dbfile) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO sessions(session_id,room_id,status,ended_at) "
+            "VALUES('history-session',?,'COMPLETE','2026-11-01')", (room,))
+        db.execute(
+            "INSERT INTO messages(room_id,session_id,author_role,direction,body_md) "
+            "VALUES(?,'history-session','DOCTOR','incoming','FIXTURE_SECRET_MESSAGE')",
+            (room,))
+        db.execute(
+            "INSERT INTO room_checkpoints(room_id,session_id,body_md) "
+            "VALUES(?,'history-session','FIXTURE_SECRET_CHECKPOINT')",(room,))
+        db.execute(
+            "INSERT INTO room_reports(room_id,session_id,body_md) "
+            "VALUES(?,'history-session','FIXTURE_SECRET_REPORT')",(room,))
+        db.execute(
+            "INSERT INTO assignments(room_id,patient_id,goal_md,status) "
+            "VALUES(?,'fixture-p','FIXTURE_SECRET_ASSIGNMENT','COMPLETE')",(room,))
+        db.execute(
+            "INSERT INTO chart_entries(scope_type,room_id,body_md,status) "
+            "VALUES('ROOM',?,'FIXTURE_SECRET_CHART','RESOLVED')",(room,))
+        db.execute(
+            "INSERT INTO chart_suggestions(scope_type,room_id,body_md,status) "
+            "VALUES('ROOM',?,'FIXTURE_SECRET_SUGGESTION','REJECTED')",(room,))
+        db.commit()
+
+    # Compare complete linked rows, not just counts, and never print the
+    # synthetic bodies. This explicitly excludes lifecycle state/receipts,
+    # which are supposed to advance during Trash/Restore.
+    history_tables=("sessions","messages","room_checkpoints","room_reports",
+                    "assignments","chart_entries","chart_suggestions")
+    def linked_history():
+        with sqlite3.connect(dbfile) as db:
+            return tuple(
+                (table,tuple(db.execute(
+                    "SELECT * FROM "+table+" WHERE room_id=? ORDER BY rowid",
+                    (room,)).fetchall()))
+                for table in history_tables
+            )
+    original_history=linked_history()
+    assert all(rows for _table,rows in original_history)
+
     uid=os.geteuid()
     assert uid != 0, "NONROOT_DISPOSABLE_RUNNER_REQUIRED"
     writer=ProtectedRoomWriter(
@@ -222,6 +269,9 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
         assert rows[0]["burnAllowed"] is False
         assert db.execute("SELECT count(*) FROM room_lifecycle_receipts").fetchone()[0]==1
         assert db.execute("SELECT count(*) FROM room_lifecycle_authorizations").fetchone()[0]==1
+    assert linked_history()==original_history, "TRASH_ALTERED_LINKED_HOSPITAL_EVIDENCE"
+    assert "FIXTURE_SECRET" not in json.dumps(prepared)
+    assert "FIXTURE_SECRET" not in json.dumps(committed)
     expect_hold(lambda:commit("TRASH",nonce,prepared,signed),"same signed operation replay")
     restarted=consent.ConsentCoordinator(
         writer,policy_loader=lambda:(
@@ -243,6 +293,8 @@ with tempfile.TemporaryDirectory(prefix="hospital-connections-native-") as tmp:
         assert db.execute("SELECT count(*) FROM room_lifecycle_receipts").fetchone()[0]==2
         assert db.execute("SELECT count(*) FROM room_lifecycle_authorizations").fetchone()[0]==2
     assert committed["revision"]==1 and restored["revision"]==2
+    assert linked_history()==original_history, "RESTORE_ALTERED_LINKED_HOSPITAL_EVIDENCE"
+    assert "FIXTURE_SECRET" not in json.dumps(restored)
 
     # No installed root-owned policy/socket exists in this disposable test;
     # daemon startup cannot pass with user-selected config.
