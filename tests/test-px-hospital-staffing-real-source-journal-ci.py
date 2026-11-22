@@ -210,7 +210,12 @@ with tempfile.TemporaryDirectory(
         # A distinct witness store is only a *disposable CI stand-in* for a
         # future independently protected monotonic history. The test cannot
         # enroll a trusted custodian or make two SQLite databases atomic.
-        history_floor = {"required": False, "witness": None}
+        history_floor = {
+            "required": False, "witness": None,
+            # The write-ahead variant is a disposable experiment, NOT a
+            # trusted external process or operator authorization.
+            "write_ahead": False, "fixture_lease": None,
+        }
 
         def ci_journal_hook(grant, connection, *, operation, scope):
             # This executes INSIDE the actual source-owned BEGIN IMMEDIATE.
@@ -239,6 +244,39 @@ with tempfile.TemporaryDirectory(
                 raise auth.StaffingGrantHold(
                     "HOSPITAL_STAFFING_GRANT_HOLD // "
                     "CI_ONLY_ORIGINAL_REQUEST_TERMINAL_FENCE")
+            if history_floor["write_ahead"]:
+                independent = history_floor["witness"]
+                if independent is None:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_WRITE_AHEAD_WITNESS_UNAVAILABLE")
+                try:
+                    reserved=independent.execute(
+                        "SELECT commit_sha256,grant_digest,writer_instance,"
+                        "status FROM ci_write_ahead_reservations "
+                        "WHERE request_nonce=?", (body["requestNonce"],)
+                    ).fetchone()
+                except sqlite3.Error as exc:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_WRITE_AHEAD_WITNESS_UNAVAILABLE") from exc
+                if reserved is None:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_WRITE_AHEAD_HISTORY_ABSENT_UNKNOWN")
+                expected=(body["requestNonce"],hashlib.sha256(raw).hexdigest(),
+                          grant.digest,body["writerInstance"])
+                observed=(body["requestNonce"],reserved[0],reserved[1],
+                          reserved[2])
+                if (reserved[3]!="PENDING" or observed!=expected
+                        or history_floor["fixture_lease"]!=expected):
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_WRITE_AHEAD_ORIGINAL_REQUEST_ALREADY_RESERVED")
+                # A *process-local* CI lease is spent before the original
+                # grant/Session transaction starts. Restart cannot recreate
+                # it. This is NOT an installed trusted issuer/seat mechanism.
+                history_floor["fixture_lease"]=None
             if history_floor["required"]:
                 independent = history_floor["witness"]
                 if independent is None:
@@ -644,6 +682,183 @@ with tempfile.TemporaryDirectory(
                 assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
                 assert db.execute("PRAGMA foreign_key_check").fetchone() is None
 
+        # WRITE-AHEAD ORDERING REHEARSAL: a second disposable SQLite
+        # witness is committed BEFORE the actual Session source transaction.
+        # This changes the failure mode from "COMMIT with no witness" into
+        # "PENDING witness, COMMIT possibly not performed". A PENDING
+        # reservation is terminal for *reissue of the same requestNonce*
+        # until an independently authenticated recovery decision exists.
+        # It is not evidence of COMMITTED or REFUSED by itself.
+        ahead_bed,ahead_assignment=room("room-write-ahead")
+        prepared_rooms["room-write-ahead"]=(ahead_bed,ahead_assignment)
+        ahead_case=plan("room-write-ahead","session-write-ahead")
+        ahead_request,ahead_prepared,ahead_signed,ahead_raw=ahead_case
+        ahead_body=__import__("json").loads(ahead_signed)["body"]
+        ahead_digest=hashlib.sha256(
+            auth.DOMAIN+auth.canonical(ahead_body)).hexdigest()
+        ahead_commit_sha=hashlib.sha256(ahead_raw).hexdigest()
+        ahead_identity=(ahead_request["requestNonce"],ahead_commit_sha,
+                        ahead_digest,ahead_prepared["writerInstance"])
+        ahead_backup_path=root/"before-write-ahead-source-ci.db"
+        witness_ahead_path=root/"untrusted-write-ahead-witness-ci.db"
+        assert ahead_backup_path!=witness_ahead_path
+        with closing(sqlite3.connect(
+                str(ahead_backup_path),isolation_level=None)) as ahead_backup:
+            db.backup(ahead_backup)
+            with closing(sqlite3.connect(
+                    str(witness_ahead_path),isolation_level=None)) as ahead_witness:
+                ahead_witness.execute("PRAGMA journal_mode=WAL")
+                ahead_witness.execute("PRAGMA synchronous=FULL")
+                ahead_witness.execute(
+                    "CREATE TABLE ci_write_ahead_reservations("
+                    "request_nonce TEXT PRIMARY KEY,"
+                    "commit_sha256 TEXT NOT NULL,"
+                    "grant_digest TEXT NOT NULL,"
+                    "writer_instance TEXT NOT NULL,"
+                    "status TEXT NOT NULL CHECK(status IN ('PENDING',"
+                    "'SOURCE_COMMIT_SEEN_CI')))")
+                ahead_witness.execute(
+                    "INSERT INTO ci_write_ahead_reservations VALUES("
+                    "?,?,?,?, 'PENDING')",ahead_identity)
+                # Separate connection verifies that reservation survived
+                # closure of the write-ahead transaction. Not evidence that
+                # the file is independently protected against host rollback.
+                with closing(sqlite3.connect(
+                        str(witness_ahead_path),
+                        isolation_level=None)) as check_witness:
+                    assert check_witness.execute(
+                        "SELECT status FROM ci_write_ahead_reservations "
+                        "WHERE request_nonce=?",
+                        (ahead_request["requestNonce"],)
+                    ).fetchone()[0]=="PENDING"
+                # If the worker dies after durable reservation but BEFORE
+                # source COMMIT, PENDING must not permit a new signed grant.
+                history_floor["write_ahead"]=True
+                history_floor["witness"]=ahead_witness
+                history_floor["fixture_lease"]=None
+                pre_crash=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                prepared_again=pre_crash.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                changed_signed=make_grant(ahead_request,prepared_again)
+                changed_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=prepared_again["writerInstance"],
+                    signedEnvelope=b64(changed_signed)))
+                denied(lambda:commit(
+                    (ahead_request,prepared_again,changed_signed,changed_raw),
+                    coordinator_instance=pre_crash),
+                    "CI_WRITE_AHEAD_ORIGINAL_REQUEST_ALREADY_RESERVED")
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-write-ahead'"
+                ).fetchone()[0]==0
+
+                # Only the original fixture writer has a one-use in-memory
+                # lease for this PENDING reservation. It is consumed before
+                # the actual signed grant and source transaction execute.
+                history_floor["fixture_lease"]=ahead_identity
+                original_outcome=commit(ahead_case)
+                assert original_outcome["fixtureTransactionCommitted"] is True
+                assert history_floor["fixture_lease"] is None
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-write-ahead'"
+                ).fetchone()[0]==1
+                # Deliberately do NOT finalize the second history file:
+                # simulate a crash after source COMMIT but before separate
+                # witness acknowledgement. PENDING remains conservative.
+                assert ahead_witness.execute(
+                    "SELECT status FROM ci_write_ahead_reservations "
+                    "WHERE request_nonce=?",
+                    (ahead_request["requestNonce"],)
+                ).fetchone()[0]=="PENDING"
+
+                ahead_backup.backup(db)
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-write-ahead'"
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM ci_staffing_result_v14_candidate "
+                    "WHERE request_nonce=?",
+                    (ahead_request["requestNonce"],)
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+                    "WHERE nonce=?", (ahead_body["nonce"],)
+                ).fetchone()[0]==0
+                after_rollback=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                after_prepared=after_rollback.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                after_signed=make_grant(ahead_request,after_prepared)
+                after_body=__import__("json").loads(after_signed)["body"]
+                assert after_body["nonce"]!=ahead_body["nonce"]
+                assert after_body["approvalId"]!=ahead_body["approvalId"]
+                after_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=after_prepared["writerInstance"],
+                    signedEnvelope=b64(after_signed)))
+                # Existing PENDING and a different newly signed grant is
+                # always held. The fixture lease is never restored.
+                denied(lambda:commit(
+                    (ahead_request,after_prepared,after_signed,after_raw),
+                    coordinator_instance=after_rollback),
+                    "CI_WRITE_AHEAD_ORIGINAL_REQUEST_ALREADY_RESERVED")
+
+                # Unavailable witness, missing row, or corrupted reservation
+                # must all hold before any new source or grant is consumed.
+                history_floor["witness"]=None
+                no_witness=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                nw_prepared=no_witness.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                nw_signed=make_grant(ahead_request,nw_prepared)
+                nw_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=nw_prepared["writerInstance"],
+                    signedEnvelope=b64(nw_signed)))
+                denied(lambda:commit(
+                    (ahead_request,nw_prepared,nw_signed,nw_raw),
+                    coordinator_instance=no_witness),
+                    "CI_WRITE_AHEAD_WITNESS_UNAVAILABLE")
+
+                history_floor["witness"]=ahead_witness
+                ahead_witness.execute(
+                    "DELETE FROM ci_write_ahead_reservations WHERE "
+                    "request_nonce=?", (ahead_request["requestNonce"],))
+                deleted=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                dl_prepared=deleted.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                dl_signed=make_grant(ahead_request,dl_prepared)
+                dl_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=dl_prepared["writerInstance"],
+                    signedEnvelope=b64(dl_signed)))
+                denied(lambda:commit(
+                    (ahead_request,dl_prepared,dl_signed,dl_raw),
+                    coordinator_instance=deleted),
+                    "CI_WRITE_AHEAD_HISTORY_ABSENT_UNKNOWN")
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-write-ahead'"
+                ).fetchone()[0]==0
+                assert db.execute(
+                    "SELECT COUNT(*) FROM hospital_staffing_authorizations "
+                    "WHERE room_id='room-write-ahead'"
+                ).fetchone()[0]==0
+                history_floor["witness"]=None
+                history_floor["write_ahead"]=False
+                history_floor["fixture_lease"]=None
+        assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+        assert db.execute("PRAGMA foreign_key_check").fetchone() is None
+
         denied(lambda:admission.dispatch_native_staffing(
             "SESSION_ATTACH",approved=True),
             "NATIVE_SESSION_DOCTOR_AUTHORITY_NOT_INSTALLED")
@@ -655,5 +870,6 @@ print(
     "missing/duplicated version guarded, "
     "local rollback permits fresh signed grant without witness; "
     "separate CI floor blocks reissue and missing/unavailable history; "
-    "native OFF"
+    "write-ahead PENDING fences pre/post-commit crashes even after source "
+    "rollback; no enrolled custodian or atomic two-store commit; native OFF"
 )
