@@ -44,6 +44,14 @@ assert coordinator.SourceStaffingRehearsal.__doc__ is not None
 assert not hasattr(coordinator, "NativeSocket")
 assert not hasattr(transport, "listen")
 
+# Import the independently exercised CI-only signed PENDING verifier into
+# the actual Session/Doctor source transaction rehearsal. It runs its own
+# hostile signature suite first; it provides NO native permissions.
+SIGNED_CI = runpy.run_path(
+    str(ROOT/"tests"/"test-px-hospital-staffing-signed-history-ci.py"),
+    run_name="hospital_signed_source_gate_ci",
+)
+
 PEER = (5001, 0, 1234567)
 HOST = "a"*64
 
@@ -215,6 +223,7 @@ with tempfile.TemporaryDirectory(
             # The write-ahead variant is a disposable experiment, NOT a
             # trusted external process or operator authorization.
             "write_ahead": False, "fixture_lease": None,
+            "signed": None,
         }
 
         def ci_journal_hook(grant, connection, *, operation, scope):
@@ -264,6 +273,41 @@ with tempfile.TemporaryDirectory(
                     raise auth.StaffingGrantHold(
                         "HOSPITAL_STAFFING_GRANT_HOLD // "
                         "CI_WRITE_AHEAD_HISTORY_ABSENT_UNKNOWN")
+                if history_floor["signed"] is not None:
+                    context=history_floor["signed"]
+                    # Bind a signed, externally floor-pinned PENDING packet
+                    # to the *actual* grant and Session COMMIT bytes before
+                    # calling original source grant.consume. The expected
+                    # writer-release pin is supplied outside the packet.
+                    expected_signed=dict(
+                        requestNonce=body["requestNonce"],
+                        scopeDigest=hashlib.sha256(
+                            transport.canonical(scope)).hexdigest(),
+                        commitDigest=hashlib.sha256(raw).hexdigest(),
+                        grantDigest=grant.digest,
+                        writerInstance=body["writerInstance"],
+                        hostId=body["hostId"],
+                        writerReleaseSha256=context["writer_release"],
+                        issuerReleaseSha256=body["issuerReleaseSha256"],
+                        policyGeneration=body["policyGeneration"],
+                    )
+                    try:
+                        signed_result=SIGNED_CI["verify"](
+                            context["packet"],
+                            installed_ci_pin=context["pin"],
+                            expected=expected_signed,
+                            independent_floor=context["floor"],
+                        )
+                    except SIGNED_CI["HistoryHold"] as exc:
+                        raise auth.StaffingGrantHold(
+                            "HOSPITAL_STAFFING_GRANT_HOLD // "
+                            "CI_SIGNED_HISTORY_EVIDENCE_HOLD: " + str(exc)
+                        ) from exc
+                    assert signed_result["canExecuteNewGrant"] is False
+                    assert signed_result["canDeclareCommitted"] is False
+                    assert signed_result["canDeclareRefused"] is False
+                    # This PENDING observation grants NO authority; the
+                    # separate one-use fixture lease remains mandatory.
                 expected=(body["requestNonce"],hashlib.sha256(raw).hexdigest(),
                           grant.digest,body["writerInstance"])
                 observed=(body["requestNonce"],reserved[0],reserved[1],
@@ -755,6 +799,37 @@ with tempfile.TemporaryDirectory(
                     "WHERE session_id='session-write-ahead'"
                 ).fetchone()[0]==0
 
+                # Make the CI witness cryptographically bind to the exact
+                # grant/COMMIT/scope used by the real source transaction.
+                # All key, release and floor values are synthetic and
+                # injected by the fixture; this is NOT root enrollment.
+                ci_history_signer=Ed25519PrivateKey.generate()
+                ci_writer_release="c"*64
+                ci_history_expected=dict(
+                    requestNonce=ahead_request["requestNonce"],
+                    scopeDigest=hashlib.sha256(transport.canonical(
+                        ahead_request["intent"])).hexdigest(),
+                    commitDigest=ahead_commit_sha,
+                    grantDigest=ahead_digest,
+                    writerInstance=ahead_prepared["writerInstance"],
+                    hostId=ahead_body["hostId"],
+                    writerReleaseSha256=ci_writer_release,
+                    issuerReleaseSha256=ahead_body["issuerReleaseSha256"],
+                    policyGeneration=ahead_body["policyGeneration"],
+                )
+                ci_history_body=dict(
+                    ci_history_expected,
+                    schema=SIGNED_CI["SCHEMA"],
+                    purpose=SIGNED_CI["PURPOSE"],
+                    sequence=31,
+                    state="PENDING",
+                )
+                history_floor["signed"]=dict(
+                    packet=SIGNED_CI["issue"](
+                        ci_history_signer,ci_history_body),
+                    pin=ci_history_signer.public_key(),
+                    floor=31,writer_release=ci_writer_release,
+                )
                 # Only the original fixture writer has a one-use in-memory
                 # lease for this PENDING reservation. It is consumed before
                 # the actual signed grant and source transaction execute.
@@ -802,12 +877,51 @@ with tempfile.TemporaryDirectory(
                     ahead_request,kind="commit",
                     writerInstance=after_prepared["writerInstance"],
                     signedEnvelope=b64(after_signed)))
-                # Existing PENDING and a different newly signed grant is
-                # always held. The fixture lease is never restored.
+                # A newly signed grant has a different writer/COMMIT/grant.
+                # Even with a structurally valid signed PENDING packet,
+                # its *original transaction identity* must not be borrowed.
                 denied(lambda:commit(
                     (ahead_request,after_prepared,after_signed,after_raw),
                     coordinator_instance=after_rollback),
-                    "CI_WRITE_AHEAD_ORIGINAL_REQUEST_ALREADY_RESERVED")
+                    "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
+                # Missing pin and changed independently pinned floor must
+                # also block before the source grant ledger can be written.
+                history_floor["signed"]["pin"]=None
+                no_pin=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                np_prepared=no_pin.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                np_signed=make_grant(ahead_request,np_prepared)
+                np_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=np_prepared["writerInstance"],
+                    signedEnvelope=b64(np_signed)))
+                denied(lambda:commit(
+                    (ahead_request,np_prepared,np_signed,np_raw),
+                    coordinator_instance=no_pin),
+                    "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
+                history_floor["signed"]["pin"]=ci_history_signer.public_key()
+                history_floor["signed"]["floor"]=32
+                stale_floor=coordinator.SourceStaffingRehearsal(
+                    session_record=original["session_record"],
+                    room_record=original["room_record"])
+                sf_prepared=stale_floor.prepare(
+                    db,transport.canonical(ahead_request),kernel_peer=PEER)
+                sf_signed=make_grant(ahead_request,sf_prepared)
+                sf_raw=transport.canonical(dict(
+                    ahead_request,kind="commit",
+                    writerInstance=sf_prepared["writerInstance"],
+                    signedEnvelope=b64(sf_signed)))
+                denied(lambda:commit(
+                    (ahead_request,sf_prepared,sf_signed,sf_raw),
+                    coordinator_instance=stale_floor),
+                    "CI_SIGNED_HISTORY_EVIDENCE_HOLD")
+                history_floor["signed"]["floor"]=31
+                assert db.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE session_id='session-write-ahead'"
+                ).fetchone()[0]==0
 
                 # Unavailable witness, missing row, or corrupted reservation
                 # must all hold before any new source or grant is consumed.
@@ -856,6 +970,7 @@ with tempfile.TemporaryDirectory(
                 history_floor["witness"]=None
                 history_floor["write_ahead"]=False
                 history_floor["fixture_lease"]=None
+                history_floor["signed"]=None
         assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
 
@@ -870,6 +985,7 @@ print(
     "missing/duplicated version guarded, "
     "local rollback permits fresh signed grant without witness; "
     "separate CI floor blocks reissue and missing/unavailable history; "
-    "write-ahead PENDING fences pre/post-commit crashes even after source "
-    "rollback; no enrolled custodian or atomic two-store commit; native OFF"
+    "write-ahead signed PENDING checked within real Session transaction "
+    "before grant consumption; rollback, bad pin/floor/new grant HOLD; "
+    "no enrolled custodian or atomic two-store commit; native OFF"
 )
