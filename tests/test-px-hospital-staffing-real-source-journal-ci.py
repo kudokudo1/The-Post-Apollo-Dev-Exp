@@ -273,6 +273,14 @@ with tempfile.TemporaryDirectory(
                     raise auth.StaffingGrantHold(
                         "HOSPITAL_STAFFING_GRANT_HOLD // "
                         "CI_WRITE_AHEAD_HISTORY_ABSENT_UNKNOWN")
+                # Write-ahead mode has NO unsigned evidence fallback,
+                # including when the local reservation and original
+                # fixture-only lease match. This test does not install
+                # the gate in the native protected writer.
+                if history_floor["signed"] is None:
+                    raise auth.StaffingGrantHold(
+                        "HOSPITAL_STAFFING_GRANT_HOLD // "
+                        "CI_SIGNED_HISTORY_REQUIRED")
                 if history_floor["signed"] is not None:
                     context=history_floor["signed"]
                     # Bind a signed, externally floor-pinned PENDING packet
@@ -779,7 +787,10 @@ with tempfile.TemporaryDirectory(
                 # source COMMIT, PENDING must not permit a new signed grant.
                 history_floor["write_ahead"]=True
                 history_floor["witness"]=ahead_witness
-                history_floor["fixture_lease"]=None
+                # Even a matching one-use fixture lease is NOT sufficient
+                # when signed history is absent.
+                history_floor["fixture_lease"]=ahead_identity
+                assert history_floor["signed"] is None
                 pre_crash=coordinator.SourceStaffingRehearsal(
                     session_record=original["session_record"],
                     room_record=original["room_record"])
@@ -793,7 +804,9 @@ with tempfile.TemporaryDirectory(
                 denied(lambda:commit(
                     (ahead_request,prepared_again,changed_signed,changed_raw),
                     coordinator_instance=pre_crash),
-                    "CI_WRITE_AHEAD_ORIGINAL_REQUEST_ALREADY_RESERVED")
+                    "CI_SIGNED_HISTORY_REQUIRED")
+                assert history_floor["fixture_lease"]==ahead_identity
+                history_floor["fixture_lease"]=None
                 assert db.execute(
                     "SELECT COUNT(*) FROM sessions "
                     "WHERE session_id='session-write-ahead'"
@@ -985,7 +998,8 @@ print(
     "missing/duplicated version guarded, "
     "local rollback permits fresh signed grant without witness; "
     "separate CI floor blocks reissue and missing/unavailable history; "
-    "write-ahead signed PENDING checked within real Session transaction "
-    "before grant consumption; rollback, bad pin/floor/new grant HOLD; "
+    "mandatory signed PENDING checked within real Session transaction "
+    "before grant consumption; absent packet, rollback, bad pin/floor/new "
+    "grant HOLD; "
     "no enrolled custodian or atomic two-store commit; native OFF"
 )
