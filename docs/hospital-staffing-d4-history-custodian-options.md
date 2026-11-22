@@ -44,6 +44,14 @@ A production design needs an independently pinned **current head** and authentic
 - Connections merged [#2103](https://github.com/kudokudo1/The-Post-Apollo-Project/pull/2103) provides a **source-only, read-only RECOVER query shape**, not signed native COMMITTED/REFUSED receipts.
 - Connections merged [#2107](https://github.com/kudokudo1/The-Post-Apollo-Project/pull/2107) checks TimeW/Hospital purpose isolation with disposable signer roles. Its referenced `tests/connections/c3e_release_trust/C3eAFSignedRoleEnrollment.py` explicitly says its enrollment root is supplied by CI, **not an operator/HSM/independent production authority**. Do not repurpose an Identity-only role enrollment as a Hospital history signer without a separate owner-approved enrollment.
 
+## Source-only historical membership follow-up (not owner acceptance)
+
+The standalone [historical-membership CI test](../tests/test-px-hospital-staffing-history-membership-ci.py) now models a **signed current head** over an ordered hash-linked **full history prefix**. An original signed PENDING at sequence 1 remains observable when unrelated requests advance the trusted current head to sequence 4. It checks exact request nonce, original signed packet bytes, contiguous sequence positions and a separately supplied expected head/release; missing, truncated, reordered, duplicated, forged or altered history is denied. A distinct new request at sequence 4 is also independently observable as PENDING, **not authorized to execute**.
+
+This is a bounded `MAX_RECORDS=32` educational fixture, **not** an efficiently indexed Merkle tree, installed append-only ledger, independent non-equivocation service, secure hardware anchor or genuine persisted counter. Its key, head and external-looking expected inputs originate in the same disposable runner; source rollback and head rollback cannot be ruled out merely by validating the old signed bytes. A real custodian must supply an independently trusted *current* head, authenticated membership/consistency proof for arbitrary historical requests, fork/revocation evidence and availability rules. Its membership proof must remain verifiable as more requests append, without treating old PENDING as COMMITTED/REFUSED.
+
+The [real Session transaction CI test](../tests/test-px-hospital-staffing-real-source-journal-ci.py) also now refuses **unsigned PENDING history** in write-ahead mode, even with a matching local reservation and one-use fixture lease. This is test-hook mandatory enforcement only. Other legacy/native grant paths remain unintegrated and unapproved.
+
 ## WATCH OUT FOR // Release gates and adversarial acceptance tests
 
 1. **Independent rollback:** Rewind Hospital's SQLite DB, then reboot/restart issuer and original writer. Every historical original nonce must remain fenced under a separately trusted current history head. Rewind the proposed custodian store too; the independently anchored head must detect or hold on the downgrade.
