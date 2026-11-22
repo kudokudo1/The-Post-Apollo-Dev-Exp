@@ -1,0 +1,280 @@
+name: Hospital / Universal Connections Signed Trash Restore
+
+on:
+  pull_request:
+    paths:
+      - "bin/px_hospital_connections_consent.py"
+      - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_writer.py"
+      - "tests/test-px-hospital-protected-writer-socket.py"
+      - "docs/hospital-room-protected-writer-service-v1.md"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-connections-consent.py"
+      - "tests/test-px-hospital-release-cutover-v1.py"
+      - "bin/px_hospital_release_preflight.py"
+      - "bin/px_hospital_native_release_audit.py"
+      - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-h1-native-caller-inventory.py"
+      - "tests/test-px-hospital-pending-writer-compatibility.py"
+      - "bin/px_hospital_staffing_admission.py"
+      - "bin/px_hospital_staffing_grants.py"
+      - "tests/test-px-hospital-staffing-grants-v1.py"
+      - "tests/test-px-hospital-staffing-atomic-consent.py"
+      - "bin/px_hospital_staffing_transport.py"
+      - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "bin/px_hospital_staffing_prepare_commit.py"
+      - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-process-crash-model.py"
+      - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/test-px-hospital-staffing-signed-history-ci.py"
+      - "tests/test-px-hospital-staffing-history-membership-ci.py"
+      - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
+      - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
+      - "bin/px_hospital_staffing_native_peer.py"
+      - "tests/test-px-hospital-staffing-native-peer.py"
+      - "bin/px_hospital_staffing_operator_review.py"
+      - "tests/test-px-hospital-staffing-operator-review.py"
+      - "bin/px_hospital_staffing_release_policy.py"
+      - "bin/px_hospital_staffing_ledger_recovery.py"
+      - "tests/test-px-hospital-staffing-release-policy.py"
+      - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
+      - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
+      - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
+      - "tests/test-px-hospital-native-unit-contract.py"
+      - "packaging/hospital-trash-restore/**"
+      - "docs/hospital-trash-restore-release-recovery.md"
+      - "docs/hospital-h1-native-caller-cutover-inventory.md"
+      - "docs/hospital-staffing-writer-recovery-contract.md"
+      - "docs/hospital-staffing-recovery-owner-decisions.md"
+      - ".github/workflows/px-hospital-connections-native.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bin/px_hospital_connections_consent.py"
+      - "bin/px-hospital-consent-writerd"
+      - "bin/px_hospital_room_writer.py"
+      - "tests/test-px-hospital-protected-writer-socket.py"
+      - "docs/hospital-room-protected-writer-service-v1.md"
+      - "bin/px_hospital_room_lifecycle.py"
+      - "tests/test-px-hospital-connections-consent.py"
+      - "tests/test-px-hospital-release-cutover-v1.py"
+      - "bin/px_hospital_release_preflight.py"
+      - "bin/px_hospital_native_release_audit.py"
+      - "tests/test-px-hospital-native-release-audit.py"
+      - "tests/test-px-hospital-h1-native-caller-inventory.py"
+      - "tests/test-px-hospital-pending-writer-compatibility.py"
+      - "bin/px_hospital_staffing_admission.py"
+      - "bin/px_hospital_staffing_grants.py"
+      - "tests/test-px-hospital-staffing-grants-v1.py"
+      - "tests/test-px-hospital-staffing-atomic-consent.py"
+      - "bin/px_hospital_staffing_transport.py"
+      - "tests/test-px-hospital-staffing-transport-v13.py"
+      - "bin/px_hospital_staffing_prepare_commit.py"
+      - "tests/test-px-hospital-staffing-prepare-commit.py"
+      - "tests/test-px-hospital-staffing-recovery-fence-model.py"
+      - "tests/test-px-hospital-staffing-process-crash-model.py"
+      - "tests/test-px-hospital-staffing-real-source-journal-ci.py"
+      - "tests/test-px-hospital-staffing-signed-history-ci.py"
+      - "tests/test-px-hospital-staffing-history-membership-ci.py"
+      - "tests/fixtures/ci-only-staffing-source-journal-v14.sql"
+      - "tests/test-px-hospital-staffing-recover-query-cross-owner.py"
+      - "bin/px_hospital_staffing_native_peer.py"
+      - "tests/test-px-hospital-staffing-native-peer.py"
+      - "bin/px_hospital_staffing_operator_review.py"
+      - "tests/test-px-hospital-staffing-operator-review.py"
+      - "bin/px_hospital_staffing_release_policy.py"
+      - "bin/px_hospital_staffing_ledger_recovery.py"
+      - "tests/test-px-hospital-staffing-release-policy.py"
+      - "packaging/hospital-trash-restore/candidate-org.postapollo.hospital.staffing.policy"
+      - "packaging/hospital-trash-restore/candidate-staffing-ledger-v13.sql"
+      - "tests/test-px-hospital-cross-owner-v12-compatibility.py"
+      - "tests/test-px-hospital-native-unit-contract.py"
+      - "packaging/hospital-trash-restore/**"
+      - "docs/hospital-trash-restore-release-recovery.md"
+      - "docs/hospital-h1-native-caller-cutover-inventory.md"
+      - "docs/hospital-staffing-writer-recovery-contract.md"
+      - "docs/hospital-staffing-recovery-owner-decisions.md"
+      - ".github/workflows/px-hospital-connections-native.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signed-room-consent:
+    name: Hospital + Connections end-to-end source approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read exact PX source
+        uses: actions/checkout@v4
+
+      - name: Read merged Universal Connections C5-H2 signer source only
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: 29f816fb008d93f3153e2f347df579e6bd69283b
+          path: app-source
+          persist-credentials: false
+
+      - name: Check exact Hospital UI native client source only
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: e8de69000d4ebb5b36a580cfbf87f59989317b1c
+          path: hospital-ui-source
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-session)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 4c3f0c97c4b6342bc7adb70443afecf65666d3cb
+          path: hospital-witness-session
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-succession)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 4e0fe43c1324c0011dbbdbcbdfc8bddfb06bcdc1
+          path: hospital-witness-succession
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-initial)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 81f626d9efe56089e2fd4117406729c82db58f3e
+          path: hospital-witness-bed-initial
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-signed)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: a76a7b079bba6cf5733b5be4860d2188028d63e4
+          path: hospital-witness-bed-signed
+          persist-credentials: false
+
+      - name: Read exact independent Hospital owner source (hospital-witness-bed-gateway)
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Dev-Exp
+          ref: 0dd14de064f2f50adb60b4217da6f2a937f4001c
+          path: hospital-witness-bed-gateway
+          persist-credentials: false
+
+      - name: Checkout exact Connections source-only RECOVER query proposal for adversarial parity
+        uses: actions/checkout@v4
+        with:
+          repository: kudokudo1/The-Post-Apollo-Project
+          ref: f6767d7a178bbf7c5ab1103ed6a5ec11a4526943
+          path: connections-staffing-recover-proposal
+          persist-credentials: false
+
+      - name: Install pinned Ed25519 verifier
+        run: python3 -m pip install 'cryptography==46.0.3'
+
+      - name: Check source syntax, reject direct pre-install launcher
+        run: |
+          python3 -m py_compile bin/px_hospital_connections_consent.py \
+            bin/px-hospital-consent-writerd bin/px_hospital_room_lifecycle.py \
+            tests/test-px-hospital-connections-consent.py
+          if python3 bin/px-hospital-consent-writerd --unsafe; then
+            echo "UNTRUSTED HOSPITAL CONSENT HOST STARTED" >&2
+            exit 1
+          fi
+
+      - name: Full signed PREPARE / COMMIT Room Trash, Bin and Restore
+        run: python3 tests/test-px-hospital-connections-consent.py
+      - name: Verify protected startup templates against exact issuer and Hospital UI
+        run: |
+          python3 -m py_compile tests/test-px-hospital-native-unit-contract.py
+          python3 tests/test-px-hospital-native-unit-contract.py
+      - name: Audit all protected read/write commands and disposable old-writer process inventory
+        run: |
+          python3 -m py_compile bin/px_hospital_native_release_audit.py tests/test-px-hospital-native-release-audit.py
+          python3 tests/test-px-hospital-native-release-audit.py
+      - name: Inventory exact Hospital UI legacy PX callers and keep native release HOLD
+        run: |
+          python3 -m py_compile tests/test-px-hospital-h1-native-caller-inventory.py
+          python3 tests/test-px-hospital-h1-native-caller-inventory.py
+      - name: Check exact Session Doctor Bed source compatibility and deny unreviewed writes
+        run: |
+          python3 -m py_compile tests/test-px-hospital-pending-writer-compatibility.py
+          python3 tests/test-px-hospital-pending-writer-compatibility.py
+
+      - name: Cross-check original Session Doctor Bed transactions against v12 on disposable DB
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_admission.py tests/test-px-hospital-cross-owner-v12-compatibility.py
+          python3 tests/test-px-hospital-cross-owner-v12-compatibility.py
+
+      - name: Verify separate one-use signed Session Doctor grant boundary, no native enablement
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_grants.py tests/test-px-hospital-staffing-grants-v1.py
+          python3 tests/test-px-hospital-staffing-grants-v1.py
+
+      - name: Verify signed atomic Session Doctor transitions and rollback
+        run: |
+          python3 -m py_compile tests/test-px-hospital-staffing-atomic-consent.py
+          python3 tests/test-px-hospital-staffing-atomic-consent.py
+
+      - name: Test typed native staffing frame and candidate v13 ledger on disposable WAL database
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_transport.py tests/test-px-hospital-staffing-transport-v13.py
+          python3 tests/test-px-hospital-staffing-transport-v13.py
+
+      - name: Verify CI-only native staffing PREPARE COMMIT same-transaction enforcement
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_prepare_commit.py bin/px_hospital_staffing_ledger_recovery.py tests/test-px-hospital-staffing-prepare-commit.py
+          python3 tests/test-px-hospital-staffing-prepare-commit.py
+
+      - name: Test disposable staffing result journal and terminal refusal fence without native schema approval
+        run: |
+          python3 -m py_compile tests/test-px-hospital-staffing-recovery-fence-model.py
+          python3 tests/test-px-hospital-staffing-recovery-fence-model.py
+
+      - name: Verify candidate D1-D2 journal inside original Hospital Session transaction using disposable database
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-real-source-journal-ci.py
+          python3 -B tests/test-px-hospital-staffing-real-source-journal-ci.py
+
+      - name: Verify signed PENDING witness identity, pinned CI signer and monotonic floor
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-signed-history-ci.py
+          python3 -B tests/test-px-hospital-staffing-signed-history-ci.py
+
+      - name: Verify historical PENDING membership under advancing pinned CI history head
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-history-membership-ci.py
+          python3 -B tests/test-px-hospital-staffing-history-membership-ci.py
+
+      - name: Crash separate CI-only writer process before and after SQLite COMMIT
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-process-crash-model.py
+          python3 -B tests/test-px-hospital-staffing-process-crash-model.py
+
+      - name: Verify pinned Connections RECOVER query against real Hospital parser without native trust
+        run: |
+          python3 -B -m py_compile tests/test-px-hospital-staffing-recover-query-cross-owner.py
+          python3 -B tests/test-px-hospital-staffing-recover-query-cross-owner.py
+
+      - name: Inspect real Linux kernel peer and packet identity for future staffing issuer (no activation)
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_native_peer.py tests/test-px-hospital-staffing-native-peer.py
+          python3 tests/test-px-hospital-staffing-native-peer.py
+
+      - name: Verify staffing operator review digest and distinct source-only Polkit permissions
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_operator_review.py tests/test-px-hospital-staffing-operator-review.py
+          python3 tests/test-px-hospital-staffing-operator-review.py
+
+      - name: Verify root-owned staffing release and operator revocation policy (no install)
+        run: |
+          python3 -m py_compile bin/px_hospital_staffing_release_policy.py tests/test-px-hospital-staffing-release-policy.py
+          python3 tests/test-px-hospital-staffing-release-policy.py
+
+      - name: Offline WAL backup / v10 to v12 / rollback release rehearsal
+        run: |
+          python3 -m py_compile bin/px_hospital_release_preflight.py tests/test-px-hospital-release-cutover-v1.py
+          python3 tests/test-px-hospital-release-cutover-v1.py

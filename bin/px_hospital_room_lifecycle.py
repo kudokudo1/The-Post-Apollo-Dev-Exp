@@ -278,7 +278,7 @@ def trashed_rooms(conn):
 
 
 def transition(conn, room_id, action, expected_revision, expected_digest,
-               confirm_room_id, *, authorization=None):
+               confirm_room_id, *, authorization=None, policy_guard=None):
     """Exactly one Room, one revision, one transaction. No original DELETE."""
     room_id = _identity(room_id)
     if action not in ("TRASH", "RESTORE"):
@@ -299,6 +299,13 @@ def transition(conn, room_id, action, expected_revision, expected_digest,
     try:
         conn.execute("BEGIN IMMEDIATE")
         source = review(conn, room_id)
+        # Protected Universal Connections consent only: the guard rereads
+        # root-owned retention + legal-hold policy WITHIN the same Room
+        # transaction. Old call sites keep their existing behavior.
+        if policy_guard is not None:
+            if not callable(policy_guard):
+                raise RoomLifecycleRefused("INVALID_PROTECTED_POLICY_GUARD")
+            policy_guard(source)
         if expected_revision != source["revision"]:
             raise RoomLifecycleRefused("STALE_ROOM_REVISION")
         if expected_digest != source["digest"]:

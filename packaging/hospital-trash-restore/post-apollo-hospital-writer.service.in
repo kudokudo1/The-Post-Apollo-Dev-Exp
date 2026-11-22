@@ -1,0 +1,35 @@
+# SOURCE TEMPLATE ONLY - NEVER INSTALL OR ENABLE UNRENDERED.
+# Writer user, protected storage and socket directory require an approved host inventory.
+[Unit]
+Description=Post Apollo Hospital protected Room database writer
+After=local-fs.target
+ConditionPathExists=/etc/post-apollo/hospital/room-writer.json
+ConditionPathExists=@PROTECTED_DB_DIR@/hospital.db
+
+[Service]
+Type=simple
+User=@PROTECTED_WRITER_USER@
+Group=@PROTECTED_WRITER_GROUP@
+WorkingDirectory=/usr/libexec/post-apollo/hospital
+ExecStart=/usr/bin/python3 /usr/libexec/post-apollo/hospital/px-hospital-room-writerd
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=@PROTECTED_DB_DIR@ @PROTECTED_STREAM_SOCKET_DIR@
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# SOURCE HOLD: runtime & desktop socket ACLs are NOT configured here.
+# The protected stream socket defaults to 0600. Only reviewed,
+# separately installed ACL/group policy can admit exactly pinned callers.
+# No ExecStartPre migration, DB initialization, chown or source copy.
+
+[Install]
+# HOLD: intentionally no WantedBy. Approval required to enable.
