@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(
                 roomRevision=prepared["expectedRevision"],
                 graphDigest=prepared["expectedDigest"],
                 operatorId="uid:1001",operatorUid=1001,
-                polkitActionId=auth.POLKIT_ACTIONS[auth.ATTACH],
+                polkitActionId=auth.POLKIT_ACTIONS[request["action"]],
                 policyGeneration=3,clientExecutableSha256="a"*64,
                 issuerReleaseSha256="b"*64,
                 reviewDigest=review.review_digest(
@@ -210,7 +210,8 @@ with tempfile.TemporaryDirectory(
                 (request["requestNonce"],body["nonce"],grant.digest,
                  body["approvalId"],hashlib.sha256(raw).hexdigest(),
                  prepared["writerInstance"],request["roomId"],operation,
-                 scope["sessionId"],
+                 scope["sessionId"] if operation==auth.ATTACH
+                 else scope["newSessionId"],
                  hashlib.sha256(transport.canonical(scope)).hexdigest(),
                  body["reviewDigest"],body["graphDigest"],"COMMITTED",
                  "ci-transaction-"+request["requestNonce"]),
@@ -271,6 +272,59 @@ with tempfile.TemporaryDirectory(
         ).fetchone()["session_id"]=="session-success"
         denied(lambda:commit(success),"MISSING_EXPIRED_OR_REPLAYED_PREPARE")
 
+        # The real atomic DOCTOR_SUCCEED writer shares the same verified
+        # one-use grant consumption seam. Historical attachment stays
+        # visible even after Room staffing advances to a new Doctor.
+        db.execute("INSERT INTO doctors(doctor_id,status) "
+                   "VALUES('doctor-new','ACTIVE')")
+        db.execute(
+            "UPDATE sessions SET status='FAILED',"
+            "ended_at='2026-11-21',active_pid=0 "
+            "WHERE session_id='session-success'")
+        next_bed,next_assignment=prepared_rooms["room-success"]
+        successor_scope=dict(
+            roomId="room-success",patientId="ci-patient",
+            repository="org/project",branch="ci-branch",
+            bedPath=str(next_bed),assignmentId=next_assignment,
+            previousSessionId="session-success",newSessionId="session-next",
+            previousDoctorId="doctor-old",
+            previousProviderId="provider-old",
+            successorDoctorId="doctor-new",
+            successorProviderId="provider-new",
+        )
+        successor_request=dict(
+            schema=transport.SCHEMA,kind="prepare",action=auth.SUCCEED,
+            roomId="room-success",intent=successor_scope,
+            requestNonce=b64(secrets.token_bytes(32)),
+        )
+        successor_prepared=planner.prepare(
+            db,transport.canonical(successor_request),kernel_peer=PEER)
+        successor_signed=make_grant(successor_request,successor_prepared)
+        successor_raw=transport.canonical(dict(
+            successor_request,kind="commit",
+            writerInstance=successor_prepared["writerInstance"],
+            signedEnvelope=b64(successor_signed)))
+        successor_case=(successor_request,successor_prepared,
+                        successor_signed,successor_raw)
+        successor_receipt=commit(successor_case)
+        assert successor_receipt["action"]==auth.SUCCEED
+        assert successor_receipt["sessionId"]=="session-next"
+        assert successor_receipt["nativeInstallationVerified"] is False
+        assert counts()==(2,2,2),counts()
+        assert db.execute(
+            "SELECT doctor_id FROM rooms WHERE room_id='room-success'"
+        ).fetchone()[0]=="doctor-new"
+        prior=db.execute(
+            "SELECT terminal FROM ci_staffing_result_v14_candidate "
+            "WHERE request_nonce=?",(success[0]["requestNonce"],)).fetchone()
+        assert prior is not None and prior["terminal"]=="COMMITTED"
+        assert db.execute(
+            "SELECT terminal FROM ci_staffing_result_v14_candidate "
+            "WHERE request_nonce=?",
+            (successor_request["requestNonce"],)).fetchone()[0]=="COMMITTED"
+        denied(lambda:commit(successor_case),
+               "MISSING_EXPIRED_OR_REPLAYED_PREPARE")
+
         # A trusted REFUSED outcome still needs a PX owner-approved source
         # mechanism. In CI we simulate ONLY the durable terminal row and
         # check that the real grant consumption path respects the SQL fence.
@@ -296,9 +350,9 @@ with tempfile.TemporaryDirectory(
              "ci-terminal-refusal-"+req["requestNonce"]),
         )
         db.commit()
-        assert counts()==(2,1,1)
+        assert counts()==(3,2,2)
         denied(lambda:commit(refused),"REPLAYED_APPROVAL")
-        assert counts()==(2,1,1),counts()
+        assert counts()==(3,2,2),counts()
         assert db.execute(
             "SELECT COUNT(*) FROM sessions WHERE session_id='session-refused'"
         ).fetchone()[0]==0
@@ -312,7 +366,7 @@ with tempfile.TemporaryDirectory(
             "SELECT * FROM ci_staffing_result_v14_candidate"
             " WHERE request_nonce=?",(success[0]["requestNonce"],)
         ).fetchone() is None
-        assert counts()==(1,1,1)
+        assert counts()==(2,2,2)
         # Actual signed grant still cannot be replayed even if a separately
         # maintained history row disappeared.
         denied(lambda:commit(success),"MISSING_EXPIRED_OR_REPLAYED_PREPARE")
@@ -324,7 +378,7 @@ with tempfile.TemporaryDirectory(
 
 print(
     "HOSPITAL REAL SOURCE D1/D2 CI HOOK // PASS // "
-    "real Session atomicity + candidate v14 journal rollback, "
+    "real Session+Doctor atomicity + candidate v14 journal rollback, "
     "terminal refusal fence prevents grant consumption, "
     "deleted history remains unauthenticated UNKNOWN; native OFF"
 )
